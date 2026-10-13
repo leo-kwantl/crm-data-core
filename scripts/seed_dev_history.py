@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import calendar
 import os
 import random
 import sys
@@ -32,7 +33,7 @@ import asyncpg
 SEED = 42
 MEMBER_BLOCK = "M-02"
 N_MEMBERS = 60
-SOURCE_TAG = "DH"  # prefix of deterministic external_order_id
+SOURCE_TAG = "DH2"  # v2: even daily spread (v1 DH series was bursty + never used days 29-31)
 
 # (start, end) inclusive month ranges to generate: the pre-2025-10 year + Nov-2025 gap.
 MONTH_RANGES = [("2024-10", "2025-09"), ("2025-11", "2025-11")]
@@ -109,30 +110,40 @@ async def main() -> int:
         print(f"members: {len(members)} total, {len(new_members)} inserted")
 
         have_ext = {r["external_order_id"] for r in await conn.fetch(
-            "SELECT external_order_id FROM orders WHERE external_order_id LIKE 'DH-%'")}
-        order_rows: list[tuple] = []
-        item_rows: list[tuple] = []  # (ext_id, sku, qty)
-        seq: dict[tuple, int] = {}
-        for mi, m in enumerate(members):
+            "SELECT external_order_id FROM orders WHERE external_order_id LIKE $1", f"{SOURCE_TAG}-%")}
+        # Pass 1: order counts per (member, month). One rng.random() call per
+        # cell in fixed order — the stream (hence n and ext ids) is identical
+        # on reruns.
+        counts: dict[tuple, int] = {}
+        for mi in range(len(members)):
             for (y, mo) in TARGET_MONTHS:
                 weight = SEASONALITY[mo]
-                n = int(BASE_ORDERS_PER_MONTH * weight) + (1 if rng.random() < (BASE_ORDERS_PER_MONTH * weight) % 1 else 0)
-                for _ in range(n):
-                    key = (mi, y, mo)
-                    seq[key] = seq.get(key, 0) + 1
-                    # Draw RNG BEFORE the skip check so reruns consume the
-                    # identical stream (otherwise n/ext ids diverge and reruns
-                    # are not no-ops).
-                    day = rng.randint(1, 28)
-                    ordered = datetime(y, mo, day, rng.randint(9, 20), rng.randint(0, 59), tzinfo=timezone.utc)
-                    store = stores[STORE_CODES[(mi + mo) % len(STORE_CODES)]]
-                    ext = f"{SOURCE_TAG}-{mi + 1:02d}-{y}{mo:02d}-{seq[key]:02d}"
-                    if ext in have_ext:
-                        continue
-                    order_rows.append((member_ids[m], store, ordered, ext))
+                mu = BASE_ORDERS_PER_MONTH * weight
+                counts[(mi, y, mo)] = int(mu) + (1 if rng.random() < mu % 1 else 0)
+        # Pass 2: spread each month's total evenly across its days (global
+        # round-robin — per-member spacing alone clumps every member onto the
+        # same lattice days). Times keep RNG variety; all draws precede the
+        # skip check so reruns consume the identical stream (rerun = no-op).
+        order_rows: list[tuple] = []
+        seq: dict[tuple, int] = {}
+        for (y, mo) in TARGET_MONTHS:
+            dim = calendar.monthrange(y, mo)[1]
+            cells = [(mi, k) for mi in range(len(members)) for k in range(counts[(mi, y, mo)])]
+            for j, (mi, k) in enumerate(cells):
+                m = members[mi]
+                key = (mi, y, mo)
+                seq[key] = seq.get(key, 0) + 1
+                day = 1 + (j * dim) // max(len(cells), 1)
+                ordered = datetime(y, mo, day, rng.randint(9, 20), rng.randint(0, 59), tzinfo=timezone.utc)
+                store = stores[STORE_CODES[(mi + mo) % len(STORE_CODES)]]
+                ext = f"{SOURCE_TAG}-{mi + 1:02d}-{y}{mo:02d}-{seq[key]:02d}"
+                if ext in have_ext:
+                    continue
+                order_rows.append((member_ids[m], store, ordered, ext))
 
         # Items + totals, computed deterministically from the same RNG stream.
         payback: list[tuple] = []
+        item_rows: list[tuple] = []  # (ext_id, sku, qty)
         for (cust_id, store_id, ordered, ext) in order_rows:
             lines = []
             total = 0
