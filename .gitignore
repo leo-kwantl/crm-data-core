@@ -1,0 +1,19 @@
+# Local runtime / tool artifacts (never commit)
+.pgembed-data/
+.pgembed-verify/
+__pycache__/
+*.pyc
+.pytest_cache/
+node_modules/
+.next/
+*.log
+.env
+.env.local
+.pi/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+.pgembed-verify/

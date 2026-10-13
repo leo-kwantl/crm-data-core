@@ -1,0 +1,53 @@
+"""Inventory endpoints: per-store stock levels (auto-mounted).
+
+- GET /inventory?product_id= — stock rows for one product (store_code order).
+  product_id is required; unknown product -> 404.
+- PUT /inventory {product_id, store_id, qty} — upsert the pair row (200).
+  Unknown product/store -> 404; negative qty -> 422 (schema + CHECK).
+
+Non-PII resource like the catalogue: no session requirement (public).
+"""
+
+from __future__ import annotations
+
+import uuid
+from typing import Annotated
+
+import asyncpg
+from fastapi import APIRouter, Depends, HTTPException, Query
+
+from ..deps import get_pool
+from ..repos import inventory as repo
+from ..schemas.inventory import InventoryUpsert
+
+router = APIRouter(tags=["inventory"])
+
+
+@router.get("/inventory")
+async def list_inventory(
+    pool: Annotated[asyncpg.Pool, Depends(get_pool)],
+    product_id: Annotated[uuid.UUID, Query()],
+) -> dict:
+    async with pool.acquire() as conn:
+        rows = await repo.list_inventory(conn, product_id)
+    if rows is None:
+        raise HTTPException(status_code=404, detail={"code": "product_not_found"})
+    return {"data": rows}
+
+
+@router.put("/inventory")
+async def upsert_inventory(
+    payload: InventoryUpsert,
+    pool: Annotated[asyncpg.Pool, Depends(get_pool)],
+) -> dict:
+    async with pool.acquire() as conn:
+        result = await repo.upsert_inventory(
+            conn,
+            product_id=payload.product_id,
+            store_id=payload.store_id,
+            qty=payload.qty,
+        )
+    if isinstance(result, tuple):
+        _, code = result
+        raise HTTPException(status_code=404, detail={"code": code})
+    return result
