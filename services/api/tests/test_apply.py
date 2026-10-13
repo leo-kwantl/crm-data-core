@@ -125,6 +125,12 @@ async def test_apply_orders_with_failures_and_replay(
                 "SELECT reason FROM quarantine_rows WHERE upload_job_id = $1"
                 " AND row_number = 2", out["job_id"])
             assert reason is not None and "NOSUCHSTORE" in reason
+            nev = await conn.fetchval(
+                "SELECT COUNT(*) FROM customer_events ce JOIN orders o"
+                " ON o.id::text = substr(ce.source_event_id, 7)"
+                " WHERE o.external_order_id = 'E-A1'"
+                " AND ce.kind = 'order_placed' AND ce.source = 'derived'")
+            assert int(nev) == 1
     finally:
         await pool.close()
 
@@ -143,6 +149,10 @@ async def test_apply_orders_with_failures_and_replay(
             n = await conn.fetchval(
                 "SELECT COUNT(*) FROM orders WHERE external_order_id='E-A1'")
             assert int(n) == 1
+            nev = await conn.fetchval(
+                "SELECT COUNT(*) FROM customer_events"
+                " WHERE kind = 'order_placed' AND source = 'derived'")
+            assert int(nev) == 1  # replay wrote no second derived event
     finally:
         await pool.close()
 

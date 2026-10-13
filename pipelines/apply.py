@@ -190,7 +190,29 @@ async def _apply_order(conn, norm: dict, raw: dict,
     oid = str(oid)
     for pid, qty, cents in product_ids:
         await conn.execute(INSERT_LINE_SQL, oid, pid, qty, cents)
+    await _write_order_placed(conn, cid, store_id, oid,
+                              _ordered_at(raw), norm["total_cents"], ext)
     return oid
+
+
+DERIVED_EVENT_SOURCE = "derived"
+DERIVED_ORDER_KIND = "order_placed"  # name-keyed in ml calibration SQL;
+# renaming requires ml ack FIRST (see contracts.md kind vocabulary).
+
+
+async def _write_order_placed(conn, cid: str, store_id: str, oid: str,
+                              ordered_at, total_cents: int,
+                              ext: Optional[str]) -> None:
+    evid = f"order:{oid}"
+    if await conn.fetchval(FIND_EVENT_SQL, DERIVED_EVENT_SOURCE, evid):
+        return  # replay: derived event already written
+    label = ext or oid[:8]
+    summary = f"Order {label} \u00b7 ${total_cents / 100:,.2f}"[:200]
+    payload = json.dumps({"order_id": oid, "total_cents": total_cents,
+                          "store_id": str(store_id)})
+    await conn.execute(INSERT_EVENT_SQL, cid, DERIVED_ORDER_KIND,
+                       DERIVED_EVENT_SOURCE, evid, summary, payload,
+                       ordered_at)
 
 
 async def _apply_event(conn, norm: dict, raw: dict,

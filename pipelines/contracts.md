@@ -21,6 +21,19 @@
 Append-only. Dedup key `(source, source_event_id)`. Consumers (app timeline,
 ML features) read; nobody updates.
 
+### kind vocabulary (additive; new kinds need ml ack before writing)
+
+- Manual kinds (source `manual`, written by app): `note`, `visit`, `call`,
+  `complaint`, `follow_up`.
+- Derived kinds (source `derived`, written by data): `order_placed` — one
+  row per order, `source_event_id = 'order:' || order_id`, `occurred_at =
+  orders.ordered_at`, payload `{order_id, total_cents, store_id}`.
+- ML calibration EXCLUDES `order_placed` by name (`store_churn` activity
+  calibration filters `ce.kind <> 'order_placed'`) so derived rows can
+  never double-count orders under activity='all'. Renaming the derived
+  kind, or adding any further derived kind, requires ml ack FIRST — the
+  exclusion is name-keyed.
+
 ## Failure handling
 
 Rejects go to quarantine with (source, key, reason, raw) — never silently
