@@ -167,6 +167,34 @@ async def main() -> int:
                 [(idmap[ext], pid, qty, price) for (ext, pid, qty, price) in item_rows])
         span = await conn.fetchrow("SELECT min(ordered_at)::date lo, max(ordered_at)::date hi, count(*) n FROM orders")
         print(f"orders: {len(payback)} inserted ({len(item_rows)} lines); dev range now {span['lo']}..{span['hi']} ({span['n']} rows)")
+
+        # DATA-1: every seed member gets phone + email contact rows so the
+        # customer list, search and PII paths have full coverage. Deterministic
+        # values; existing contacts are never touched.
+        have_contact = {r["customer_id"] for r in await conn.fetch(
+            "SELECT DISTINCT customer_id FROM customer_contacts WHERE customer_id = ANY($1)",
+            list(member_ids.values()))}
+        used_phones = {r["value_normalized"] for r in await conn.fetch(
+            "SELECT value_normalized FROM customer_contacts WHERE kind='phone'")}
+        contact_rows: list[tuple] = []
+        for idx, m in enumerate(members, start=1):
+            if member_ids[m] in have_contact:
+                continue
+            n = 90000000 + (idx * 7919) % 9999999
+            phone = f"+852{n:08d}"
+            while phone in used_phones:  # deterministic bump on collision
+                n += 1
+                phone = f"+852{n:08d}"
+            used_phones.add(phone)
+            disp = f"+852 {phone[4:8]} {phone[8:]}"
+            email = f"devhistory{idx:02d}@example.com"
+            contact_rows.append((member_ids[m], "phone", phone, disp, True))
+            contact_rows.append((member_ids[m], "email", email, email, False))
+        if contact_rows:
+            await conn.executemany(
+                "INSERT INTO customer_contacts (customer_id, kind, value_normalized, value_display, is_primary)"
+                " VALUES ($1,$2,$3,$4,$5)", contact_rows)
+        print(f"contacts: {len(contact_rows)} inserted for {len(contact_rows) // 2} members")
     finally:
         await conn.close()
     return 0
