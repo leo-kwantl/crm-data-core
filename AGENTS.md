@@ -25,3 +25,14 @@ pytest services/api/tests/test_orders.py services/api/tests/test_customer_events
   Contract changes pair branch + migration per the protocol above.
 - No remote yet at import time: rewriting is free until the first push.
   After push, history is immutable.
+
+## PII search rule (mirrored from app conventions.md — app owns the text)
+
+- Phone/email match by **exact normalized value only**; no LIKE/fuzzy on
+  PII. Override 2026-10-13 (owner): after an exact miss, phone/email
+  fall back to a bounded substring match (min 3 digits / 3 chars,
+  LIMIT 20, POST body, audited criteria-type-only). Exact-first
+  ordering preserved.
+- Data-side contract: the searchable column is
+  `customer_contacts.value_normalized` (phone digits-normalized, email
+  lowercased+trimmed); `value_display` never in a predicate.
