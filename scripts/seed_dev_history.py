@@ -61,6 +61,12 @@ def months_between(start: str, end: str):
 
 
 TARGET_MONTHS = [mm for s, e in MONTH_RANGES for mm in months_between(s, e)]
+# Partial-month fills: (year, month) -> (first_day, last_day) spread bounds.
+# 2025-10-01..09 is a documented hole (legacy orders start Oct 10); filling
+# only days 1-9 keeps seed and legacy ranges disjoint and feeds the October
+# YoY day-aligned MTD window.
+PARTIAL_MONTHS = {(2025, 10): (1, 9)}
+TARGET_MONTHS.append((2025, 10))
 
 
 async def main() -> int:
@@ -119,7 +125,12 @@ async def main() -> int:
             for (y, mo) in TARGET_MONTHS:
                 weight = SEASONALITY[mo]
                 mu = BASE_ORDERS_PER_MONTH * weight
-                counts[(mi, y, mo)] = int(mu) + (1 if rng.random() < mu % 1 else 0)
+                n = int(mu) + (1 if rng.random() < mu % 1 else 0)
+                if (y, mo) in PARTIAL_MONTHS:
+                    lo, hi = PARTIAL_MONTHS[(y, mo)]
+                    dim = calendar.monthrange(y, mo)[1]
+                    n = round(n * (hi - lo + 1) / dim)
+                counts[(mi, y, mo)] = n
         # Pass 2: spread each month's total evenly across its days (global
         # round-robin — per-member spacing alone clumps every member onto the
         # same lattice days). Times keep RNG variety; all draws precede the
@@ -128,12 +139,14 @@ async def main() -> int:
         seq: dict[tuple, int] = {}
         for (y, mo) in TARGET_MONTHS:
             dim = calendar.monthrange(y, mo)[1]
+            lo, hi = PARTIAL_MONTHS.get((y, mo), (1, dim))
+            span = hi - lo + 1
             cells = [(mi, k) for mi in range(len(members)) for k in range(counts[(mi, y, mo)])]
             for j, (mi, k) in enumerate(cells):
                 m = members[mi]
                 key = (mi, y, mo)
                 seq[key] = seq.get(key, 0) + 1
-                day = 1 + (j * dim) // max(len(cells), 1)
+                day = lo + (j * span) // max(len(cells), 1)
                 ordered = datetime(y, mo, day, rng.randint(9, 20), rng.randint(0, 59), tzinfo=timezone.utc)
                 store = stores[STORE_CODES[(mi + mo) % len(STORE_CODES)]]
                 ext = f"{SOURCE_TAG}-{mi + 1:02d}-{y}{mo:02d}-{seq[key]:02d}"
@@ -171,9 +184,9 @@ async def main() -> int:
         # DATA-1: every seed member gets phone + email contact rows so the
         # customer list, search and PII paths have full coverage. Deterministic
         # values; existing contacts are never touched.
-        have_contact = {r["customer_id"] for r in await conn.fetch(
-            "SELECT DISTINCT customer_id FROM customer_contacts WHERE customer_id = ANY($1)",
-            list(member_ids.values()))}
+        have_contact = {str(r["id"]) for r in await conn.fetch(
+            "SELECT cu.id FROM customers cu JOIN customer_contacts cc ON cc.customer_id = cu.id"
+            " WHERE cu.member_id = ANY($1)", members)}
         used_phones = {r["value_normalized"] for r in await conn.fetch(
             "SELECT value_normalized FROM customer_contacts WHERE kind='phone'")}
         contact_rows: list[tuple] = []
