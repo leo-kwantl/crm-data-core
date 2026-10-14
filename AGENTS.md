@@ -13,6 +13,7 @@ pytest services/api/tests/test_orders.py services/api/tests/test_customer_events
 - Never edit `../crm-cdp-app`, `../crm-cdp-ml`.
 - `scripts/bootstrap_db.py` is DEV/CI ONLY — NEVER run against a live DB (TRUNCATEs 11 tables + reseeds demo; live = migrate-only).
 - Multi-pi (all optional/external): `register crm-data` visible (agent-comms, only if installed), room `data-contracts` (only if daemon runs; ingest-required/dedup/resolution/snapshot-math/migration = BREAKING @both, `contracts.md` first; ml-argv-only → `dm @crm-ml`; 2-party → `dm`); `dm_admit` crm-app/crm-ml once; review = directed `dm @target+branch`; `read_room` on start; `codegraph query <sym>` (external CLI, only if installed). New source/field → update `contracts.md` first, then announce as `[BREAKING|ADDITIVE|FYI] <scope> branch+migration`.
+- Owner rule 2026-10-14: delegated / handed-off / in-room-requested tasks are PRE-APPROVED — build without asking, announce each delivery with branch+migration per protocol, never wait for a per-item GO.
 - See `pipelines/README.md`, `pipelines/contracts.md`, `openspec/changes/data-pipeline-init/`.
 
 ## Git history & commit convention (shared across crm-cdp-app / -data / -ml)
