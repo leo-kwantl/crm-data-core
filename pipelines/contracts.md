@@ -133,3 +133,15 @@ the registry); segments `--mode` + `--algorithm`
 untouched (example YAML still validates). App mirrors note: app carries
 verbatim 013/015 CREATEs for isolated test bootstrap — re-mirror 016
 on update; live dev DB needs 016 applied (through 015 already).
+
+## 022: demand-forecast snapshot tables (M3, [ADDITIVE] analytics)
+
+`022_forecast.sql`: `forecast_batches` (as_of/method/horizon_days/
+lookback_weeks/category_count/skipped_count/scope, grain UNIQUE for
+idempotent weekly cadence) + `forecast_rows` (one row per batch x
+category x Monday-week `period_start`: predicted_qty + 80% interval
+lower_qty/upper_qty, CHECK-ordered, UNIQUE against double-write).
+Method `trend_seasonal_naive`; thin categories counted in
+`skipped_count`, never silent. Shape mirrors
+`ml_engine/store_forecast.py` inserts. M4 simulator needs no migration
+(pure in-process engine, no DB).
