@@ -133,3 +133,18 @@ the registry); segments `--mode` + `--algorithm`
 untouched (example YAML still validates). App mirrors note: app carries
 verbatim 013/015 CREATEs for isolated test bootstrap — re-mirror 016
 on update; live dev DB needs 016 applied (through 015 already).
+
+## 020: cohort retention snapshots (D2, [ADDITIVE] analytics)
+
+`020_cohort_snapshots.sql` + `COHORT_SNAPSHOT_UPSERT_SQL` /
+`COHORT_TREND_SQL` / `retention_rate` in `pipelines/snapshot.py`.
+Grain (agreed with app): one row per (`granularity` x `cohort_period`
+x `period_offset` x scope) with `cohort_size` + `retained` +
+`retention_rate`. App serves `GET /analytics/cohort?granularity=
+week|month|year` + scope filter from this ONE table (retention line +
+heatmap). Math: cohort of a customer = `date_trunc(granularity,` first
+completed order); `retained(k)` = cohort members with ≥1 completed
+order in period (`cohort_period` + k·granularity); `retention_rate` =
+`retained`/`cohort_size` (NULL when empty; offset 0 is 1.0 by
+construction). Week periods start Monday. Writer re-run = no-op via
+the grain UNIQUE. No ML needed (cohort is a data-owned agg).

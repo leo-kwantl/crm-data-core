@@ -118,3 +118,89 @@ WHERE snapshot_date >= $1::date AND snapshot_date <= $2::date
   AND group_id IS NOT DISTINCT FROM $4::uuid
 ORDER BY snapshot_date
 """
+
+# --- Cohort retention snapshots (020, one table feeds line + heatmap) ---
+#
+# Cohort of a customer = date_trunc(granularity, first completed order).
+# retained(offset k) = cohort members with >= 1 completed order in the
+# period (cohort_period + k·granularity). retention_rate =
+# retained / cohort_size (NULL when cohort_size = 0). Offset 0 is 1.0 by
+# construction. Week periods start Monday (date_trunc('week')).
+# Params: $1 granularity ('week'|'month'|'year'), $2 max_offset (>= 0),
+# $3 brand_id scope (NULL = all), $4 group_id scope (NULL = all).
+# Re-run = no-op via the grain UNIQUE in 020_cohort_snapshots.sql.
+
+COHORT_GRANULARITIES = ("week", "month", "year")
+
+
+def retention_rate(cohort_size: int, retained: int) -> float | None:
+    """retained / cohort_size. None when the cohort is empty."""
+    if cohort_size <= 0:
+        return None
+    return retained / cohort_size
+
+
+COHORT_SNAPSHOT_UPSERT_SQL = """
+WITH scoped_orders AS (
+  SELECT o.customer_id, o.ordered_at
+  FROM orders o
+  JOIN stores s ON s.id = o.store_id
+  JOIN brands b ON b.id = s.brand_id
+  JOIN customers c ON c.id = o.customer_id
+  WHERE o.status = 'completed'
+    AND ($3::uuid IS NULL OR s.brand_id = $3::uuid)
+    AND ($4::uuid IS NULL OR c.group_id = $4::uuid)
+    AND ($4::uuid IS NULL OR b.group_id = $4::uuid)
+),
+cohort_of AS (
+  SELECT customer_id,
+         date_trunc($1::text, MIN(ordered_at))::date AS cohort
+  FROM scoped_orders
+  GROUP BY customer_id
+),
+cohort_size AS (
+  SELECT cohort, COUNT(*) AS n FROM cohort_of GROUP BY cohort
+),
+offsets AS (
+  SELECT generate_series(0, $2::int) AS k
+),
+periods AS (
+  SELECT c.cohort, o.k,
+    CASE $1::text
+      WHEN 'week' THEN (c.cohort + (o.k * 7 || ' days')::interval)::date
+      WHEN 'month' THEN (c.cohort + (o.k || ' months')::interval)::date
+      ELSE (c.cohort + (o.k || ' years')::interval)::date
+    END AS period_start
+  FROM (SELECT DISTINCT cohort FROM cohort_of) c
+  CROSS JOIN offsets o
+),
+retained AS (
+  SELECT p.cohort, p.k, COUNT(DISTINCT so.customer_id) AS n
+  FROM periods p
+  JOIN cohort_of co ON co.cohort = p.cohort
+  JOIN scoped_orders so ON so.customer_id = co.customer_id
+    AND date_trunc($1::text, so.ordered_at)::date = p.period_start
+  GROUP BY p.cohort, p.k
+)
+INSERT INTO cohort_snapshots
+  (granularity, cohort_period, period_offset, cohort_size, retained,
+   retention_rate, brand_id, group_id)
+SELECT $1::text, p.cohort, p.k, cs.n,
+       COALESCE(r.n, 0),
+       CASE WHEN cs.n = 0 THEN NULL
+            ELSE COALESCE(r.n, 0)::float / cs.n END,
+       $3::uuid, $4::uuid
+FROM periods p
+JOIN cohort_size cs ON cs.cohort = p.cohort
+LEFT JOIN retained r ON r.cohort = p.cohort AND r.k = p.k
+ON CONFLICT DO NOTHING
+"""
+
+COHORT_TREND_SQL = """
+SELECT cohort_period, period_offset, cohort_size, retained, retention_rate
+FROM cohort_snapshots
+WHERE granularity = $1::text
+  AND brand_id IS NOT DISTINCT FROM $2::uuid
+  AND group_id IS NOT DISTINCT FROM $3::uuid
+ORDER BY cohort_period, period_offset
+"""
