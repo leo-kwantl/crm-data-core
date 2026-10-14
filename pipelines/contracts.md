@@ -133,3 +133,12 @@ the registry); segments `--mode` + `--algorithm`
 untouched (example YAML still validates). App mirrors note: app carries
 verbatim 013/015 CREATEs for isolated test bootstrap — re-mirror 016
 on update; live dev DB needs 016 applied (through 015 already).
+
+## 021: SHAP cluster-explainer result tables (M2, [ADDITIVE] analytics)
+
+`021_explain.sql`: `explain_batches` (segment_run_id FK →
+`segment_runs` cascade + mode/k/seed/top_n/counts/scope) +
+`explain_rows` (top-N per batch+cluster by mean|SHAP|: rank/feature/
+mean_abs_shap/mean_shap/min_shap/max_shap, UNIQUE against
+double-write). PNGs stay MLflow-only; app serves latest-run summaries.
+Shape mirrors `ml_engine/store_explain.py` inserts.
