@@ -321,3 +321,45 @@ async def test_ld4_reingest_keeps_stable_surrogate_ids(
             assert int(n_cust) == 1 and int(n_ord) == 1
     finally:
         await pool.close()
+
+
+@pytest.mark.asyncio
+async def test_ld1_custom_data_merge_and_cascade(database_url: str) -> None:
+    """LD1: side rows merge key-by-key on re-write and die with the entity."""
+    import asyncpg
+
+    from pipelines import apply as ap
+
+    pool = await asyncpg.create_pool(database_url)
+    assert pool is not None
+    try:
+        async with pool.acquire() as conn:
+            cid = await conn.fetchval(
+                "INSERT INTO customers (member_id, full_name)"
+                " VALUES ('M-900020', 'Custom Carl')"
+                " ON CONFLICT (member_id) DO UPDATE"
+                " SET full_name = EXCLUDED.full_name RETURNING id")
+            await ap.upsert_custom_data(conn, "customers", str(cid),
+                                        {"nickname": "CC"})
+            await ap.upsert_custom_data(conn, "customers", str(cid),
+                                        {"tier": "gold", "nickname": "CJ"})
+            data = await conn.fetchval(
+                "SELECT data FROM customer_custom_data"
+                " WHERE customer_id = $1", cid)
+            import json
+            assert json.loads(data) == {"nickname": "CJ", "tier": "gold"}
+            await conn.execute(
+                "DELETE FROM customers WHERE id = $1", cid)
+            n = await conn.fetchval(
+                "SELECT COUNT(*) FROM customer_custom_data"
+                " WHERE customer_id = $1", cid)
+            assert int(n) == 0  # cascade
+    finally:
+        await pool.close()
+
+
+def test_ld1_unknown_entity_rejected():
+    from pipelines import apply as ap
+
+    with pytest.raises(ValueError):
+        ap.custom_data_upsert_sql("stores")
