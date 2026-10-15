@@ -323,3 +323,20 @@ UI rows). Runs die → matrix dies (CASCADE, same as 021 explain
 rows). Immutable (REVOKE UPDATE/DELETE). ml: write per-feature
 rows per cluster per run in either layout; serving reads one layout
 per run.
+
+## 030: surrogate-fit registry + explain method labels (LM1, [ADDITIVE] analytics, joint with ml)
+
+`030_surrogate_fits.sql` + `validate_surrogate_fit` in
+`pipelines/model_fits.py`. Per the ACKed LM1 method spec: one fit
+row per segment run (`seg_surrogate_fits`: segment_run_id UNIQUE FK
+CASCADE + `trained_at` + `accuracy` 0..1 + `feature_names` +
+`xgb_params`); accuracy lives on the fit row ONLY. `explain_batches`
+gains `fit_id` (NULL for mean-method rows, SET NULL if the fit row
+goes); batches + rows gain `method` (`segment_mean` (all history —
+the default, zero backfill rewrite) | `xgb_surrogate_v1` (gate
+passed) | `surrogate_unfitted` (gate failed, NO shap rows)).
+`validate_explain_method` is the writer-side gate: unfitted +
+shap_rows>0 raises; v1 requires a fit_id AND accuracy >= 0.90
+(passed explicitly, read back from the fit row). No tick writes
+under `xgb_surrogate_v1` until spec ACK — ACKED with this
+migration; ml may write.

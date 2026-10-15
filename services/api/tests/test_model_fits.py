@@ -176,3 +176,118 @@ async def test_lm1_lm2_db_roundtrip(database_url: str):
                 "DELETE FROM btyd_params WHERE as_of >= $1::date", day)
     finally:
         await pool.close()
+
+
+def test_surrogate_fit_ok_and_rejects():
+    from pipelines.model_fits import (
+        validate_explain_method,
+        validate_surrogate_fit,
+    )
+    out = validate_surrogate_fit(
+        {"segment_run_id": "run-1", "accuracy": 0.93,
+         "feature_names": ["recency_days", "frequency"],
+         "xgb_params": {"max_depth": 4}})
+    assert out["accuracy"] == 0.93
+    with pytest.raises(ValueError, match="0..1"):
+        validate_surrogate_fit({"segment_run_id": "r", "accuracy": 1.5,
+                                "feature_names": ["f"]})
+    with pytest.raises(ValueError, match="feature_names"):
+        validate_surrogate_fit({"segment_run_id": "r", "accuracy": 0.9,
+                                "feature_names": []})
+    assert validate_explain_method("xgb_surrogate_v1") == "xgb_surrogate_v1"
+    with pytest.raises(ValueError, match="unknown explain method"):
+        validate_explain_method("shap_legacy")
+
+
+@pytest.mark.asyncio
+async def test_lm1_fit_table_and_method_labels(database_url: str):
+    """Fit row stores the gate proof; batches/rows default to
+    segment_mean; surrogate rows link their fit."""
+    import json
+    import re
+    from pathlib import Path
+
+    import asyncpg
+
+    from pipelines.model_fits import (
+        SURROGATE_FIT_UPSERT_SQL,
+        validate_surrogate_fit,
+    )
+
+    pool = await asyncpg.create_pool(database_url)
+    assert pool is not None
+    try:
+        async with pool.acquire() as conn:
+            if await conn.fetchval(
+                    "SELECT to_regclass('public.seg_surrogate_fits')"
+                    ) is None:
+                up_re = re.compile(
+                    r"--\s*migrate:up(.*?)(?=--\s*migrate:down|\Z)",
+                    re.S | re.I)
+                mig_dir = (Path(__file__).resolve().parents[3]
+                           / "db" / "migrations")
+                for name in ("015_segments_pipelines.sql",
+                             "021_explain.sql",
+                             "030_surrogate_fits.sql"):
+                    m = up_re.search(
+                        (mig_dir / name).read_text(encoding="utf-8"))
+                    assert m is not None
+                    try:
+                        await conn.execute(m.group(1).strip())
+                    except Exception as exc:
+                        if "already exists" not in str(exc).lower():
+                            raise
+            from datetime import date
+            run = await conn.fetchval(
+                "INSERT INTO segment_runs (as_of, mode, k)"
+                " VALUES ($1::date, 'overall', 3) RETURNING id",
+                date(2026, 10, 15))
+            fit = validate_surrogate_fit(
+                {"segment_run_id": str(run), "accuracy": 0.93,
+                 "feature_names": ["recency_days"],
+                 "xgb_params": {"max_depth": 4}})
+            await conn.execute(
+                SURROGATE_FIT_UPSERT_SQL, run, fit["accuracy"],
+                json.dumps(fit["feature_names"]),
+                json.dumps(fit["xgb_params"]))
+            await conn.execute(
+                SURROGATE_FIT_UPSERT_SQL, run, fit["accuracy"], "[]",
+                "{}")  # refit same run = no-op
+            assert await conn.fetchval(
+                "SELECT COUNT(*) FROM seg_surrogate_fits"
+                " WHERE segment_run_id = $1", run) == 1
+            fit_id = await conn.fetchval(
+                "SELECT id FROM seg_surrogate_fits"
+                " WHERE segment_run_id = $1", run)
+            # Legacy-mean batch: defaults label it, no fit link.
+            mean_batch = await conn.fetchval(
+                "INSERT INTO explain_batches"
+                " (segment_run_id, mode, k, top_n)"
+                " VALUES ($1, 'overall', 3, 5) RETURNING id", run)
+            assert await conn.fetchval(
+                "SELECT method FROM explain_batches WHERE id = $1",
+                mean_batch) == "segment_mean"
+            # Surrogate batch: method + fit ref travel together.
+            surr_batch = await conn.fetchval(
+                "INSERT INTO explain_batches"
+                " (segment_run_id, mode, k, top_n, method, fit_id)"
+                " VALUES ($1, 'overall', 3, 5,"
+                " 'xgb_surrogate_v1', $2) RETURNING id", run, fit_id)
+            await conn.execute(
+                "INSERT INTO explain_rows"
+                " (batch_id, cluster, rank, feature, mean_abs_shap,"
+                " mean_shap, min_shap, max_shap, method)"
+                " VALUES ($1, 0, 1, 'recency_days', 0.5, -0.5, -0.6,"
+                " -0.4, 'xgb_surrogate_v1')", surr_batch)
+            n = await conn.fetchval(
+                "SELECT COUNT(*) FROM explain_rows"
+                " WHERE batch_id = $1 AND method = 'xgb_surrogate_v1'",
+                surr_batch)
+            assert int(n) == 1
+            await conn.execute(
+                "DELETE FROM segment_runs WHERE id = $1", run)
+            assert await conn.fetchval(
+                "SELECT COUNT(*) FROM seg_surrogate_fits"
+                " WHERE segment_run_id = $1", run) == 0
+    finally:
+        await pool.close()
