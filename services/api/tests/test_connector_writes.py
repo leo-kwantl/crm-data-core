@@ -161,6 +161,7 @@ async def test_sync_trigger_enqueue_and_kill_switch(client):
         f"/api/v1/connectors/{off.json()['id']}/sync",
         json={"entity": "orders"}, headers=ADMIN_H)
     assert s2.status_code == 422
+    assert s2.json()["detail"]["code"] == "connector_disabled"
 
 
 async def test_secret_rotation_never_round_trips(client, monkeypatch):

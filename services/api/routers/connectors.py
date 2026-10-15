@@ -71,7 +71,13 @@ async def _guard(call: Callable[[], Awaitable[Any]]) -> Any:
         raise HTTPException(status_code=409,
                             detail={"code": "duplicate_connector",
                                     "message": str(exc)})
-    except (ValueError, repo.ConnectorDisabledError) as exc:
+    except repo.ConnectorDisabledError as exc:
+        # Distinct code (not generic invalid_connector) so the UI can
+        # render kill-switch-specific copy (app request 2026-10-15).
+        raise HTTPException(status_code=422,
+                            detail={"code": "connector_disabled",
+                                    "message": str(exc)})
+    except ValueError as exc:
         raise HTTPException(status_code=422,
                             detail={"code": "invalid_connector",
                                     "message": str(exc)})
