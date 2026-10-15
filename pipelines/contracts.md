@@ -119,14 +119,21 @@ read answers 404 `no_snapshot` with `available_k`. A cadence that only
 ever fits k=6 therefore leaves the product's default surface dark
 right after a wipe while every job reports succeeded -- and the
 product exposes exactly ONE k (no picker; `segments/page.tsx:561-564`),
-so one fitted k is enough and a miss is answered with guidance built
+so one k is enough and a miss is answered with guidance built
 from `available_k`. Extending to a ladder (e.g. {5,6}) is a manifest
 edit if a second k ever gets a consumer, not a code change. Do NOT
 "serve the latest available k" instead -- that relabels k=6 clusters
-as the k the caller asked for. The runner default (`schedule.py
-_build_segments`) now mirrors serving (5) so an omitted param cannot
-diverge; ml's CLI default stays ml's call (never exercised by the
-cadence, which always passes --k).
+as the k the caller asked for.
+
+k is a CALLER PARAMETER with a configured value, never a model choice:
+no engine selects k (no elbow/silhouette anywhere in ml -- the fit
+computes `inertia` for whatever k it is handed, and `store_segments`
+records `k_requested`/`k_used`). The page copy's "fitted by the model
+(elbow/silhouette)" states intent (staff do not choose k), not
+mechanism; do not "resolve" that wording by adding auto-k selection,
+which would fight the pin. All four places name the same value: the
+015 seed, the runner default, ml's CLI default (`66fe0c7`), and the
+live `pipeline_manifests` rows.
 
 Runner: `pipelines/schedule.py` + `scripts/run_pipeline.py --pipeline
 <name> --ml-repo <path>` (cron entrypoint). Tick-time DB resolution:
