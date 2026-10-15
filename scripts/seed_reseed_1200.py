@@ -11,16 +11,29 @@ Distribution spec (owner-approved, bound 2026-10-15):
 - 1,200 customers, M-03 block (M-030001..M-031200; no collision with
   M-0001xx demo / M-020xxx dev-history).
 - Age Normal(38,12) clipped 18..80 -> date_of_birth; signup spread
-  24 months with linear growth trend + weekly seasonality.
+  36 months (3y ladder for /cohort) on a 3x compounding growth curve
+  + weekly seasonality.
+- Cohort realism (020 cohort = month of a member's FIRST completed
+  order): the first order lands within ~6 weeks of signup and the last
+  order is pinned at the drawn recency, so `cohort_snapshots` ladders
+  every month of the signup window instead of piling into the last
+  year. Needs >= 2 orders whenever recency > 45d after signup.
 - Order counts Pareto-lognormal mix: top ~20% of customers yield
-  ~80% of revenue (VIP lognormal(mu=3.0) vs base lognormal(mu=0.7)).
+  ~80% of revenue (VIP lognormal(mu=3.3) vs base lognormal(mu=0.5),
+  tuned; the measured share is printed at the end of every run).
+- Zero-order members are kept (base lognormal truncation, ~19%): real
+  no-purchase members, and by contract they never appear in a cohort,
+  so cohort members are always < the customer count.
 - Baskets: 1-3 lines from real catalog products (category-weighted:
   care/accessories frequent, frames rare), qty 1-3, total = lines sum
   (lognormal-ish around catalog tiers).
 - Recency: last-order mixture 45% 0-60d / 30% 60-180d / 25% 180-400d
-  so at-risk/lost segments populate; earlier orders spread
-  signup..last with Dec-peak/Feb-trough seasonal weights.
+  so at-risk/lost segments populate; the first order sits near signup
+  and later ones spread in between with Dec-peak/Feb-trough seasonal
+  weights.
 - contacts + consents for every customer; ~8% full opt-out.
+- Store visits span every brand (home store per customer, 85% repeat
+  visits) so brand-scoped RFM / cohort / segment pages have data.
 - Tiers assigned by spend decile (top 10% PLATINUM, next 25% GOLD).
 
 Run (after bootstrap wipe, before the pipeline):
@@ -28,11 +41,18 @@ Run (after bootstrap wipe, before the pipeline):
     python scripts/seed_reseed_1200.py --database-url ... --wipe-analytics
 
 --wipe-analytics executes the analytics TRUNCATE list (opt-in, default
-off): churn_snapshots, rfm_snapshots (+scores via CASCADE),
-rfm_segment_sizes, rfm_segment_movement, segment_runs (+ explain /
-matrix / surrogate rows via CASCADE), btyd_params, assoc_batches
-(+ rules/eval via CASCADE), landing_receipts. pipeline_manifests,
-schema_migrations, users, tiers, campaigns, brands are NEVER wiped.
+off) over every regenerable job output: D2 snapshots (churn/clv/kpi/
+cohort), RFM snapshots + segment size/movement, recs, segments (+
+explain / matrix / surrogate rows via CASCADE), assoc, forecast,
+training runs, btyd params, landing receipts, transient upload staging.
+Stale rows here are the classic "torn ladder" bug: a reseed that leaves
+cohort_snapshots or kpi_daily_snapshots in place mixes two datasets on
+the app's pages, so the list must stay complete whenever a migration
+adds a snapshot table (services/api/tests/test_seed_wipe.py enforces
+that: a hint-matching new table must join ANALYTICS_TABLES or the
+explicit NEVER_WIPE list). pipeline_manifests (watermark),
+schema_migrations, users, staff, tiers, campaigns, brands, groups,
+stores, products are NEVER wiped.
 """
 
 from __future__ import annotations
@@ -52,15 +72,20 @@ N_MEMBERS = 1200
 MEMBER_SEQ_BASE = 30000  # M-030001..M-031200
 SOURCE_TAG = "RS3"
 ANCHOR = date(2026, 10, 15)  # reseed as-of; deterministic dates
-SIGNUP_MONTHS = 24
+SIGNUP_MONTHS = 36  # 3-year cohort ladder ending ANCHOR
+SIGNUP_GROWTH = 3.0  # newest signup month ~3x the oldest
 
 SEASONALITY = {1: 0.9, 2: 0.7, 3: 1.0, 4: 1.0, 5: 1.1, 6: 1.0,
                7: 1.0, 8: 1.1, 9: 1.0, 10: 1.2, 11: 1.5, 12: 1.8}
-# Signup growth: month weight 1.0 -> 1.6 over the 24mo window.
+# Signup growth: compounding weight 1.0 -> 3.0 over the 36mo window.
 WEEKDAY_W = [0.9, 0.9, 1.0, 1.0, 1.1, 1.4, 1.3]  # Mon..Sun
 
-STORE_CODES = ["CWB-01", "TSM-02"]
-STORE_W = [0.6, 0.4]
+# Store choice spans EVERY store in the DB (brand-scoped pages need
+# orders per brand, not just the demo doors). Weight = brand share /
+# that brand's store count, so a brand does not dominate by door count.
+BRAND_SHARE = {"DEMO": 0.34, "SUNHING": 0.20, "KVLN": 0.16,
+               "VICEW": 0.14, "HARBOR": 0.10, "PEAKLENS": 0.06}
+HOME_STORE_P = 0.85  # else a cross-brand visit
 # (category, pick weight): cheap care/accessories frequent, frames rare.
 CAT_W = {"care": 3.0, "accessories": 3.0, "lenses": 2.0,
          "sunglasses": 1.2, "frames": 1.0}
@@ -75,10 +100,37 @@ GIVEN = ["Tai Man", "Mei Ling", "Kwok Wai", "Siu Ming", "Ka Yan",
 WESTERN = ["Sarah Chen", "David Lau", "Emily Ng", "Peter Ho",
            "Grace Yip", "Kevin So", "Anna Kwok", "Brian Tse"]
 
-ANALYTICS_TABLES = ["churn_snapshots", "rfm_snapshots",
-                    "rfm_segment_sizes", "rfm_segment_movement",
-                    "segment_runs", "btyd_params", "assoc_batches",
-                    "landing_receipts"]
+ANALYTICS_TABLES = [
+    # D2 snapshots (013/020) + the app's /cohort and KPI readers.
+    "churn_snapshots", "churn_customer_scores",
+    "clv_snapshots", "clv_customer_scores",
+    "kpi_daily_snapshots", "model_training_runs",
+    "cohort_snapshots",
+    # RFM (010/031) + segmentation/recs (011/015).
+    "rfm_snapshots", "rfm_customer_scores",
+    "rfm_segment_sizes", "rfm_segment_movement",
+    "rec_batches", "rec_items",
+    "segment_runs", "segment_assignments", "pipeline_runs",
+    # ML batch outputs (018/021/022/028/029/030/032/027).
+    "assoc_batches", "assoc_rules",
+    "explain_batches", "explain_rows",
+    "forecast_batches", "forecast_rows",
+    "cluster_feature_matrix", "cluster_feature_matrix_long",
+    "seg_surrogate_fits",
+    "btyd_params", "landing_receipts",
+    # Transient upload staging (dev reruns): jobs + their staged rows.
+    "upload_jobs", "staging_rows", "quarantine_rows",
+]
+
+# Deliberately NOT wiped although they are job output: pipeline
+# watermarks, connector config + sync state, report definitions, auth
+# sessions. Reference / dataset tables (brands, stores, products,
+# campaigns, customers, orders, contacts, consents, custom-data values)
+# are owned by bootstrap_db.py (TRUNCATE ... CASCADE).
+NEVER_WIPE = [
+    "pipeline_manifests", "schema_migrations", "connectors",
+    "connector_sync_runs", "report_definitions", "sessions",
+]
 
 
 def _draw_recency_days(rng: random.Random) -> int:
@@ -102,16 +154,18 @@ def _draw_order_date(rng: random.Random, lo: date, hi: date) -> date:
 
 
 def _draw_signup(rng: random.Random) -> date:
-    """24mo spread ending ANCHOR: linear growth + weekly seasonality."""
+    """36mo spread ending ANCHOR: 3x growth curve + weekly seasonality."""
+    span = SIGNUP_MONTHS * 30
     for _ in range(60):
-        back = rng.randint(0, SIGNUP_MONTHS * 30)
+        back = rng.randint(0, span)
         d = ANCHOR - timedelta(days=back)
         if d > ANCHOR:
             continue
-        growth = 1.0 + 0.6 * (1 - back / (SIGNUP_MONTHS * 30))
-        if rng.random() < growth * WEEKDAY_W[d.weekday()] / (1.6 * 1.4):
+        growth = SIGNUP_GROWTH ** (1 - back / span)
+        accept = growth * WEEKDAY_W[d.weekday()] / (SIGNUP_GROWTH * 1.4)
+        if rng.random() < accept:
             return d
-    return ANCHOR - timedelta(days=rng.randint(0, SIGNUP_MONTHS * 30))
+    return ANCHOR - timedelta(days=rng.randint(0, span))
 
 
 async def main() -> int:
@@ -139,13 +193,18 @@ async def main() -> int:
                     continue
                 await conn.execute(f"TRUNCATE {t} CASCADE")
                 print(f"wipe: TRUNCATE {t} CASCADE")
-        stores = {r["code"]: r["id"] for r in await conn.fetch(
-            "SELECT id, code FROM stores WHERE code = ANY($1)",
-            STORE_CODES)}
-        missing = [c for c in STORE_CODES if c not in stores]
-        if missing:
-            print(f"missing stores: {missing}", file=sys.stderr)
+        store_rows = await conn.fetch(
+            "SELECT s.id, s.code, b.code AS brand FROM stores s"
+            " JOIN brands b ON b.id = s.brand_id ORDER BY s.code")
+        if not store_rows:
+            print("no stores: run bootstrap first", file=sys.stderr)
             return 2
+        per_brand: dict[str, int] = {}
+        for r in store_rows:
+            per_brand[r["brand"]] = per_brand.get(r["brand"], 0) + 1
+        store_ids = [r["id"] for r in store_rows]
+        store_w = [BRAND_SHARE.get(r["brand"], 0.05) / per_brand[r["brand"]]
+                   for r in store_rows]
         prods = await conn.fetch(
             "SELECT id, sku, category, price_cents FROM products")
         if not prods:
@@ -187,6 +246,11 @@ async def main() -> int:
             n = max(int(rng.lognormvariate(3.3, 0.6)) if vip
                     else int(rng.lognormvariate(0.5, 0.8)), 0)
             n = min(n, 60)
+            # Cohort ladder: the first order must land near signup, so a
+            # buyer needs a 2nd order to carry the drawn recency. Only
+            # just-signed-up (<=45d) members may end at a single order.
+            if n > 0 and (last_order - signup).days > 45:
+                n = max(n, 2)
             age = min(max(int(rng.gauss(38, 12)), 18), 80)
             dob = ANCHOR - timedelta(days=int(age * 365.25))
             if rng.random() < 0.12:
@@ -209,7 +273,8 @@ async def main() -> int:
                 phone = f"+852{nph:08d}"
             used_phones.add(phone)
             order_plan.append((m, signup, last_order, n,
-                               phone, seqn, name))
+                               phone, seqn, name,
+                               rng.choices(store_ids, weights=store_w)[0]))
         if cust_rows:
             await conn.executemany(
                 "INSERT INTO customers (member_id, full_name, created_at,"
@@ -225,7 +290,8 @@ async def main() -> int:
             " WHERE external_order_id LIKE $1", f"{SOURCE_TAG}-%")}
 
         payback, item_rows, spend = [], [], {}
-        for (m, signup, last_order, n, phone, seqn, name) in order_plan:
+        for (m, signup, last_order, n, phone, seqn, name,
+             home) in order_plan:
             cid = idmap[m]
             local = name.lower().replace(" ", ".")
             contact_rows.append((cid, "phone", phone,
@@ -249,7 +315,13 @@ async def main() -> int:
                 consent_rows.append((cid, ch, st, "reseed"))
             total_spend = 0
             for k in range(n):
-                if k == n - 1:
+                if k == 0 and n > 1:
+                    # First order soon after signup: sets the cohort
+                    # month (020) to ~signup month, spreading cohorts
+                    # across the whole signup window.
+                    od = min(signup + timedelta(days=rng.randint(0, 45)),
+                             last_order)
+                elif k == n - 1:
                     # Pin the final order at the window end so actual
                     # recency equals the drawn recency (otherwise sparse
                     # orders drift older than their band).
@@ -260,8 +332,8 @@ async def main() -> int:
                                    rng.randint(9, 20),
                                    rng.randint(0, 59),
                                    tzinfo=timezone.utc)
-                store = stores[STORE_CODES[0] if rng.random()
-                               < STORE_W[0] else STORE_CODES[1]]
+                store = (home if rng.random() < HOME_STORE_P
+                         else rng.choices(store_ids, weights=store_w)[0])
                 ext = f"{SOURCE_TAG}-{seqn}-{k + 1:03d}"
                 if ext in have_ext:
                     continue
