@@ -238,10 +238,12 @@ construction). Week periods start Monday. Writer re-run = no-op via
 the grain UNIQUE. No ML needed (cohort is a data-owned agg). Weekly
 cadence rides the scheduler (`cohort_snapshot` engine, same job family
 as the forecast snapshot). Scheduler also carries argv builders for
-`assoc_batch` / `explain_batch` / `forecast_snapshot` (ml CLI contracts
-verbatim); `explain_batch` manifests store `segment_run_id: latest`
-(resolved at dispatch to the newest segment run for `segment_mode` +/
-`segment_k` + scope — manifests never hold a stale fixed id).
+`assoc_batch` / `explain_batch` / `forecast_snapshot` / `matrix_batch`
+(ml CLI contracts verbatim); `explain_batch` and `matrix_batch`
+manifests store `segment_run_id` (concrete UUID, `latest`, a missing
+key, or the all-zero UUID — every form resolved at dispatch to the
+newest segment run for `segment_mode` +/- `segment_k` + scope, so
+manifests never hold a stale fixed id).
 
 ## 021: SHAP cluster-explainer result tables (M2, [ADDITIVE] analytics)
 
@@ -345,6 +347,34 @@ columns by name (`cluster_mean`, `cluster_median`,
 Runs die → long rows die (CASCADE). Immutable
 (REVOKE UPDATE/DELETE). ml: `long` layout no longer raises — write
 one row per stat per feature per cluster.
+
+### `matrix_batch` engine (runner, [ADDITIVE], joint with ml)
+
+`pipelines/schedule.py` registers engine `matrix_batch` alongside
+`explain_batch` (`ENGINE_BUILDERS`); both dispatch through the shared
+`_resolve_segment_run_id`, so a manifest's `segment_run_id`
+(concrete / `latest` / missing / all-zero) becomes the newest
+`segment_runs` row for (`segment_mode`, optional `segment_k`, scope)
+at dispatch. No matching run = job `failed` with an actionable
+ManifestError and downstream jobs `skipped`.
+
+CLI (ml, `ml_jobs/run_matrix_batch.py`): `python
+ml_jobs/run_matrix_batch.py DB_URL --segment-run-id UUID`. Argparse
+declares nothing else — the runner passes no `--as-of`, no
+`--brand-id`/`--group-id`, and (unlike `explain_batch`) no
+`--created-by`; a flag the CLI does not declare is an exit-2 on every
+tick. One invocation writes BOTH layouts (029 wide + 032 long).
+Weekly placement: immediately after the segments run it reads,
+`depends_on: [segments_overall]` (mirrors
+`ml_jobs/pipelines.example.yaml`). Manifest rows stay edited through
+the app config API, never migrations (015 rule), so the live weekly
+row gains this job there; manual invocation needs no manifest change.
+
+Guard (honest refusal, not a silent empty table): the job rejects
+non-centroid backends (`dbscan`/`hdbscan`) with an unprocessable
+error, same as the explain path — if `segments_overall` were ever
+configured with dbscan the matrix stays dark by design and the tick
+records the refusal on its `pipeline_runs` row.
 
 ## 030: surrogate-fit registry + explain method labels (LM1, [ADDITIVE] analytics, joint with ml)
 

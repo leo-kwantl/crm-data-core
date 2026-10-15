@@ -243,7 +243,7 @@ def test_data_engines_registry():
     assert {"upload_apply", "kpi_daily", "cohort_snapshot"} <= set(
         sched.DATA_ENGINES)
     for e in ("rfm_snapshot", "forecast_snapshot", "assoc_batch",
-              "explain_batch"):
+              "explain_batch", "matrix_batch"):
         assert e in sched.ENGINE_BUILDERS
 
 
@@ -271,6 +271,26 @@ def test_build_forecast_assoc_explain_argv():
 def test_build_explain_requires_run_id():
     with pytest.raises(sched.ManifestError, match="segment_run_id"):
         sched.ENGINE_BUILDERS["explain_batch"]({}, _ctx())
+
+
+def test_build_matrix_argv_is_run_id_only():
+    # ml CLI (run_matrix_batch.py) declares DB_URL + --segment-run-id
+    # and nothing else; any extra flag = exit 2 on every tick.
+    scoped = _ctx(brand_id="11111111-1111-1111-1111-111111111111",
+                  group_id="22222222-2222-2222-2222-222222222222")
+    m = sched.ENGINE_BUILDERS["matrix_batch"](
+        {"segment_run_id": "abc"}, scoped)
+    assert m[1:4] == ["-m", "ml_jobs.run_matrix_batch",
+                      "postgresql://fake/db"]
+    assert "--segment-run-id" in m and "abc" in m
+    for flag in ("--brand-id", "--group-id", "--created-by",
+                 "--as-of"):
+        assert flag not in m
+
+
+def test_build_matrix_requires_run_id():
+    with pytest.raises(sched.ManifestError, match="segment_run_id"):
+        sched.ENGINE_BUILDERS["matrix_batch"]({}, _ctx())
 
 
 @pytest.mark.asyncio
@@ -325,6 +345,18 @@ async def test_resolve_explain_run_id(database_url: str):
                     conn, {"segment_run_id": "latest",
                            "segment_mode": "purchase",
                            "segment_k": 5}, scoped)
+            # matrix_batch shares the resolver; engine name only labels
+            # the failure message.
+            assert await sched._resolve_segment_run_id(
+                conn, {"segment_run_id": "latest",
+                       "segment_mode": "purchase",
+                       "segment_k": 5}, ctx, "matrix_batch") == str(new)
+            with pytest.raises(sched.ManifestError,
+                               match="matrix_batch: no segment_runs"):
+                await sched._resolve_segment_run_id(
+                    conn, {"segment_run_id": "latest",
+                           "segment_mode": "purchase",
+                           "segment_k": 5}, scoped, "matrix_batch")
             assert old != new
 
 
