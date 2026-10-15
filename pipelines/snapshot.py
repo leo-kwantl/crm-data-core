@@ -250,3 +250,119 @@ WHERE granularity = $1::text
   AND brand_id IS NOT DISTINCT FROM $2::uuid
   AND group_id IS NOT DISTINCT FROM $3::uuid
 """
+
+
+# --- LD8 time-aware RFM movement (joint contract, ml executes verbatim).
+RFM_WINDOWS = ("current", "mom", "yoy", "lifetime")
+MOVEMENT_PAIRS = ("current_x_mom", "current_x_yoy")
+# Customers present in only one window of the pair. Uppercase by
+# design: real segments are lowercase, so these never collide.
+ENTERED = "ENTERED"
+EXITED = "EXITED"
+
+
+def validate_segment_size(spec: dict) -> dict:
+    """Validate an rfm_segment_sizes row. Returns a cleaned copy."""
+    if not isinstance(spec, dict):
+        raise ValueError("segment size must be a mapping")
+    window = spec.get("window_key")
+    if window not in RFM_WINDOWS:
+        raise ValueError(
+            f"window_key must be one of {RFM_WINDOWS}, got {window!r}")
+    segment = spec.get("segment")
+    if (not isinstance(segment, str) or not segment.strip()
+            or len(segment) > 64):
+        raise ValueError(
+            f"segment must be 1..64 chars, got {segment!r}")
+    n = spec.get("n")
+    if isinstance(n, bool) or not isinstance(n, int) or n < 0:
+        raise ValueError(f"n must be an int >= 0, got {n!r}")
+    medians = {}
+    for key in ("median_r", "median_f", "median_m"):
+        value = spec.get(key)
+        if (isinstance(value, bool)
+                or not isinstance(value, (int, float))):
+            raise ValueError(f"{key} must be numeric, got {value!r}")
+        medians[key] = float(value)
+    return {"window_key": window, "segment": segment.strip(), "n": n,
+            **medians}
+
+
+def validate_movement_row(spec: dict) -> dict:
+    """Validate an rfm_segment_movement row. Returns a cleaned copy.
+
+    Flow rows (real segment -> real segment) carry pct_of_from in
+    0..1 over customers present in BOTH windows. ENTERED/EXITED rows
+    must leave pct_of_from NULL: they sit outside the flow pct
+    denominator by construction.
+    """
+    if not isinstance(spec, dict):
+        raise ValueError("movement row must be a mapping")
+    pair = spec.get("pair")
+    if pair not in MOVEMENT_PAIRS:
+        raise ValueError(
+            f"pair must be one of {MOVEMENT_PAIRS}, got {pair!r}")
+    flow = True
+    for key in ("from_segment", "to_segment"):
+        value = spec.get(key)
+        if (not isinstance(value, str) or not value.strip()
+                or len(value) > 64):
+            raise ValueError(
+                f"{key} must be 1..64 chars, got {value!r}")
+    from_seg = spec["from_segment"].strip()
+    to_seg = spec["to_segment"].strip()
+    if ENTERED in (from_seg, to_seg) or EXITED in (from_seg, to_seg):
+        flow = False
+        if from_seg == EXITED or to_seg == ENTERED:
+            raise ValueError(
+                "sentinel direction: ENTERED only as from_segment, "
+                f"EXITED only as to_segment (got {from_seg!r} -> "
+                f"{to_seg!r})")
+        if from_seg == ENTERED and to_seg == EXITED:
+            raise ValueError("ENTERED -> EXITED is not a movement")
+    n = spec.get("n")
+    if isinstance(n, bool) or not isinstance(n, int) or n < 0:
+        raise ValueError(f"n must be an int >= 0, got {n!r}")
+    pct = spec.get("pct_of_from")
+    if flow:
+        if (isinstance(pct, bool) or not isinstance(pct, (int, float))
+                or not 0 <= pct <= 1):
+            raise ValueError(
+                "flow rows need pct_of_from in 0..1 over both-window "
+                f"customers, got {pct!r}")
+        pct = float(pct)
+    elif pct is not None:
+        raise ValueError(
+            "ENTERED/EXITED rows must leave pct_of_from NULL "
+            "(outside the flow pct denominator)")
+    return {"pair": pair, "from_segment": from_seg,
+            "to_segment": to_seg, "n": n, "pct_of_from": pct}
+
+
+SEGMENT_SIZE_UPSERT_SQL = """
+INSERT INTO rfm_segment_sizes
+  (as_of, window_key, segment, n, median_r, median_f, median_m)
+VALUES ($1::date, $2, $3, $4, $5, $6, $7)
+ON CONFLICT (as_of, window_key, segment) DO NOTHING
+"""
+
+MOVEMENT_UPSERT_SQL = """
+INSERT INTO rfm_segment_movement
+  (as_of, pair, from_segment, to_segment, n, pct_of_from)
+VALUES ($1::date, $2, $3, $4, $5, $6)
+ON CONFLICT (as_of, pair, from_segment, to_segment) DO NOTHING
+"""
+
+SIZES_FOR_WINDOW_SQL = """
+SELECT segment, n, median_r, median_f, median_m
+FROM rfm_segment_sizes
+WHERE as_of = $1::date AND window_key = $2
+ORDER BY segment
+"""
+
+MOVEMENT_FOR_PAIR_SQL = """
+SELECT from_segment, to_segment, n, pct_of_from
+FROM rfm_segment_movement
+WHERE as_of = $1::date AND pair = $2
+ORDER BY from_segment, to_segment
+"""
