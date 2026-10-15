@@ -28,7 +28,7 @@ import os
 import sys
 import uuid
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
@@ -85,6 +85,79 @@ SELECT id, source FROM upload_jobs WHERE status = 'validated'
   AND group_id IS NOT DISTINCT FROM $2::uuid
 ORDER BY created_at
 """
+
+
+# --- Date-windowing vocabulary (LD9, additive-only) ---
+#
+# Named windows for scheduler job params, stolen vocabulary from
+# legacy's get_processed_date_filter (rolling/past/current) with the
+# end date resolved through LD5 as-of modes (latest/current). NOT
+# stolen: legacy's eval(relativedelta) implementation.
+#
+#   rolling(n, unit): last n units ending at end (guard: <30d rejected).
+#   past(n, unit):    n complete units before the unit containing end.
+#   current(unit):    start of end's unit through end (to-date).
+# Units: days | weeks (Mon-Sun) | months (calendar).
+WINDOW_MODES = ("rolling", "past", "current")
+WINDOW_UNITS = ("days", "weeks", "months")
+ROLLING_MIN_DAYS = 30
+
+
+def _add_months(d: date, n: int) -> date:
+    m = d.month - 1 + n
+    year, m = d.year + m // 12, m % 12 + 1
+    import calendar
+    last = calendar.monthrange(year, m)[1]
+    return date(year, m, min(d.day, last))
+
+
+def _month_start(d: date) -> date:
+    return date(d.year, d.month, 1)
+
+
+def resolve_window(mode: str, n: int | None, unit: str,
+                   end: date) -> tuple[date, date]:
+    """Resolve (date_from, date_to) for a named scheduler window.
+
+    Raises ValueError on unknown mode/unit, bad n, or the rolling
+    guard (rolling windows under 30 days are rejected: too noisy to
+    schedule against).
+    """
+    if mode not in WINDOW_MODES:
+        raise ValueError(f"unknown window mode: {mode!r} "
+                         f"(expected one of {WINDOW_MODES})")
+    if unit not in WINDOW_UNITS:
+        raise ValueError(f"unknown window unit: {unit!r} "
+                         f"(expected one of {WINDOW_UNITS})")
+    if mode in ("rolling", "past"):
+        if not isinstance(n, int) or n < 1:
+            raise ValueError(f"{mode} window needs n >= 1, got {n!r}")
+    if mode == "rolling":
+        days = {"days": 1, "weeks": 7, "months": 30}[unit] * n
+        if days < ROLLING_MIN_DAYS:
+            raise ValueError(
+                f"rolling window {n} {unit} (~{days}d) below minimum "
+                f"{ROLLING_MIN_DAYS}d")
+        if unit == "days":
+            return end - timedelta(days=n - 1), end
+        if unit == "weeks":
+            return end - timedelta(weeks=n) + timedelta(days=1), end
+        return _add_months(end, -(n - 1)).replace(day=1), end
+    if mode == "past":
+        if unit == "days":
+            return end - timedelta(days=n), end - timedelta(days=1)
+        if unit == "weeks":
+            monday = end - timedelta(days=end.weekday())
+            return (monday - timedelta(weeks=n),
+                    monday - timedelta(days=1))
+        first = _month_start(end)
+        return _add_months(first, -n), first - timedelta(days=1)
+    # current: start of end's unit through end
+    if unit == "days":
+        return end, end
+    if unit == "weeks":
+        return end - timedelta(days=end.weekday()), end
+    return _month_start(end), end
 
 
 class ManifestError(ValueError):
