@@ -11,7 +11,12 @@ from datetime import date
 
 import pytest
 
-from pipelines.model_fits import validate_btyd_params, validate_matrix_row
+from pipelines.model_fits import (
+    LONG_MATRIX_STATS,
+    validate_btyd_params,
+    validate_long_row,
+    validate_matrix_row,
+)
 
 pytestmark = pytest.mark.asyncio
 
@@ -76,6 +81,25 @@ def test_matrix_row_ok_and_rejects():
         validate_matrix_row({**base, "diff": "lower"})
 
 
+def test_long_row_ok_and_rejects():
+    base = {"segment_run_id": "run-1", "cluster": 1,
+            "feature": "orders_90d", "stat": "diff",
+            "value": 3.25}
+    out = validate_long_row(dict(base))
+    assert out["stat"] == "diff" and out["value"] == 3.25
+    assert validate_long_row(
+        {**base, "value": None})["value"] is None
+    with pytest.raises(ValueError, match="stat must be"):
+        validate_long_row({**base, "stat": "mean"})
+    with pytest.raises(ValueError, match="stat must be"):
+        validate_long_row({**base, "stat": "wide"})
+    with pytest.raises(ValueError, match="cluster must be"):
+        validate_long_row({**base, "cluster": True})
+    assert set(LONG_MATRIX_STATS) == {
+        "cluster_mean", "cluster_median", "population_mean",
+        "population_median", "diff", "pct_diff"}
+
+
 async def test_lm1_lm2_db_roundtrip(database_url: str):
     """Fit upsert idempotent per grain; latest read skips failed fits;
     matrix rows cascade with their segment run; run read serves layout."""
@@ -88,6 +112,8 @@ async def test_lm1_lm2_db_roundtrip(database_url: str):
     from pipelines.model_fits import (
         BTYD_UPSERT_SQL,
         LATEST_BTYD_PARAMS_SQL,
+        LONG_MATRIX_FOR_RUN_SQL,
+        LONG_MATRIX_UPSERT_SQL,
         MATRIX_FOR_RUN_SQL,
         MATRIX_UPSERT_SQL,
     )
@@ -105,7 +131,8 @@ async def test_lm1_lm2_db_roundtrip(database_url: str):
                            / "db" / "migrations")
                 for name in ("015_segments_pipelines.sql",
                              "028_btyd_params.sql",
-                             "029_cluster_matrix.sql"):
+                             "029_cluster_matrix.sql",
+                             "032_matrix_long.sql"):
                     m = up_re.search(
                         (mig_dir / name).read_text(encoding="utf-8"))
                     assert m is not None
@@ -167,10 +194,27 @@ async def test_lm1_lm2_db_roundtrip(database_url: str):
             assert len(got) == 1 and got[0]["feature"] == "recency_days"
             assert await conn.fetch(
                 MATRIX_FOR_RUN_SQL, run, "long") == []
+            # LM2 long: one row per (cluster x feature x stat).
+            long = validate_long_row({
+                "segment_run_id": str(run), "cluster": 0,
+                "feature": "recency_days", "stat": "diff",
+                "value": -17.5})
+            for _ in range(2):
+                await conn.execute(
+                    LONG_MATRIX_UPSERT_SQL, run, long["cluster"],
+                    long["feature"], long["stat"], long["value"])
+            assert await conn.fetchval(
+                "SELECT COUNT(*) FROM cluster_feature_matrix_long"
+                " WHERE segment_run_id = $1", run) == 1
+            lgot = await conn.fetch(LONG_MATRIX_FOR_RUN_SQL, run)
+            assert len(lgot) == 1 and lgot[0]["stat"] == "diff"
             await conn.execute(
                 "DELETE FROM segment_runs WHERE id = $1", run)
             assert await conn.fetchval(
                 "SELECT COUNT(*) FROM cluster_feature_matrix"
+                " WHERE segment_run_id = $1", run) == 0
+            assert await conn.fetchval(
+                "SELECT COUNT(*) FROM cluster_feature_matrix_long"
                 " WHERE segment_run_id = $1", run) == 0
             await conn.execute(
                 "DELETE FROM btyd_params WHERE as_of >= $1::date", day)

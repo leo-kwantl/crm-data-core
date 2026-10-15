@@ -324,6 +324,22 @@ rows). Immutable (REVOKE UPDATE/DELETE). ml: write per-feature
 rows per cluster per run in either layout; serving reads one layout
 per run.
 
+## 032: long-layout matrix (LM2, [ADDITIVE] analytics, joint with ml)
+
+`032_matrix_long.sql` + `validate_long_row` /
+`LONG_MATRIX_UPSERT_SQL` / `LONG_MATRIX_FOR_RUN_SQL` in
+`pipelines/model_fits.py`. Answers ml's grain question: wide's PK
+(run, cluster, feature, layout) cannot hold melted stat rows, and
+stat-name-in-feature would pollute the parsed feature namespace —
+so long gets its own table, no PK surgery on 029. One row per
+(run x cluster x feature x stat); stat is one of the six wide value
+columns by name (`cluster_mean`, `cluster_median`,
+`population_mean`, `population_median`, `diff`, `pct_diff`);
+`value` NULL-able (pct_diff NULL on zero population, same rule).
+Runs die → long rows die (CASCADE). Immutable
+(REVOKE UPDATE/DELETE). ml: `long` layout no longer raises — write
+one row per stat per feature per cluster.
+
 ## 030: surrogate-fit registry + explain method labels (LM1, [ADDITIVE] analytics, joint with ml)
 
 `030_surrogate_fits.sql` + `validate_surrogate_fit` in
