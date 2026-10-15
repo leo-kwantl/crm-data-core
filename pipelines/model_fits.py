@@ -44,6 +44,13 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 ON CONFLICT (segment_run_id, cluster, feature, layout) DO NOTHING
 """
 
+SURROGATE_FIT_UPSERT_SQL = """
+INSERT INTO seg_surrogate_fits
+  (segment_run_id, accuracy, feature_names, xgb_params)
+VALUES ($1, $2, $3::jsonb, $4::jsonb)
+ON CONFLICT (segment_run_id) DO NOTHING
+"""
+
 MATRIX_FOR_RUN_SQL = """
 SELECT cluster, feature, cluster_mean, cluster_median,
        population_mean, population_median, diff, pct_diff, layout
@@ -141,3 +148,43 @@ def validate_matrix_row(spec: dict[str, Any]) -> dict[str, Any]:
                            else _as_number(spec.get("pct_diff"),
                                            "pct_diff")),
             "layout": layout}
+
+
+# LM1 surrogate-fit discipline: accuracy is the fidelity gate
+# (>= 0.90 or the run explains nothing). method labels travel on the
+# explain rows; the fit row carries the proof.
+EXPLAIN_METHODS = ("segment_mean", "xgb_surrogate_v1",
+                   "surrogate_unfitted")
+
+
+def validate_surrogate_fit(spec: dict[str, Any]) -> dict[str, Any]:
+    """Validate an LM1 surrogate-fit row. Returns a cleaned copy."""
+    if not isinstance(spec, dict):
+        raise ValueError("surrogate fit must be a mapping")
+    if not spec.get("segment_run_id"):
+        raise ValueError("segment_run_id is required")
+    acc = spec.get("accuracy")
+    if (isinstance(acc, bool) or not isinstance(acc, (int, float))
+            or not 0 <= acc <= 1):
+        raise ValueError(
+            f"accuracy must be 0..1, got {acc!r}")
+    names = spec.get("feature_names", [])
+    if (not isinstance(names, list) or not names
+            or not all(isinstance(f, str) and f.strip() for f in names)):
+        raise ValueError("feature_names must be a non-empty string list")
+    params = spec.get("xgb_params", {})
+    if not isinstance(params, dict):
+        raise ValueError("xgb_params must be a mapping")
+    return {"segment_run_id": spec["segment_run_id"],
+            "accuracy": float(acc),
+            "feature_names": [f.strip() for f in names],
+            "xgb_params": dict(params)}
+
+
+def validate_explain_method(method: str) -> str:
+    """Admit only known explain-method labels (writer-side gate)."""
+    if method not in EXPLAIN_METHODS:
+        raise ValueError(
+            f"unknown explain method {method!r} "
+            f"(expected one of {EXPLAIN_METHODS})")
+    return method
