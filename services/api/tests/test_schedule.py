@@ -381,3 +381,37 @@ def test_window_rejects_unknown():
     with pytest.raises(ValueError):
         sched.resolve_window("rolling", 30, "fortnights",
                              date(2026, 10, 15))
+
+
+@pytest.mark.asyncio
+async def test_runner_records_sync_lineage(database_url: str, monkeypatch):
+    """LD3: pipeline_runs.sync_run_id links a tick to its feeding sync;
+    re-runs without the link preserve it (COALESCE, never nulled)."""
+    monkeypatch.setitem(sched.ENGINE_BUILDERS, "fake_ok", _fake_ok)
+    jobs = {"j1": {"engine": "fake_ok", "depends_on": [], "params": {}}}
+    async with _pool(database_url) as pool:
+        async with pool.acquire() as conn:
+            cid = await conn.fetchval(
+                "INSERT INTO connectors (source_type, name)"
+                " VALUES ('csv', 'ld3-probe') RETURNING id")
+            sid = await conn.fetchval(
+                "INSERT INTO connector_sync_runs"
+                " (connector_id, entity, status)"
+                " VALUES ($1, 'orders', 'succeeded') RETURNING id", cid)
+            ctx = _ctx(pipeline="test_pipe_ld3", as_of=date(2026, 10, 3),
+                       sync_run_id=str(sid))
+            out = await sched.run_pipeline(conn, "test_pipe_ld3", jobs, ctx)
+            assert out["outcomes"]["j1"]["status"] == "succeeded"
+            got = await conn.fetchval(
+                "SELECT sync_run_id FROM pipeline_runs"
+                " WHERE pipeline = 'test_pipe_ld3' AND job = 'j1'")
+            assert str(got) == str(sid)
+            # force re-run WITHOUT the link: existing link preserved
+            ctx2 = _ctx(pipeline="test_pipe_ld3", as_of=date(2026, 10, 3))
+            out2 = await sched.run_pipeline(conn, "test_pipe_ld3", jobs,
+                                            ctx2, force=True)
+            assert out2["outcomes"]["j1"]["status"] == "succeeded"
+            got2 = await conn.fetchval(
+                "SELECT sync_run_id FROM pipeline_runs"
+                " WHERE pipeline = 'test_pipe_ld3' AND job = 'j1'")
+            assert str(got2) == str(sid)

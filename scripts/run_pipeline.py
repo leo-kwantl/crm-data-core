@@ -92,7 +92,7 @@ async def _connect_resolved(cli_url: str | None):
 async def run(pipeline: str, as_of: date, ml_repo: Path | None,
               brand_id, group_id, created_by: str | None,
               force: bool, manifest_file: Path | None,
-              db_url: str | None) -> dict:
+              db_url: str | None, sync_run_id: str | None = None) -> dict:
     conn, live_url = await _connect_resolved(db_url)
     try:
         if manifest_file is not None:
@@ -112,7 +112,7 @@ async def run(pipeline: str, as_of: date, ml_repo: Path | None,
         ctx = sched.JobCtx(pipeline=pipeline, as_of=as_of,
                            brand_id=brand_id, group_id=group_id,
                            created_by=created_by, ml_repo=ml_repo,
-                           db_url=live_url)
+                           db_url=live_url, sync_run_id=sync_run_id)
         return await sched.run_pipeline(conn, pipeline, jobs, ctx,
                                         force=force)
     finally:
@@ -135,6 +135,8 @@ def main() -> None:
     ap.add_argument("--db-url", default=None,
                     help="DATABASE_URL override (default: $DATABASE_URL,"
                     " else live pgembed pidfile at tick time)")
+    ap.add_argument("--sync-run-id", default=None,
+                    help="LD3: feeding connector_sync_runs id (lineage)")
     args = ap.parse_args()
     as_of = (date.fromisoformat(args.as_of) if args.as_of
              else date.today())
@@ -143,7 +145,8 @@ def main() -> None:
                               _uuid_or_none(args.brand_id),
                               _uuid_or_none(args.group_id),
                               args.created_by, args.force,
-                              args.manifest_file, args.db_url))
+                              args.manifest_file, args.db_url,
+                              args.sync_run_id))
     except (ValueError, sched.ManifestError) as exc:
         print(f"failed: {exc}")
         raise SystemExit(2)
