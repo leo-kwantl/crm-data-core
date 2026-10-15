@@ -1,9 +1,9 @@
 """LM1/LM2 writer-discipline tests (data owns DDL, ml owns engines).
 
 Pure: BTYD param keys/positivity, activity/horizon/model enums,
-fit-error-without-params, eval metric rows. DB: fit upsert is
-idempotent per grain, latest-fit read skips failed fits, eval rows
-die with their batch (CASCADE).
+fit-error-without-params, matrix row shape. DB: fit upsert is
+idempotent per grain, latest-fit read skips failed fits, matrix rows
+die with their segment run (CASCADE), run read serves one layout.
 """
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from datetime import date
 
 import pytest
 
-from pipelines.model_fits import validate_assoc_eval, validate_btyd_params
+from pipelines.model_fits import validate_btyd_params, validate_matrix_row
 
 pytestmark = pytest.mark.asyncio
 
@@ -56,20 +56,29 @@ def test_btyd_rejects_bad_params():
                                          "a": 1.0, "b": 3.0}})
 
 
-def test_assoc_eval_ok_and_rejects():
-    out = validate_assoc_eval({"batch_id": "b1", "metric": "precision@5",
-                               "value": 0.4, "n_holdout": 200})
-    assert out["eval_set"] == "holdout" and out["value"] == 0.4
-    with pytest.raises(ValueError, match="batch_id"):
-        validate_assoc_eval({"metric": "m", "value": 1.0})
+def test_matrix_row_ok_and_rejects():
+    base = {"segment_run_id": "run-1", "cluster": 0,
+            "feature": "recency_days", "cluster_mean": 12.5,
+            "cluster_median": 10.0, "population_mean": 30.0,
+            "population_median": 25.0, "diff": -17.5,
+            "pct_diff": -0.58}
+    out = validate_matrix_row(dict(base))
+    assert out["layout"] == "wide" and out["pct_diff"] == -0.58
+    assert validate_matrix_row(
+        {**base, "pct_diff": None})["pct_diff"] is None
+    with pytest.raises(ValueError, match="segment_run_id"):
+        validate_matrix_row({**base, "segment_run_id": None})
+    with pytest.raises(ValueError, match="cluster must be"):
+        validate_matrix_row({**base, "cluster": -1})
+    with pytest.raises(ValueError, match="layout"):
+        validate_matrix_row({**base, "layout": "pivoted"})
     with pytest.raises(ValueError, match="numeric"):
-        validate_assoc_eval({"batch_id": "b", "metric": "m",
-                             "value": "high"})
+        validate_matrix_row({**base, "diff": "lower"})
 
 
 async def test_lm1_lm2_db_roundtrip(database_url: str):
     """Fit upsert idempotent per grain; latest read skips failed fits;
-    eval rows cascade with their batch."""
+    matrix rows cascade with their segment run; run read serves layout."""
     import json
     import re
     from pathlib import Path
@@ -77,9 +86,10 @@ async def test_lm1_lm2_db_roundtrip(database_url: str):
     import asyncpg
 
     from pipelines.model_fits import (
-        ASSOC_EVAL_UPSERT_SQL,
         BTYD_UPSERT_SQL,
         LATEST_BTYD_PARAMS_SQL,
+        MATRIX_FOR_RUN_SQL,
+        MATRIX_UPSERT_SQL,
     )
 
     pool = await asyncpg.create_pool(database_url)
@@ -93,13 +103,17 @@ async def test_lm1_lm2_db_roundtrip(database_url: str):
                     re.S | re.I)
                 mig_dir = (Path(__file__).resolve().parents[3]
                            / "db" / "migrations")
-                for name in ("018_assoc_rules.sql",
+                for name in ("015_segments_pipelines.sql",
                              "028_btyd_params.sql",
-                             "029_assoc_eval.sql"):
+                             "029_cluster_matrix.sql"):
                     m = up_re.search(
                         (mig_dir / name).read_text(encoding="utf-8"))
                     assert m is not None
-                    await conn.execute(m.group(1).strip())
+                    try:
+                        await conn.execute(m.group(1).strip())
+                    except Exception as exc:
+                        if "already exists" not in str(exc).lower():
+                            raise
             day = date(2026, 10, 15)
             fit = validate_btyd_params({
                 "as_of": day, "activity": "orders", "horizon_days": 90,
@@ -130,27 +144,34 @@ async def test_lm1_lm2_db_roundtrip(database_url: str):
                     if r["as_of"] == day and r["activity"] == "orders"]
             assert len(mine) == 1
             assert json.loads(mine[0]["params"])["r"] == 0.5
-            # LM2: eval rows ride the batch, die with it.
-            batch = await conn.fetchval(
-                "INSERT INTO assoc_batches DEFAULT VALUES RETURNING id")
-            ev = validate_assoc_eval({"batch_id": str(batch),
-                                      "metric": "precision@5",
-                                      "value": 0.4, "n_holdout": 200})
-            from uuid import UUID
-            await conn.execute(ASSOC_EVAL_UPSERT_SQL, batch,
-                               ev["eval_set"], ev["metric"],
-                               ev["value"], ev["n_holdout"])
-            await conn.execute(ASSOC_EVAL_UPSERT_SQL, batch,
-                               ev["eval_set"], ev["metric"],
-                               ev["value"], ev["n_holdout"])  # no-op
+            # LM2: matrix rows ride the segment run, die with it.
+            run = await conn.fetchval(
+                "INSERT INTO segment_runs (as_of, mode, k)"
+                " VALUES ($1::date, 'overall', 3) RETURNING id", day)
+            row = validate_matrix_row({
+                "segment_run_id": str(run), "cluster": 0,
+                "feature": "recency_days", "cluster_mean": 12.5,
+                "cluster_median": 10.0, "population_mean": 30.0,
+                "population_median": 25.0, "diff": -17.5,
+                "pct_diff": -0.58})
+            args = (run, row["cluster"], row["feature"],
+                    row["cluster_mean"], row["cluster_median"],
+                    row["population_mean"], row["population_median"],
+                    row["diff"], row["pct_diff"], row["layout"])
+            await conn.execute(MATRIX_UPSERT_SQL, *args)
+            await conn.execute(MATRIX_UPSERT_SQL, *args)  # no-op
             assert await conn.fetchval(
-                "SELECT COUNT(*) FROM assoc_rules_eval"
-                " WHERE batch_id = $1", batch) == 1
+                "SELECT COUNT(*) FROM cluster_feature_matrix"
+                " WHERE segment_run_id = $1", run) == 1
+            got = await conn.fetch(MATRIX_FOR_RUN_SQL, run, "wide")
+            assert len(got) == 1 and got[0]["feature"] == "recency_days"
+            assert await conn.fetch(
+                MATRIX_FOR_RUN_SQL, run, "long") == []
             await conn.execute(
-                "DELETE FROM assoc_batches WHERE id = $1", batch)
+                "DELETE FROM segment_runs WHERE id = $1", run)
             assert await conn.fetchval(
-                "SELECT COUNT(*) FROM assoc_rules_eval"
-                " WHERE batch_id = $1", batch) == 0
+                "SELECT COUNT(*) FROM cluster_feature_matrix"
+                " WHERE segment_run_id = $1", run) == 0
             await conn.execute(
                 "DELETE FROM btyd_params WHERE as_of >= $1::date", day)
     finally:

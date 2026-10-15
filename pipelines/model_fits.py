@@ -2,7 +2,7 @@
 
 Data lands the DDL first; ml's engines write rows matching this
 grain. These helpers are the writer-side discipline: BTYD param keys
-(r/alpha/a/b, all > 0) and assoc-eval metric rows, plus the
+(r/alpha/a/b, all > 0) and LM2 comparison-matrix rows, plus the
 latest-fit read the serving layer joins scope-to-scope.
 """
 from __future__ import annotations
@@ -36,11 +36,20 @@ WHERE params IS NOT NULL
 ORDER BY activity, horizon_days, brand_id, group_id, model, as_of DESC
 """
 
-ASSOC_EVAL_UPSERT_SQL = """
-INSERT INTO assoc_rules_eval
-  (batch_id, eval_set, metric, value, n_holdout)
-VALUES ($1, $2, $3, $4, $5)
-ON CONFLICT (batch_id, eval_set, metric) DO NOTHING
+MATRIX_UPSERT_SQL = """
+INSERT INTO cluster_feature_matrix
+  (segment_run_id, cluster, feature, cluster_mean, cluster_median,
+   population_mean, population_median, diff, pct_diff, layout)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+ON CONFLICT (segment_run_id, cluster, feature, layout) DO NOTHING
+"""
+
+MATRIX_FOR_RUN_SQL = """
+SELECT cluster, feature, cluster_mean, cluster_median,
+       population_mean, population_median, diff, pct_diff, layout
+FROM cluster_feature_matrix
+WHERE segment_run_id = $1 AND layout = $2
+ORDER BY cluster, feature
 """
 
 
@@ -93,24 +102,42 @@ def validate_btyd_params(spec: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def validate_assoc_eval(spec: dict[str, Any]) -> dict[str, Any]:
-    """Validate an LM2 eval row. Returns a cleaned copy."""
+def _as_number(value: Any, name: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{name} must be numeric, got {value!r}")
+    return float(value)
+
+
+def validate_matrix_row(spec: dict[str, Any]) -> dict[str, Any]:
+    """Validate an LM2 comparison-matrix row. Returns a cleaned copy."""
     if not isinstance(spec, dict):
-        raise ValueError("assoc eval must be a mapping")
-    if not spec.get("batch_id"):
-        raise ValueError("batch_id is required")
-    eval_set = spec.get("eval_set", "holdout")
-    if not isinstance(eval_set, str) or not eval_set.strip():
-        raise ValueError("eval_set must be a non-empty string")
-    metric = spec.get("metric")
-    if not isinstance(metric, str) or not metric.strip():
-        raise ValueError("metric must be a non-empty string")
-    value = spec.get("value")
-    if (isinstance(value, bool) or not isinstance(value, (int, float))):
-        raise ValueError(f"value must be numeric, got {value!r}")
-    n = spec.get("n_holdout", 0)
-    if isinstance(n, bool) or not isinstance(n, int) or n < 0:
-        raise ValueError(f"n_holdout must be >= 0, got {n!r}")
-    return {"batch_id": spec["batch_id"],
-            "eval_set": eval_set.strip(), "metric": metric.strip(),
-            "value": float(value), "n_holdout": n}
+        raise ValueError("matrix row must be a mapping")
+    if not spec.get("segment_run_id"):
+        raise ValueError("segment_run_id is required")
+    cluster = spec.get("cluster")
+    if (isinstance(cluster, bool) or not isinstance(cluster, int)
+            or cluster < 0):
+        raise ValueError(
+            f"cluster must be an int >= 0, got {cluster!r}")
+    feature = spec.get("feature")
+    if not isinstance(feature, str) or not feature.strip():
+        raise ValueError("feature must be a non-empty string")
+    layout = spec.get("layout", "wide")
+    if layout not in ("wide", "long"):
+        raise ValueError(
+            f"layout must be 'wide' or 'long', got {layout!r}")
+    return {"segment_run_id": spec["segment_run_id"],
+            "cluster": cluster, "feature": feature.strip(),
+            "cluster_mean": _as_number(spec.get("cluster_mean"),
+                                         "cluster_mean"),
+            "cluster_median": _as_number(spec.get("cluster_median"),
+                                           "cluster_median"),
+            "population_mean": _as_number(spec.get("population_mean"),
+                                            "population_mean"),
+            "population_median": _as_number(
+                spec.get("population_median"), "population_median"),
+            "diff": _as_number(spec.get("diff"), "diff"),
+            "pct_diff": (None if spec.get("pct_diff") is None
+                           else _as_number(spec.get("pct_diff"),
+                                           "pct_diff")),
+            "layout": layout}
