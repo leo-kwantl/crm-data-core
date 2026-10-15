@@ -21,6 +21,15 @@ dataset reads 940 cohort members). INSERT-only: bootstrap identity rows
 referenced. Rerun-safe: existing member_ids and external order ids
 are skipped in Python (deterministic RNG stream, seed 7).
 
+DETERMINISM IS CONDITIONAL ON DB STATE, not just on the seed: baskets
+draw from the `products` table, home stores from `stores`/`brands` and
+the campaign slice from `campaigns`, so the same seed over a different
+catalog yields a different dataset (pre-catalog 12-SKU run: 9,372
+orders starting 2024-10-25; the 68-SKU catalog + 3-year ladder: 8,685
+orders starting 2023-11-12). Reference binds with the catalog present:
+customers 1,208 / orders 8,685 / top20_share 0.76 / max_recency_d 400
+/ full_optout 107.
+
 Distribution spec (owner-approved, bound 2026-10-15):
 - 1,200 customers, M-03 block (M-030001..M-031200; no collision with
   M-0001xx demo / M-020xxx dev-history).
@@ -35,6 +44,11 @@ Distribution spec (owner-approved, bound 2026-10-15):
 - Order counts Pareto-lognormal mix: top ~20% of customers yield
   ~80% of revenue (VIP lognormal(mu=3.3) vs base lognormal(mu=0.5),
   tuned; the measured share is printed at the end of every run).
+  Counts are CLIPPED at 60, which leaves a known boundary pile-up (~26
+  customers sit exactly at 60 while 1-58 decays smoothly). A soft tail
+  (squash instead of min) removes the artifact, but it moves the
+  revenue/tail binds, so it is a deliberate follow-up rather than a
+  silent retune.
 - Orders spread over every brand's stores: each customer gets a
   deterministic home store (85% repeat visits), so brand-scoped
   /cohort, /rfm and /segments views are populated for all brands.
@@ -47,7 +61,10 @@ Distribution spec (owner-approved, bound 2026-10-15):
 - Recency: last-order mixture 45% 0-60d / 30% 60-180d / 25% 180-400d
   so at-risk/lost segments populate; the first order sits near signup
   and later ones spread in between with Dec-peak/Feb-trough seasonal
-  weights.
+  WEIGHTS (12=1.8, 11=1.5, 10=1.2, 2=0.7). Observed monthly order
+  COUNTS peak in Aug/Sep, not Dec: the recency mixture concentrates
+  mass near ANCHOR and Dec 2026 is beyond it, so only Dec 2025 carries
+  the December weight (Feb is the trough either way).
 - contacts + consents for every customer; ~8% full opt-out.
 - Store visits span every brand (home store per customer, 85% repeat
   visits) so brand-scoped RFM / cohort / segment pages have data.
