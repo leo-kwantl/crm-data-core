@@ -169,3 +169,17 @@ Sync-run history DECISION: new `connector_sync_runs`
 scope) — NOT an extension of 015 `pipeline_runs` (different grain:
 sync run vs scheduled job; different readers: connector health vs cron
 orchestration). `pipeline_runs` stays job-grain, untouched.
+
+Write/trigger API [ADDITIVE] (`services/api/routers/connectors.py` +
+`repos/connectors.py`, all `require_admin` — secrets + execution
+outrank uploads): `POST /connectors` (201; 409 duplicate
+(source_type, name); 422 validation) → `DELETE /connectors/{id}`
+(204, runs cascade) → `POST /{id}/sync {entity, scope?}` (202 queued;
+422 on disabled = kill-switch, no force) → `POST /{id}/test`
+(stored-or-prospective check, no persistence: config-shape +
+secret-presence) → `PUT /{id}/secret {value}` (performs the 019
+rotation: sets the env var at runtime, touches `updated_at`, no DDL;
+422 without `secret_ref`; process-scoped, lost on restart —
+secret-manager remains the pilot path). Every response carries
+`has_secret` (presence bit) only; values are never stored, logged,
+or echoed. No migration (019 covers the tables).
