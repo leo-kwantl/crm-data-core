@@ -308,13 +308,18 @@ new `as_of` row, never UPDATE (REVOKE, same convention as 013).
 behind alive_path / prob_n / expected-purchases. ml: conform your
 fit writer to these columns; request changes while still additive.
 
-## 029: assoc-rule holdout eval (LM2, [ADDITIVE] analytics, joint with ml)
+## 029: cluster-vs-population matrix (LM2, [ADDITIVE] analytics, joint with ml)
 
-`029_assoc_eval.sql` + `validate_assoc_eval` in
-`pipelines/model_fits.py`. One row per (batch_id x eval_set x
-metric): metric ROWS not columns, so new metrics never need DDL;
-`n_holdout` rides each row so a metric is never read without its
-denominator. Batches die → eval dies (CASCADE, same as `assoc_rules`
-in 018). Immutable (REVOKE UPDATE/DELETE). ml: write one row per
-metric per holdout set after each batch; `eval_set` defaults to
-`'holdout'`.
+`029_cluster_matrix.sql` + `validate_matrix_row` /
+`MATRIX_FOR_RUN_SQL` in `pipelines/model_fits.py`. CORRECTION
+(2026-10-15, pre-push, never applied live): this number first held
+an assoc-holdout-eval table from a misread of the LM2 item — the
+agreed LM2 was always the comparison matrix (legacy-steal plan +
+ml triage). Replaced, not supplemented. One row per
+(segment_run x cluster x feature x layout): cluster mean/median vs
+population mean/median + diff + pct_diff (NULL when population
+median is 0). `layout` 'wide' (matrix cells) vs 'long' (UNPIVOTED
+UI rows). Runs die → matrix dies (CASCADE, same as 021 explain
+rows). Immutable (REVOKE UPDATE/DELETE). ml: write per-feature
+rows per cluster per run in either layout; serving reads one layout
+per run.
