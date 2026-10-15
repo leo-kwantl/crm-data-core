@@ -291,3 +291,22 @@ async def test_lm1_fit_table_and_method_labels(database_url: str):
                 " WHERE segment_run_id = $1", run) == 0
     finally:
         await pool.close()
+
+
+def test_explain_write_gate():
+    from pipelines.model_fits import validate_explain_write
+    assert validate_explain_write("segment_mean") == "segment_mean"
+    with pytest.raises(ValueError, match="zero shap rows"):
+        validate_explain_write("surrogate_unfitted", n_shap_rows=3)
+    assert validate_explain_write(
+        "surrogate_unfitted") == "surrogate_unfitted"
+    with pytest.raises(ValueError, match="surrogate_fits id"):
+        validate_explain_write("xgb_surrogate_v1", fit_accuracy=0.95)
+    with pytest.raises(ValueError, match=">= 0.90"):
+        validate_explain_write(
+            "xgb_surrogate_v1", fit_id="f1", fit_accuracy=0.89)
+    assert validate_explain_write(
+        "xgb_surrogate_v1", fit_id="f1",
+        fit_accuracy=0.93) == "xgb_surrogate_v1"
+    with pytest.raises(ValueError, match="unknown explain method"):
+        validate_explain_write("shap_legacy")

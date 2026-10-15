@@ -188,3 +188,29 @@ def validate_explain_method(method: str) -> str:
             f"unknown explain method {method!r} "
             f"(expected one of {EXPLAIN_METHODS})")
     return method
+
+
+def validate_explain_write(method: str, *, fit_accuracy=None,
+                           fit_id=None, n_shap_rows: int = 0) -> str:
+    """Enforce the LM1 fidelity gate on each explain write.
+
+    `surrogate_unfitted` must carry zero shap rows; `xgb_surrogate_v1`
+    requires the run's fit id AND its accuracy (>= 0.90) passed
+explicitly. `segment_mean` needs neither.
+    """
+    validate_explain_method(method)
+    if method == "surrogate_unfitted" and n_shap_rows > 0:
+        raise ValueError(
+            "surrogate_unfitted must carry zero shap rows, "
+            f"got {n_shap_rows}")
+    if method == "xgb_surrogate_v1":
+        if fit_id is None:
+            raise ValueError(
+                "xgb_surrogate_v1 requires the seg_surrogate_fits id")
+        if (isinstance(fit_accuracy, bool)
+                or not isinstance(fit_accuracy, (int, float))
+                or fit_accuracy < 0.90):
+            raise ValueError(
+                "xgb_surrogate_v1 requires fit accuracy >= 0.90, "
+                f"got {fit_accuracy!r}")
+    return method
