@@ -83,3 +83,92 @@ def test_redact_secrets_keeps_pii():
     row = {"phone": "+852 9123 4567", "api_token": "shpat-SECRET"}
     out = C.redact_secrets(row)
     assert out == {"phone": "+852 9123 4567", "api_token": "***"}
+
+
+def test_schedule_cron_none_is_manual_only():
+    assert C.validate_schedule_cron(None) is None
+    assert C.validate_schedule_cron("  ") is None
+    assert C.validate_schedule_cron("0 2 * * *") == "0 2 * * *"
+
+
+def test_schedule_cron_rejects_malformed():
+    for bad in ("hourly", "0 2 * *", "0 2 * * * *", "99 2 * * *",
+                "0 25 * * *", "*/x * * * *"):
+        with pytest.raises(ValueError):
+            C.validate_schedule_cron(bad)
+
+
+def test_pagination_cursor_requires_cursor_param():
+    with pytest.raises(ValueError, match="cursor_param"):
+        C.validate_pagination({"type": "cursor"})
+    out = C.validate_pagination({"type": "cursor",
+                                 "cursor_param": "after"})
+    assert out["response_key"] == "next_cursor"
+    assert C.validate_pagination(None) is None
+
+
+def test_pagination_page_defaults_and_limit_cap():
+    out = C.validate_pagination({"type": "page"})
+    assert (out["page_param"], out["limit_param"],
+            out["default_limit"]) == ("page", "limit", 100)
+    with pytest.raises(ValueError):
+        C.validate_pagination({"type": "page", "default_limit": 0})
+    with pytest.raises(ValueError):
+        C.validate_pagination({"type": "nope"})
+
+
+def test_pagination_validated_at_registration():
+    rec = C.validate_connector("rest_api", "p",
+                               {"base_url": "https://a",
+                                "pagination": {"type": "cursor",
+                                               "cursor_param": "after"}})
+    assert rec["config"]["pagination"]["response_key"] == "next_cursor"
+    with pytest.raises(ValueError, match="cursor_param"):
+        C.validate_connector("rest_api", "p",
+                             {"base_url": "https://a",
+                              "pagination": {"type": "cursor"}})
+
+
+def test_since_pushdown_server_first():
+    assert C.since_pushdown("shopify") == "server"
+    assert C.since_pushdown("rest_api") == "server"
+    assert C.since_pushdown("csv") == "client"
+    assert C.since_pushdown("delta_lake") == "client"
+
+
+def test_since_filter_fail_open_flags_undateable():
+    from datetime import datetime, timezone
+    since = datetime(2026, 10, 1, tzinfo=timezone.utc)
+    rows = [{"id": 1, "updated_at": "2026-10-05T00:00:00Z"},
+            {"id": 2, "updated_at": "2026-09-01T00:00:00Z"},
+            {"id": 3},  # missing date: included + flagged
+            {"id": 4, "updated_at": "not-a-date"}]  # same
+    kept, flagged = C.since_filter(rows, since)
+    assert [r["id"] for r in kept] == [1, 3, 4]
+    assert sorted(f["index"] for f in flagged) == [2, 3]
+
+
+def test_should_retry_and_backoff():
+    assert C.should_retry(429) and C.should_retry(503)
+    assert not C.should_retry(400) and not C.should_retry(200)
+    assert not C.should_retry(ValueError("no"))
+    assert C.compute_backoff(0) == 1.0
+    assert C.compute_backoff(3) == 8.0
+    assert C.compute_backoff(10) == 60.0  # capped
+    with pytest.raises(ValueError):
+        C.compute_backoff(-1)
+
+
+def test_sync_log_correlates_run_id():
+    import json
+    line = C.sync_log("run-1", "extracted", entity="orders",
+                      rows_seen=50)
+    obj = json.loads(line)
+    assert obj["sync_run_id"] == "run-1" and obj["event"] == "extracted"
+    assert obj["rows_seen"] == "50"
+
+
+def test_describe_extract_shape_probe():
+    out = C.describe_extract([{"a": 1, "b": 2}, {"b": 3, "c": 4}])
+    assert out["columns"] == ["a", "b", "c"]
+    assert out["sample_rows"] == 2

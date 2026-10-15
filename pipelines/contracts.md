@@ -187,7 +187,31 @@ outrank uploads): `POST /connectors` (201; 409 duplicate
 secret-presence) → `PUT /{id}/secret {value}` (performs the 019
 rotation: sets the env var at runtime, touches `updated_at`, no DDL;
 422 without `secret_ref`; process-scoped, lost on restart —
-secret-manager remains the pilot path). Every response carries
+secret-manager remains the pilot path). LD2 per-connector schedule +
+sync checkpoint (`025_connector_schedule.sql`, [ADDITIVE]):
+`schedule_cron` NULL = manual-only, else validated 5-field cron
+(`validate_schedule_cron`; range-checked minute/hour/dom/month/dow);
+`PUT /connectors/{id}/schedule` set/clear (404
+`connector_not_found`, 422 bad cron). `last_sync_at`/`last_sync_status`
+(`queued|running|succeeded|failed`) stamped by the sync worker via
+`note_sync_result(run, status, counts)` — closes the run row AND the
+connector checkpoint in one transaction (raises on bad status/counts
+or missing run). Incremental-extract helpers (no I/O): optional
+`pagination` config block (`page|cursor|offset`, cursor REQUIRES
+`cursor_param` — page-only extracts rejected as a smell; validated at
+registration; `default_limit` 1..1000); `since_pushdown` (server-side
+`since` first for `shopify|rest_api`, client-side for file scans);
+`since_filter` with fail-open dating (undateable rows INCLUDED +
+flagged for quarantine — never silently dropped); `should_retry`
+(429/5xx/transport only, never 4xx) + `compute_backoff` (base·2ⁿ,
+capped); per-run structured `sync_log` lines; `describe_extract`
+shape probe for connection checks. NOT owned: the scheduler tick and
+the actual extract/load worker — this is vocabulary + checkpoints so
+the app-side scheduler has something honest to drive. LM1/LM2
+PLANNED (joint with ml, additive migrations AHEAD of their engines):
+`btyd_params` (per-scope fitted BTYD params) + `assoc_rules_eval`
+(per-batch holdout metrics) — data to land the tables first, ml builds
+engines on our grain after. Every response carries
 `has_secret` (presence bit) only; values are never stored, logged,
 or echoed. CONVERGED (app ruling 2026-10-15): `has_secret` means
 env-live everywhere (can this connector authenticate right now?) —

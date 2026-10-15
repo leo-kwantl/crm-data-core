@@ -19,6 +19,11 @@ class ConnectorCreate(BaseModel):
     config: dict[str, Any] = Field(default_factory=dict)
     secret_ref: str | None = Field(default=None, max_length=128)
     enabled: bool = True
+    schedule_cron: str | None = Field(default=None, max_length=64)  # LD2
+
+
+class ConnectorScheduleUpdate(BaseModel):
+    schedule_cron: str | None = Field(default=None, max_length=64)
 
 
 class ConnectorSyncTrigger(BaseModel):

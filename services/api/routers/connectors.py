@@ -45,6 +45,7 @@ from ..deps import (
 from ..repos import connectors as repo
 from ..schemas.connector import (
     ConnectorCreate,
+    ConnectorScheduleUpdate,
     ConnectorSecretRotate,
     ConnectorSyncTrigger,
     ConnectorTestRequest,
@@ -88,7 +89,8 @@ async def create_connector(body: ConnectorCreate, _admin: Admin,
                            pool: Pool) -> dict:
     return await _guard(lambda: repo.create_connector(
         pool, body.source_type, body.name, body.config,
-        body.secret_ref, body.enabled))
+        body.secret_ref, body.enabled,
+        schedule_cron=body.schedule_cron))
 
 
 @router.delete("/connectors/{connector_id}",
@@ -97,6 +99,14 @@ async def delete_connector(connector_id: UUID, _admin: Admin,
                            pool: Pool) -> Response:
     await _guard(lambda: repo.delete_connector(pool, connector_id))
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.put("/connectors/{connector_id}/schedule")
+async def update_schedule(connector_id: UUID,
+                          body: ConnectorScheduleUpdate, _admin: Admin,
+                          pool: Pool) -> dict:
+    return await _guard(lambda: repo.update_schedule(
+        pool, connector_id, body.schedule_cron))
 
 
 @router.post("/connectors/{connector_id}/sync",

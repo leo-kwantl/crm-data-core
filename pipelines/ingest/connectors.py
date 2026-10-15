@@ -71,6 +71,8 @@ def validate_connector(source_type: str, name: str,
     if not (name or "").strip():
         raise ValueError("connector name is required")
     cfg = dict(config or {})
+    if "pagination" in cfg:
+        cfg["pagination"] = validate_pagination(cfg["pagination"])
     missing = [k for k in REQUIRED_CONFIG[source_type] if k not in cfg]
     if missing:
         raise ValueError(
@@ -92,6 +94,180 @@ def validate_connector(source_type: str, name: str,
                 "the DB never stores the secret itself")
     return {"source_type": source_type, "name": name.strip(),
             "config": cfg, "secret_ref": secret_ref}
+
+
+# --- LD2: per-connector schedule + incremental-extract semantics ---
+#
+# schedule_cron: NULL/empty = manual-only; else validated 5-field cron.
+# pagination: optional `pagination` block in connector config, validated
+# at registration. Cursor pagination is MANDATORY vocabulary (page-only
+# extracts are rejected as a config smell): every paginated source must
+# declare how cursors work, even when it pages today.
+# since pushdown: server-side `since` param first (shopify/rest_api),
+# client-side since_filter fallback (csv/excel/delta_lake file scans).
+# since fail-open: rows with missing/unparseable dates are INCLUDED and
+# flagged for quarantine review — incremental extract must never
+# silently drop rows it cannot date.
+
+PAGINATION_TYPES = ("page", "cursor", "offset")
+
+_CRON_BOUNDS = ((0, 59), (0, 23), (1, 31), (1, 12), (0, 6))
+
+
+def validate_schedule_cron(expr: str | None) -> str | None:
+    """Validate a 5-field cron (NULL/blank = manual-only)."""
+    if expr is None or not str(expr).strip():
+        return None
+    parts = str(expr).strip().split()
+    if len(parts) != 5:
+        raise ValueError(
+            f"schedule_cron must have 5 fields, got {len(parts)}:"
+            f" {expr!r}")
+    for part, (lo, hi) in zip(parts, _CRON_BOUNDS):
+        body = part[2:] if part.startswith("*/") else part
+        if body == "*":
+            continue
+        try:
+            vals = [int(v) for v in body.split(",")]
+        except ValueError:
+            raise ValueError(
+                f"bad schedule_cron field {part!r} in {expr!r}"
+            ) from None
+        if not vals or any(v < lo or v > hi for v in vals):
+            raise ValueError(
+                f"schedule_cron field {part!r} out of range in {expr!r}")
+    return " ".join(parts)
+
+
+def validate_pagination(spec: dict[str, Any] | None) -> dict | None:
+    """Validate a `pagination` config block. None -> None (unpaid)."""
+    if spec is None:
+        return None
+    if not isinstance(spec, dict):
+        raise ValueError("pagination must be a mapping")
+    ptype = spec.get("type", "page")
+    if ptype not in PAGINATION_TYPES:
+        raise ValueError(
+            f"pagination type {ptype!r} unknown "
+            f"(expected one of {PAGINATION_TYPES})")
+    out = dict(spec)
+    if ptype == "cursor":
+        if not spec.get("cursor_param"):
+            raise ValueError(
+                "cursor pagination needs 'cursor_param' "
+                "(request field carrying the cursor)")
+        out.setdefault("response_key", "next_cursor")
+    elif ptype == "page":
+        out.setdefault("page_param", "page")
+        out.setdefault("limit_param", "limit")
+    else:  # offset
+        out.setdefault("offset_param", "offset")
+        out.setdefault("limit_param", "limit")
+    limit = spec.get("default_limit", 100)
+    if not isinstance(limit, int) or limit < 1 or limit > 1000:
+        raise ValueError(
+            f"pagination default_limit must be 1..1000, got {limit!r}")
+    out["default_limit"] = limit
+    return out
+
+
+# Source types whose extract accepts a server-side `since` bound
+# (query param / API filter) vs file/table scans filtered client-side.
+SERVER_SINCE_TYPES = frozenset({"shopify", "rest_api"})
+
+
+def since_pushdown(source_type: str) -> str:
+    """Where does the `since` bound apply: 'server' or 'client'."""
+    if source_type in SOURCE_TYPES:
+        return ("server" if source_type in SERVER_SINCE_TYPES
+                else "client")
+    raise ValueError(f"unknown source_type: {source_type!r}")
+
+
+def _parse_date(value: Any):
+    from datetime import datetime
+
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            return datetime.fromisoformat(
+                value.strip().replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    return None
+
+
+def since_filter(records: list[dict], since, field: str = "updated_at"
+                 ) -> tuple[list[dict], list[dict]]:
+    """Client-side incremental filter with fail-open dating.
+
+    Returns (kept, flagged): kept = rows dated >= since PLUS rows
+    with missing/unparseable dates (never silently dropped); flagged
+    = [{"index", "reason"}] for quarantine review.
+    """
+    from datetime import datetime
+
+    if isinstance(since, str):
+        since_dt = _parse_date(since)
+        if since_dt is None:
+            raise ValueError(f"unparseable since bound: {since!r}")
+    elif isinstance(since, datetime):
+        since_dt = since
+    else:
+        raise ValueError(
+            f"since must be datetime or ISO string, got {type(since)}")
+    kept: list[dict] = []
+    flagged: list[dict] = []
+    for i, rec in enumerate(records):
+        dt = _parse_date(rec.get(field))
+        if dt is None:
+            kept.append(rec)  # fail-open: include + flag
+            flagged.append({"index": i,
+                            "reason": f"undateable {field!r}; "
+                            "included by fail-open rule"})
+        elif dt >= since_dt:
+            kept.append(rec)
+    return kept, flagged
+
+
+def should_retry(status_or_exc: Any) -> bool:
+    """Retry extract on 429 / 5xx / transport errors; never on 4xx."""
+    if isinstance(status_or_exc, int):
+        return status_or_exc == 429 or 500 <= status_or_exc <= 599
+    name = type(status_or_exc).__name__
+    return name in ("TimeoutError", "ConnectionError",
+                     "ConnectTimeout", "ReadTimeout",
+                     "httpx.TimeoutException",
+                     "httpx.ConnectError")
+
+
+def compute_backoff(attempt: int, base_s: float = 1.0,
+                    cap_s: float = 60.0) -> float:
+    """Exponential backoff: min(cap, base * 2**attempt)."""
+    if not isinstance(attempt, int) or attempt < 0:
+        raise ValueError(f"attempt must be >= 0, got {attempt!r}")
+    if base_s <= 0 or cap_s <= 0:
+        raise ValueError("base_s and cap_s must be positive")
+    return min(cap_s, base_s * (2 ** attempt))
+
+
+def sync_log(sync_run_id: str, event: str, **fields: Any) -> str:
+    """One structured log line, correlated by sync run id (LD2-e)."""
+    import json
+
+    return json.dumps({"sync_run_id": str(sync_run_id), "event": event,
+                       **{k: str(v) for k, v in fields.items()}})
+
+
+def describe_extract(records: list[dict], limit: int = 5) -> dict:
+    """Shape probe for connection checks: columns + sample row count."""
+    cols: set[str] = set()
+    for rec in records:
+        cols.update(str(k) for k in rec)
+    return {"columns": sorted(cols),
+            "sample_rows": min(len(records), limit),
+            "sample": records[:limit]}
 
 
 def sanitize_for_log(obj: Any) -> Any:
