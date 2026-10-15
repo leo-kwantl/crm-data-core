@@ -112,7 +112,11 @@ gate. Seeds: nightly + weekly content-verbatim from the agreed example
 YAML (split per pipeline, ON CONFLICT DO NOTHING so admin edits win).
 
 Runner: `pipelines/schedule.py` + `scripts/run_pipeline.py --pipeline
-<name> --ml-repo <path>` (cron entrypoint). Manifest parsed from the
+<name> --ml-repo <path>` (cron entrypoint). Tick-time DB resolution:
+`--db-url` > `$DATABASE_URL` > live pgembed pidfiles re-read every
+tick (app checkout, then cwd) — ports are random per restart, never
+pinned; no live postmaster = loud failure, never a fresh empty boot.
+Manifest parsed from the
 table (`--manifest-file` dev override never writes). Topo order over
 depends_on (cycle = error); data engines in-process (upload_apply =
 sweep validated jobs, kpi_daily = KPI upsert, cohort_snapshot =

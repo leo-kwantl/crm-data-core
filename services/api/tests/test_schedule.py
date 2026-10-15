@@ -326,3 +326,17 @@ async def test_resolve_explain_run_id(database_url: str):
                            "segment_mode": "purchase",
                            "segment_k": 5}, scoped)
             assert old != new
+
+
+# ---- explain scope-strip (ml review bug) + tick-time DB resolution ----
+
+def test_explain_argv_strips_scope_flags():
+    scoped = _ctx(brand_id="11111111-1111-1111-1111-111111111111",
+                  group_id="22222222-2222-2222-2222-222222222222")
+    e = sched.ENGINE_BUILDERS["explain_batch"](
+        {"segment_run_id": "latest"}, scoped)
+    assert "--brand-id" not in e and "--group-id" not in e
+    assert "--created-by" in e and "test" in e
+    # assoc DOES accept scope flags — untouched.
+    a = sched.ENGINE_BUILDERS["assoc_batch"]({}, scoped)
+    assert "--brand-id" in a and "11111111-1111-1111-1111-111111111111" in a

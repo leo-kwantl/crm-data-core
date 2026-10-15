@@ -197,10 +197,19 @@ def _ml_module(module: str) -> Callable[[dict, JobCtx], list[str]]:
 
 
 def _with_common(argv: list[str], params: dict, ctx: JobCtx,
-                 with_as_of: bool = True) -> list[str]:
+                 with_as_of: bool = True,
+                 with_scope: bool = True) -> list[str]:
+    # with_scope=False is for CLIs that reject --brand-id/--group-id
+    # (explain_batch: scope rides the segment run; only --created-by
+    # is passed). Sending a flag the CLI doesn't accept = argparse
+    # exit 2 on every scoped tick — strip, don't hope.
     if with_as_of:
         argv += ["--as-of", ctx.as_of.isoformat()]
-    return argv + _scope_args(ctx)
+    if with_scope:
+        argv += _scope_args(ctx)
+    elif ctx.created_by:
+        argv += ["--created-by", ctx.created_by]
+    return argv
 
 
 def _p(params: dict, *names: str, default: Any = None) -> Any:
@@ -314,8 +323,10 @@ def _build_explain(params: dict, ctx: JobCtx) -> list[str]:
     argv = _ml_module("ml_jobs.run_explain_batch")(params, ctx)
     argv += ["--segment-run-id", str(sid),
              "--top-n", str(_p(params, "top_n", "top-n", default=20))]
-    # explain_batch takes no --as-of; the tick date still scopes runs.
-    return _with_common(argv, params, ctx, with_as_of=False)
+    # explain_batch takes no --as-of AND no scope flags (argparse
+    # rejects them); scope rides the resolved segment run.
+    return _with_common(argv, params, ctx, with_as_of=False,
+                        with_scope=False)
 
 
 ENGINE_BUILDERS: dict[str, Callable[[dict, JobCtx], list[str]]] = {
