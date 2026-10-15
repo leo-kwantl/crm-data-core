@@ -363,7 +363,12 @@ ml_jobs/run_matrix_batch.py DB_URL --segment-run-id UUID`. Argparse
 declares nothing else — the runner passes no `--as-of`, no
 `--brand-id`/`--group-id`, and (unlike `explain_batch`) no
 `--created-by`; a flag the CLI does not declare is an exit-2 on every
-tick. One invocation writes BOTH layouts (029 wide + 032 long).
+tick. Exit codes are a signal: 2 = argparse refusal, 0 = success, and
+ml's `uuid.UUID()` parse means a *non-UUID* id would exit 1 with a
+traceback before any DB work -- unreachable through the runner (the
+resolver always hands over a concrete UUID), so a non-2 exit is a
+genuine anomaly rather than a contract violation. One invocation
+writes BOTH layouts (029 wide + 032 long).
 Weekly placement: immediately after the segments run it reads,
 `depends_on: [segments_overall]` (mirrors
 `ml_jobs/pipelines.example.yaml`). Manifest rows stay edited through
