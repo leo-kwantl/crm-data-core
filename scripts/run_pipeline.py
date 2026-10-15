@@ -23,19 +23,77 @@ REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
 from pipelines import schedule as sched  # noqa: E402
-from services.api.db import get_database_url  # noqa: E402
 
 
 def _uuid_or_none(v: str | None):
     return uuid.UUID(v) if v else None
 
 
-async def run(pipeline: str, as_of: date, ml_repo: Path | None,
-              brand_id, group_id, created_by: str | None,
-              force: bool, manifest_file: Path | None) -> dict:
+def _pidfile_port(data_dir: Path) -> int | None:
+    """Read the live postmaster port from a pgembed pidfile.
+
+    pgembed picks a RANDOM port per restart, so a pinned port rots;
+    the pidfile's 4th line is the current port. None when absent or
+    unparsable — callers treat that as "not a live candidate".
+    """
+    try:
+        lines = (data_dir / "postmaster.pid").read_text(
+            encoding="utf-8").splitlines()
+        return int(lines[3].strip())
+    except (OSError, IndexError, ValueError):
+        return None
+
+
+def _db_url_candidates(cli_url: str | None) -> list[str]:
+    """Tick-time DATABASE resolution, highest precedence first.
+
+    --db-url > $DATABASE_URL > live pidfiles (app checkout first,
+    then cwd). pgembed ports are random per restart, so pidfiles are
+    re-read at every tick — never pinned. Deliberately NO boot path:
+    spawning a fresh empty pgembed when nothing is live would fork
+    the schedule onto a silent empty DB; fail loudly instead.
+    """
+    import os
+
+    cands: list[str] = []
+    for raw in (cli_url, os.environ.get("DATABASE_URL")):
+        if raw:
+            cands.append(raw)
+    for data_dir in (REPO.parent / "crm-cdp-app" / ".pgembed-data",
+                     Path.cwd() / ".pgembed-data"):
+        port = _pidfile_port(data_dir)
+        if port is not None:
+            url = f"postgresql://postgres@127.0.0.1:{port}/postgres"
+            if url not in cands:
+                cands.append(url)
+    return cands
+
+
+async def _connect_resolved(cli_url: str | None):
+    """Connect to the first live candidate; return (conn, url)."""
     import asyncpg
 
-    conn = await asyncpg.connect(get_database_url())
+    cands = _db_url_candidates(cli_url)
+    errors: list[str] = []
+    for url in cands:
+        try:
+            conn = await asyncio.wait_for(asyncpg.connect(url), 5)
+            return conn, url
+        except (OSError, asyncio.TimeoutError,
+                asyncpg.PostgresError) as exc:
+            errors.append(f"{url}: {exc}")
+    hint = "; ".join(errors) if errors else "no candidates"
+    raise ValueError(
+        "no live database for the tick (tried: "
+        f"{hint}). Set --db-url or DATABASE_URL to the live postmaster, "
+        "or start it (pgembed boot in the app checkout).")
+
+
+async def run(pipeline: str, as_of: date, ml_repo: Path | None,
+              brand_id, group_id, created_by: str | None,
+              force: bool, manifest_file: Path | None,
+              db_url: str | None) -> dict:
+    conn, live_url = await _connect_resolved(db_url)
     try:
         if manifest_file is not None:
             print("warning: --manifest-file runs in-memory; "
@@ -54,7 +112,7 @@ async def run(pipeline: str, as_of: date, ml_repo: Path | None,
         ctx = sched.JobCtx(pipeline=pipeline, as_of=as_of,
                            brand_id=brand_id, group_id=group_id,
                            created_by=created_by, ml_repo=ml_repo,
-                           db_url=get_database_url())
+                           db_url=live_url)
         return await sched.run_pipeline(conn, pipeline, jobs, ctx,
                                         force=force)
     finally:
@@ -74,6 +132,9 @@ def main() -> None:
                     help="re-run succeeded jobs")
     ap.add_argument("--manifest-file", type=Path, default=None,
                     help="DEV ONLY: run this YAML without touching the table")
+    ap.add_argument("--db-url", default=None,
+                    help="DATABASE_URL override (default: $DATABASE_URL,"
+                    " else live pgembed pidfile at tick time)")
     args = ap.parse_args()
     as_of = (date.fromisoformat(args.as_of) if args.as_of
              else date.today())
@@ -82,7 +143,7 @@ def main() -> None:
                               _uuid_or_none(args.brand_id),
                               _uuid_or_none(args.group_id),
                               args.created_by, args.force,
-                              args.manifest_file))
+                              args.manifest_file, args.db_url))
     except (ValueError, sched.ManifestError) as exc:
         print(f"failed: {exc}")
         raise SystemExit(2)

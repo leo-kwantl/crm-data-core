@@ -8,7 +8,8 @@ succeeded jobs are skipped unless `force`).
 Execution model (zero import coupling to the ml repo):
 - data-owned engines run in-process: `upload_apply` (apply all
   `validated` jobs' staged rows via pipelines.apply), `kpi_daily`
-  (pipelines.snapshot upsert).
+  (pipelines.snapshot upsert), `cohort_snapshot` (cohort retention
+  upserts per granularity, idempotent per the 020 grain UNIQUE).
 - ml-owned engines run as subprocesses rooted at the ml repo checkout
   with DATABASE_URL passed through. `churn_snapshot` / `clv_snapshot`
   argv are locked; `rfm_snapshot` / `segments` / `recs_batch` builders
@@ -37,7 +38,18 @@ if str(REPO) not in sys.path:  # pragma: no cover - import convenience
 
 from pipelines import apply as ap  # noqa: E402
 from pipelines import upload as up  # noqa: E402
-from pipelines.snapshot import KPI_DAILY_UPSERT_SQL  # noqa: E402
+from pipelines.snapshot import (  # noqa: E402
+    COHORT_GRANULARITIES,
+    COHORT_SNAPSHOT_UPSERT_SQL,
+    KPI_DAILY_UPSERT_SQL,
+)
+
+# Data-owned engines run in-process (ml engines go through argv builders).
+DATA_ENGINES = ("upload_apply", "kpi_daily", "cohort_snapshot")
+
+# Default retention offsets per granularity for the cohort_snapshot engine
+# (overridable per job via params.max_offsets).
+COHORT_DEFAULT_MAX_OFFSETS = {"week": 12, "month": 12, "year": 5}
 
 FETCH_MANIFEST_SQL = "SELECT yaml FROM pipeline_manifests WHERE pipeline = $1"
 
@@ -185,10 +197,19 @@ def _ml_module(module: str) -> Callable[[dict, JobCtx], list[str]]:
 
 
 def _with_common(argv: list[str], params: dict, ctx: JobCtx,
-                 with_as_of: bool = True) -> list[str]:
+                 with_as_of: bool = True,
+                 with_scope: bool = True) -> list[str]:
+    # with_scope=False is for CLIs that reject --brand-id/--group-id
+    # (explain_batch: scope rides the segment run; only --created-by
+    # is passed). Sending a flag the CLI doesn't accept = argparse
+    # exit 2 on every scoped tick — strip, don't hope.
     if with_as_of:
         argv += ["--as-of", ctx.as_of.isoformat()]
-    return argv + _scope_args(ctx)
+    if with_scope:
+        argv += _scope_args(ctx)
+    elif ctx.created_by:
+        argv += ["--created-by", ctx.created_by]
+    return argv
 
 
 def _p(params: dict, *names: str, default: Any = None) -> Any:
@@ -255,13 +276,105 @@ def _build_segments(params: dict, ctx: JobCtx) -> list[str]:
     return _with_common(argv, params, ctx)
 
 
+def _build_forecast(params: dict, ctx: JobCtx) -> list[str]:
+    # CONFIRMED verbatim (ml): run_forecast_snapshot DB_URL
+    # --horizon-days --lookback-weeks --min-history-weeks [--as-of]
+    # + scope/created-by. Defaults mirror the ml CLI (28d / 52wks / 8wks).
+    argv = _ml_module("ml_jobs.run_forecast_snapshot")(params, ctx)
+    argv += ["--horizon-days",
+             str(_p(params, "horizon_days", "horizon-days", default=28)),
+             "--lookback-weeks",
+             str(_p(params, "lookback_weeks", "lookback-weeks",
+                     default=52)),
+             "--min-history-weeks",
+             str(_p(params, "min_history_weeks", "min-history-weeks",
+                     default=8))]
+    return _with_common(argv, params, ctx)
+
+
+def _build_assoc(params: dict, ctx: JobCtx) -> list[str]:
+    # CONFIRMED verbatim (ml): run_assoc_batch DB_URL
+    # --min-support --min-confidence --min-rules + scope/created-by.
+    # Defaults mirror the ml CLI (5 / 0.2 / 50).
+    argv = _ml_module("ml_jobs.run_assoc_batch")(params, ctx)
+    argv += ["--min-support",
+             str(_p(params, "min_support", "min-support", default=5)),
+             "--min-confidence",
+             str(_p(params, "min_confidence", "min-confidence",
+                     default=0.2)),
+             "--min-rules",
+             str(_p(params, "min_rules", "min-rules", default=50))]
+    # assoc_batch takes no --as-of; the tick date still scopes pipeline_runs.
+    return _with_common(argv, params, ctx, with_as_of=False)
+
+
+def _build_explain(params: dict, ctx: JobCtx) -> list[str]:
+    # CONFIRMED verbatim (ml): run_explain_batch DB_URL
+    # --segment-run-id (required) --top-n + created-by. Note: explain
+    # takes NO scope flags — scope rides the resolved segment run.
+    # run_pipeline resolves "latest"/missing/zero segment_run_id to the
+    # newest segment run for (segment_mode, [segment_k], scope) before
+    # dispatch, so manifests never store a stale fixed id.
+    sid = params.get("segment_run_id")
+    if not sid:
+        raise ManifestError(
+            "explain_batch needs params.segment_run_id "
+            "(concrete UUID or 'latest')")
+    argv = _ml_module("ml_jobs.run_explain_batch")(params, ctx)
+    argv += ["--segment-run-id", str(sid),
+             "--top-n", str(_p(params, "top_n", "top-n", default=20))]
+    # explain_batch takes no --as-of AND no scope flags (argparse
+    # rejects them); scope rides the resolved segment run.
+    return _with_common(argv, params, ctx, with_as_of=False,
+                        with_scope=False)
+
+
 ENGINE_BUILDERS: dict[str, Callable[[dict, JobCtx], list[str]]] = {
     "rfm_snapshot": _build_rfm,
     "churn_snapshot": _build_churn,
     "clv_snapshot": _build_clv,
     "recs_batch": _build_recs,
     "segments": _build_segments,  # argv per ml stated form; confirm pending
+    "forecast_snapshot": _build_forecast,
+    "assoc_batch": _build_assoc,
+    "explain_batch": _build_explain,
 }
+
+
+async def _resolve_explain_run_id(conn, params: dict,
+                                   ctx: JobCtx) -> str:
+    """Resolve an explain_batch segment_run_id to a concrete UUID.
+
+    Pass-through for concrete UUIDs. "latest" (or a missing/zero id)
+    resolves to the newest segment run for (segment_mode, [segment_k],
+    scope); no such run -> ManifestError with an actionable message.
+    """
+    sid = params.get("segment_run_id")
+    if sid and sid not in ("latest",
+                          "00000000-0000-0000-0000-000000000000"):
+        return str(sid)
+    mode = str(params.get("segment_mode", "overall"))
+    seg_k = params.get("segment_k")
+    if seg_k is None:
+        row = await conn.fetchrow(
+            "SELECT id FROM segment_runs WHERE mode = $1"
+            " AND brand_id IS NOT DISTINCT FROM $2::uuid"
+            " AND group_id IS NOT DISTINCT FROM $3::uuid"
+            " ORDER BY created_at DESC LIMIT 1",
+            mode, ctx.brand_id, ctx.group_id)
+    else:
+        row = await conn.fetchrow(
+            "SELECT id FROM segment_runs WHERE mode = $1 AND k = $2"
+            " AND brand_id IS NOT DISTINCT FROM $3::uuid"
+            " AND group_id IS NOT DISTINCT FROM $4::uuid"
+            " ORDER BY created_at DESC LIMIT 1",
+            mode, int(seg_k), ctx.brand_id, ctx.group_id)
+    if row is None:
+        raise ManifestError(
+            "explain_batch: no segment_runs row for"
+            f" mode={mode!r} k={seg_k!r} in scope"
+            " (run segments first)")
+    return str(row["id"])
 
 
 def _parse_run_id(output: str) -> uuid.UUID | None:
@@ -351,6 +464,26 @@ async def _run_data_engine(engine: str, params: dict,
         row = await conn.fetchrow(KPI_DAILY_UPSERT_SQL, ctx.as_of,
                                   ctx.brand_id, ctx.group_id)
         return row["id"] if row else None
+    if engine == "cohort_snapshot":
+        granularities = params.get("granularities",
+                                   list(COHORT_GRANULARITIES))
+        unknown = [g for g in granularities
+                   if g not in COHORT_GRANULARITIES]
+        if unknown:
+            raise ManifestError(
+                f"cohort_snapshot granularities {unknown!r} invalid "
+                f"(expected subset of {list(COHORT_GRANULARITIES)})")
+        max_offsets = params.get("max_offsets", {}) or {}
+        for gran in granularities:
+            max_off = int(max_offsets.get(
+                gran, COHORT_DEFAULT_MAX_OFFSETS[gran]))
+            if max_off < 0:
+                raise ManifestError(
+                    f"cohort_snapshot max_offset {max_off!r} for "
+                    f"{gran!r} must be >= 0")
+            await conn.execute(COHORT_SNAPSHOT_UPSERT_SQL, gran, max_off,
+                               ctx.brand_id, ctx.group_id)
+        return None
     raise UnknownEngineError(f"unknown data engine {engine!r}")
 
 
@@ -384,10 +517,18 @@ async def run_pipeline(conn, pipeline: str, jobs: dict[str, dict],
             ctx.brand_id, ctx.group_id)
         rid = run_row["id"]
         try:
-            if engine in ("upload_apply", "kpi_daily"):
+            if engine in DATA_ENGINES:
                 run_id = await _run_data_engine(engine, job["params"],
                                                 conn, ctx)
                 output_note = ""
+            elif engine == "explain_batch":
+                job_params = dict(job["params"])
+                job_params["segment_run_id"] = \
+                    await _resolve_explain_run_id(conn, job_params, ctx)
+                argv = ENGINE_BUILDERS[engine](job_params, ctx)
+                assert ctx.ml_repo is not None
+                output_note = await _run_subprocess(argv, ctx.ml_repo, ctx)
+                run_id = _parse_run_id(output_note)
             elif engine in ENGINE_BUILDERS:
                 argv = ENGINE_BUILDERS[engine](job["params"], ctx)
                 assert ctx.ml_repo is not None
@@ -401,7 +542,7 @@ async def run_pipeline(conn, pipeline: str, jobs: dict[str, dict],
                                json.dumps({"engine": engine}), None)
             outcomes[name] = {"status": "succeeded", "run_id": run_id,
                               "note": output_note[-500:]
-                              if engine not in ("upload_apply", "kpi_daily")
+                              if engine not in DATA_ENGINES
                               else None}
         except Exception as exc:  # noqa: BLE001 - recorded on the run row
             await conn.execute(FINISH_RUN_SQL, rid, "failed", None,

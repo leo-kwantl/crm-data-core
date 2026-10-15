@@ -112,10 +112,17 @@ gate. Seeds: nightly + weekly content-verbatim from the agreed example
 YAML (split per pipeline, ON CONFLICT DO NOTHING so admin edits win).
 
 Runner: `pipelines/schedule.py` + `scripts/run_pipeline.py --pipeline
-<name> --ml-repo <path>` (cron entrypoint). Manifest parsed from the
+<name> --ml-repo <path>` (cron entrypoint). Tick-time DB resolution:
+`--db-url` > `$DATABASE_URL` > live pgembed pidfiles re-read every
+tick (app checkout, then cwd) — ports are random per restart, never
+pinned; no live postmaster = loud failure, never a fresh empty boot.
+Manifest parsed from the
 table (`--manifest-file` dev override never writes). Topo order over
 depends_on (cycle = error); data engines in-process (upload_apply =
-sweep validated jobs, kpi_daily = KPI upsert); ml engines as
+sweep validated jobs, kpi_daily = KPI upsert, cohort_snapshot =
+retention upserts per granularity — `DATA_ENGINES`; params
+`granularities` + `max_offsets`, defaults week/month/year 12/12/5);
+ml engines as
 `python -m ml_jobs.run_* DB_URL ...` subprocesses (thread-based: safe
 on SelectorEventLoop) with DATABASE_URL passthrough; stdout run-id
 parsed, else NULL. Re-runnable: succeeded skipped unless `--force`;
@@ -190,3 +197,24 @@ as writes; 404 code aligned on `connector_not_found`. No migration
 `pipelines/ingest/connectors.py` (+ `__init__` chain) into its tree
 for serving; the data copy stays canonical — registry/validation
 changes here need an explicit re-mirror, app never edits its copy.
+
+## 020: cohort retention snapshots (D2, [ADDITIVE] analytics)
+
+`020_cohort_snapshots.sql` + `COHORT_SNAPSHOT_UPSERT_SQL` /
+`COHORT_TREND_SQL` / `retention_rate` in `pipelines/snapshot.py`.
+Grain (agreed with app): one row per (`granularity` x `cohort_period`
+x `period_offset` x scope) with `cohort_size` + `retained` +
+`retention_rate`. App serves `GET /analytics/cohort?granularity=
+week|month|year` + scope filter from this ONE table (retention line +
+heatmap). Math: cohort of a customer = `date_trunc(granularity,` first
+completed order); `retained(k)` = cohort members with ≥1 completed
+order in period (`cohort_period` + k·granularity); `retention_rate` =
+`retained`/`cohort_size` (NULL when empty; offset 0 is 1.0 by
+construction). Week periods start Monday. Writer re-run = no-op via
+the grain UNIQUE. No ML needed (cohort is a data-owned agg). Weekly
+cadence rides the scheduler (`cohort_snapshot` engine, same job family
+as the forecast snapshot). Scheduler also carries argv builders for
+`assoc_batch` / `explain_batch` / `forecast_snapshot` (ml CLI contracts
+verbatim); `explain_batch` manifests store `segment_run_id: latest`
+(resolved at dispatch to the newest segment run for `segment_mode` +/
+`segment_k` + scope — manifests never hold a stale fixed id).

@@ -235,3 +235,108 @@ async def test_runner_data_engines(database_url: str):
                 "SELECT COUNT(*) FROM kpi_daily_snapshots"
                 " WHERE snapshot_date = '2026-10-04'")
             assert int(n) == 1
+
+
+# ---- scheduler-owned freshness: cohort engine + new ml builders ----
+
+def test_data_engines_registry():
+    assert {"upload_apply", "kpi_daily", "cohort_snapshot"} <= set(
+        sched.DATA_ENGINES)
+    for e in ("rfm_snapshot", "forecast_snapshot", "assoc_batch",
+              "explain_batch"):
+        assert e in sched.ENGINE_BUILDERS
+
+
+def test_build_forecast_assoc_explain_argv():
+    ctx = _ctx()
+    f = sched.ENGINE_BUILDERS["forecast_snapshot"]({}, ctx)
+    assert f[1:4] == ["-m", "ml_jobs.run_forecast_snapshot",
+                      "postgresql://fake/db"]
+    assert "--horizon-days" in f and "28" in f
+    assert "--lookback-weeks" in f and "52" in f
+    assert "--as-of" in f
+    a = sched.ENGINE_BUILDERS["assoc_batch"]({}, ctx)
+    assert a[1:3] == ["-m", "ml_jobs.run_assoc_batch"]
+    assert "--min-support" in a and "5" in a
+    assert "--min-rules" in a and "50" in a
+    assert "--as-of" not in a
+    e = sched.ENGINE_BUILDERS["explain_batch"](
+        {"segment_run_id": "abc"}, ctx)
+    assert e[1:3] == ["-m", "ml_jobs.run_explain_batch"]
+    assert "--segment-run-id" in e and "abc" in e
+    assert "--top-n" in e and "20" in e
+    assert "--as-of" not in e
+
+
+def test_build_explain_requires_run_id():
+    with pytest.raises(sched.ManifestError, match="segment_run_id"):
+        sched.ENGINE_BUILDERS["explain_batch"]({}, _ctx())
+
+
+@pytest.mark.asyncio
+async def test_cohort_invalid_granularity_rejected():
+    with pytest.raises(sched.ManifestError, match="granularities"):
+        await sched._run_data_engine(
+            "cohort_snapshot", {"granularities": ["fortnight"]},
+            None, _ctx())
+
+
+@pytest.mark.asyncio
+async def test_unknown_data_engine_rejected():
+    with pytest.raises(sched.UnknownEngineError,
+                       match="unknown data engine"):
+        await sched._run_data_engine("nope", {}, None, _ctx())
+
+
+@pytest.mark.asyncio
+async def test_resolve_explain_run_id(database_url: str):
+    async with _pool(database_url) as pool:
+        async with pool.acquire() as conn:
+            old = await conn.fetchval(
+                "INSERT INTO segment_runs (as_of, mode, k, created_at)"
+                " VALUES ('2025-05-01', 'purchase', 5,"
+                " '2025-05-02 00:00+00') RETURNING id")
+            new = await conn.fetchval(
+                "INSERT INTO segment_runs (as_of, mode, k, created_at)"
+                " VALUES ('2025-06-01', 'purchase', 5,"
+                " '2025-06-02 00:00+00') RETURNING id")
+            ctx = _ctx()
+            assert await sched._resolve_explain_run_id(
+                conn, {"segment_run_id": str(old)}, ctx) == str(old)
+            # scoped to purchase/k=5: newest of the two seeded rows.
+            assert await sched._resolve_explain_run_id(
+                conn, {"segment_run_id": "latest",
+                       "segment_mode": "purchase",
+                       "segment_k": 5}, ctx) == str(new)
+            assert await sched._resolve_explain_run_id(
+                conn, {"segment_mode": "purchase", "segment_k": 5},
+                ctx) == str(new)
+            # bare latest (no k) may land on another test's newer
+            # purchase row in the shared DB — assert UUID shape only.
+            bare = await sched._resolve_explain_run_id(
+                conn, {"segment_run_id": "latest",
+                       "segment_mode": "purchase"}, ctx)
+            assert uuid.UUID(bare) is not None
+            # unmatched scope -> actionable ManifestError (also proves
+            # resolution is scope-aware; the shared DB may hold any mode).
+            scoped = _ctx(brand_id=str(uuid.uuid4()))
+            with pytest.raises(sched.ManifestError, match="no segment_runs"):
+                await sched._resolve_explain_run_id(
+                    conn, {"segment_run_id": "latest",
+                           "segment_mode": "purchase",
+                           "segment_k": 5}, scoped)
+            assert old != new
+
+
+# ---- explain scope-strip (ml review bug) + tick-time DB resolution ----
+
+def test_explain_argv_strips_scope_flags():
+    scoped = _ctx(brand_id="11111111-1111-1111-1111-111111111111",
+                  group_id="22222222-2222-2222-2222-222222222222")
+    e = sched.ENGINE_BUILDERS["explain_batch"](
+        {"segment_run_id": "latest"}, scoped)
+    assert "--brand-id" not in e and "--group-id" not in e
+    assert "--created-by" in e and "test" in e
+    # assoc DOES accept scope flags — untouched.
+    a = sched.ENGINE_BUILDERS["assoc_batch"]({}, scoped)
+    assert "--brand-id" in a and "11111111-1111-1111-1111-111111111111" in a
