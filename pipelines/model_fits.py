@@ -51,6 +51,24 @@ VALUES ($1, $2, $3::jsonb, $4::jsonb)
 ON CONFLICT (segment_run_id) DO NOTHING
 """
 
+LONG_MATRIX_STATS = ("cluster_mean", "cluster_median",
+                     "population_mean", "population_median",
+                     "diff", "pct_diff")
+
+LONG_MATRIX_UPSERT_SQL = """
+INSERT INTO cluster_feature_matrix_long
+  (segment_run_id, cluster, feature, stat, value)
+VALUES ($1, $2, $3, $4, $5)
+ON CONFLICT (segment_run_id, cluster, feature, stat) DO NOTHING
+"""
+
+LONG_MATRIX_FOR_RUN_SQL = """
+SELECT cluster, feature, stat, value
+FROM cluster_feature_matrix_long
+WHERE segment_run_id = $1
+ORDER BY cluster, feature, stat
+"""
+
 MATRIX_FOR_RUN_SQL = """
 SELECT cluster, feature, cluster_mean, cluster_median,
        population_mean, population_median, diff, pct_diff, layout
@@ -113,6 +131,33 @@ def _as_number(value: Any, name: str) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValueError(f"{name} must be numeric, got {value!r}")
     return float(value)
+
+
+def validate_long_row(spec: dict[str, Any]) -> dict[str, Any]:
+    """Validate an LM2 long-layout row. Returns a cleaned copy."""
+    if not isinstance(spec, dict):
+        raise ValueError("long row must be a mapping")
+    if not spec.get("segment_run_id"):
+        raise ValueError("segment_run_id is required")
+    cluster = spec.get("cluster")
+    if (isinstance(cluster, bool) or not isinstance(cluster, int)
+            or cluster < 0):
+        raise ValueError(
+            f"cluster must be an int >= 0, got {cluster!r}")
+    feature = spec.get("feature")
+    if not isinstance(feature, str) or not feature.strip():
+        raise ValueError("feature must be a non-empty string")
+    stat = spec.get("stat")
+    if stat not in LONG_MATRIX_STATS:
+        raise ValueError(
+            f"stat must be one of {list(LONG_MATRIX_STATS)},"
+            f" got {stat!r}")
+    value = spec.get("value")
+    if value is not None:
+        value = _as_number(value, "value")
+    return {"segment_run_id": spec["segment_run_id"],
+            "cluster": cluster, "feature": feature.strip(),
+            "stat": stat, "value": value}
 
 
 def validate_matrix_row(spec: dict[str, Any]) -> dict[str, Any]:
