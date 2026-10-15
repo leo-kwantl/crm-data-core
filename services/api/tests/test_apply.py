@@ -243,3 +243,81 @@ async def test_validate_only_default_unchanged(
             assert int(n) == 0
     finally:
         await pool.close()
+
+
+@pytest.mark.asyncio
+async def test_ld4_reingest_keeps_stable_surrogate_ids(
+        database_url: str, tmp_path: Path, monkeypatch) -> None:
+    """LD4 join-back probe: re-ingest of the same natural keys must keep
+    the SAME surrogate PKs (join-back), not just avoid duplicates."""
+    import asyncpg
+
+    monkeypatch.setenv("DATABASE_URL", database_url)
+    pool = await asyncpg.create_pool(database_url)
+    assert pool is not None
+    try:
+        async with pool.acquire() as conn:
+            await _seed(conn)
+    finally:
+        await pool.close()
+
+    csv_c = ("member_id,full_name\nM-900010,Stable Sam\n")
+    out1 = await run_upload.run(
+        _write(tmp_path, "s1.csv", csv_c), "customers", "pos", None,
+        None, None, apply=True)
+    assert out1["status"] == "committed", out1
+
+    lines = json.dumps([{"sku": "APPLY-SKU", "qty": 1,
+                         "unit_cents": 100}]).replace('"', '""')
+    csv_o = ("store_id,external_order_id,customer_id,lines\n"
+             f"APPLY-S1,E-STABLE,M-900010,\"{lines}\"\n")
+    out2 = await run_upload.run(
+        _write(tmp_path, "s2.csv", csv_o), "orders", "pos", None,
+        None, None, apply=True)
+    assert out2["status"] == "committed", out2
+
+    pool = await asyncpg.create_pool(database_url)
+    assert pool is not None
+    try:
+        async with pool.acquire() as conn:
+            cid1 = await conn.fetchval(
+                "SELECT id FROM customers WHERE member_id = 'M-900010'")
+            oid1 = await conn.fetchval(
+                "SELECT id FROM orders WHERE external_order_id = 'E-STABLE'")
+    finally:
+        await pool.close()
+
+    # re-ingest: byte-different files (column reorder / name change ->
+    # new upload jobs), same natural keys. Customer upsert changes the
+    # name; the surrogate id must NOT move.
+    csv_c2 = ("full_name,member_id\nStable Samuel,M-900010\n")
+    csv_o2 = ("customer_id,store_id,external_order_id,lines\n"
+              f"M-900010,APPLY-S1,E-STABLE,\"{lines}\"\n")
+    out3 = await run_upload.run(
+        _write(tmp_path, "s3.csv", csv_c2), "customers", "pos", None,
+        None, None, apply=True)
+    assert out3.get("reused") is not True, out3
+    out4 = await run_upload.run(
+        _write(tmp_path, "s4.csv", csv_o2), "orders", "pos", None,
+        None, None, apply=True)
+    assert out4.get("reused") is not True, out4
+
+    pool = await asyncpg.create_pool(database_url)
+    assert pool is not None
+    try:
+        async with pool.acquire() as conn:
+            cid2 = await conn.fetchval(
+                "SELECT id FROM customers WHERE member_id = 'M-900010'")
+            oid2 = await conn.fetchval(
+                "SELECT id FROM orders WHERE external_order_id = 'E-STABLE'")
+            n_cust = await conn.fetchval(
+                "SELECT COUNT(*) FROM customers"
+                " WHERE member_id = 'M-900010'")
+            n_ord = await conn.fetchval(
+                "SELECT COUNT(*) FROM orders"
+                " WHERE external_order_id = 'E-STABLE'")
+            assert str(cid1) == str(cid2)  # join-back: same surrogate
+            assert str(oid1) == str(oid2)
+            assert int(n_cust) == 1 and int(n_ord) == 1
+    finally:
+        await pool.close()
