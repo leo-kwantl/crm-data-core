@@ -186,4 +186,7 @@ or echoed. CONVERGED (app ruling 2026-10-15): `has_secret` means
 env-live everywhere (can this connector authenticate right now?) —
 reads compute it Python-side from the stored `secret_ref` name, same
 as writes; 404 code aligned on `connector_not_found`. No migration
-(019 covers the tables).
+(019 covers the tables). VENDORED COPY (2026-10-15): app mirrors
+`pipelines/ingest/connectors.py` (+ `__init__` chain) into its tree
+for serving; the data copy stays canonical — registry/validation
+changes here need an explicit re-mirror, app never edits its copy.
