@@ -60,7 +60,10 @@ Distribution spec (owner-approved, bound 2026-10-15):
   touched, and a `--reset-seed-block` re-run reproduces the same
   membership exactly.
 
-Run (after bootstrap wipe, before the pipeline):
+Run (after the bootstrap wipe and AFTER `seed_catalog.py` -- the
+campaign-member slice below needs the catalog campaigns to exist,
+otherwise those campaigns quietly keep only the handful of members
+seed_catalog assigned; before the pipeline):
     python scripts/seed_reseed_1200.py --database-url postgresql://...
     python scripts/seed_reseed_1200.py --database-url ... --wipe-analytics
 

@@ -22,7 +22,11 @@ lives in the name + address line.
 Prices are per-category log-normal (median/sigma below), rounded to
 $5 — the spread is the point, not any single tier.
 
-Run (after bootstrap + seed_reseed_1200, any time; rerun-safe):
+Run (order matters: after bootstrap and BEFORE `seed_reseed_1200.py`
+-- the reseeder's campaign-member slice attaches to these campaigns
+and its baskets draw on these 68 SKUs, so running it afterwards leaves
+those campaigns silently at the handful of members seeded here;
+rerun-safe either way):
     python scripts/seed_catalog.py --database-url postgresql://...
 
 NOTE: app test fixtures write brands/campaigns into a shared DB and are
