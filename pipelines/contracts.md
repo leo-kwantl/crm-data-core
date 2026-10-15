@@ -182,4 +182,8 @@ rotation: sets the env var at runtime, touches `updated_at`, no DDL;
 422 without `secret_ref`; process-scoped, lost on restart —
 secret-manager remains the pilot path). Every response carries
 `has_secret` (presence bit) only; values are never stored, logged,
-or echoed. No migration (019 covers the tables).
+or echoed. CONVERGED (app ruling 2026-10-15): `has_secret` means
+env-live everywhere (can this connector authenticate right now?) —
+reads compute it Python-side from the stored `secret_ref` name, same
+as writes; 404 code aligned on `connector_not_found`. No migration
+(019 covers the tables).

@@ -62,8 +62,10 @@ async def _guard(call: Callable[[], Awaitable[Any]]) -> Any:
     try:
         return await call()
     except repo.ConnectorNotFoundError as exc:
+        # Aligned on 'connector_not_found' with the reads (app ruling
+        # 2026-10-15) so the UI maps a single 404 code.
         raise HTTPException(status_code=404,
-                            detail={"code": "not_found",
+                            detail={"code": "connector_not_found",
                                     "message": str(exc)})
     except repo.DuplicateConnectorError as exc:
         raise HTTPException(status_code=409,
@@ -165,14 +167,19 @@ STATUSES = ("queued", "running", "succeeded", "failed")
 
 def _connector_row(r: asyncpg.Record) -> dict:
     import json as _json
+    import os as _os
 
     cfg = r["config"]
+    # CONVERGED (app ruling 2026-10-15): has_secret = env-live, computed
+    # Python-side from the stored secret_ref NAME (never a value).
+    ref = r["secret_ref"]
     return {"id": str(r["id"]),
             "source_type": r["source_type"],
             "name": r["name"],
             "config": dict(cfg) if isinstance(cfg, dict)
                       else _json.loads(cfg),
-            "has_secret": bool(r["has_secret"]),
+            "secret_ref": ref,
+            "has_secret": bool(ref) and bool(_os.environ.get(ref)),
             "enabled": bool(r["enabled"]),
             "created_by": r["created_by"],
             "created_at": r["created_at"].isoformat(),

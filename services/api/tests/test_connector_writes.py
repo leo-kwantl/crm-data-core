@@ -266,3 +266,38 @@ async def test_reads_404_code(client):
         headers=ADMIN_H)
     assert r.status_code == 404
     assert r.json()["detail"]["code"] == "connector_not_found"
+
+
+# ---- converged semantics (app rulings 2026-10-15) ----
+
+async def test_reads_has_secret_is_env_live(client, monkeypatch):
+    r = await _create(client, {
+        "source_type": "csv", "name": "live-bit",
+        "config": {"column_map": {}},
+        "secret_ref": "TEST_LIVE_BIT_XYZ"})
+    cid = r.json()["id"]
+    monkeypatch.delenv("TEST_LIVE_BIT_XYZ", raising=False)
+    # ref configured but env unset -> False on BOTH reads and writes.
+    det = await client.get(f"/api/v1/connectors/{cid}", headers=ADMIN_H)
+    assert det.json()["has_secret"] is False
+    assert det.json()["secret_ref"] == "TEST_LIVE_BIT_XYZ"
+    lst = await client.get("/api/v1/connectors", headers=ADMIN_H)
+    mine = next(i for i in lst.json()["connectors"] if i["id"] == cid)
+    assert mine["has_secret"] is False
+    # env set -> True everywhere, value never echoed.
+    monkeypatch.setenv("TEST_LIVE_BIT_XYZ", "v")
+    det2 = await client.get(f"/api/v1/connectors/{cid}", headers=ADMIN_H)
+    assert det2.json()["has_secret"] is True
+    assert det2.json()["secret_ref"] == "TEST_LIVE_BIT_XYZ"
+
+
+async def test_write_404_code_aligned(client):
+    r = await client.get(
+        "/api/v1/connectors/00000000-0000-0000-0000-000000000001/sync",
+        headers=ADMIN_H)
+    assert r.status_code == 405  # GET not mounted; POST below is the check
+    p = await client.post(
+        "/api/v1/connectors/00000000-0000-0000-0000-000000000001/sync",
+        json={"entity": "orders"}, headers=ADMIN_H)
+    assert p.status_code == 404
+    assert p.json()["detail"]["code"] == "connector_not_found"

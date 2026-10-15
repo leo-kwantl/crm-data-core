@@ -4,17 +4,20 @@
 -- NULL-safe predicate. config holds NON-SECRET params only; secret_ref
 -- names an env var — neither is ever expanded here (sanitize-on-read).
 
+-- CONVERGED (app ruling 2026-10-15): has_secret means env-live
+-- everywhere (can this connector authenticate right now?). The SELECTs
+-- return secret_ref (a NAME, never a value); the routers compute the
+-- presence bit Python-side via os.environ. secret_ref IS NOT NULL alone
+-- is no longer used as the bit.
 -- name: connector_list
-SELECT id, source_type, name, config,
-       (secret_ref IS NOT NULL) AS has_secret,
+SELECT id, source_type, name, config, secret_ref,
        enabled, created_by, created_at, updated_at
 FROM connectors
 ORDER BY source_type, name;
 
 -- name: connector_by_id
 -- params: id uuid
-SELECT id, source_type, name, config,
-       (secret_ref IS NOT NULL) AS has_secret,
+SELECT id, source_type, name, config, secret_ref,
        enabled, created_by, created_at, updated_at
 FROM connectors
 WHERE id = $1;
