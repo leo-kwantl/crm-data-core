@@ -55,13 +55,15 @@ FETCH_MANIFEST_SQL = "SELECT yaml FROM pipeline_manifests WHERE pipeline = $1"
 
 UPSERT_RUN_SQL = """
 INSERT INTO pipeline_runs
-  (pipeline, job, as_of, status, started_at, brand_id, group_id)
-VALUES ($1, $2, $3::date, 'running', now(), $4, $5)
+  (pipeline, job, as_of, status, started_at, brand_id, group_id,
+   sync_run_id)
+VALUES ($1, $2, $3::date, 'running', now(), $4, $5, $6::uuid)
 ON CONFLICT (pipeline, job, as_of,
   COALESCE(brand_id, '00000000-0000-0000-0000-000000000000'::uuid),
   COALESCE(group_id, '00000000-0000-0000-0000-000000000000'::uuid))
 DO UPDATE SET status = 'running', started_at = now(), error = NULL,
-  finished_at = NULL
+  finished_at = NULL,
+  sync_run_id = COALESCE(pipeline_runs.sync_run_id, EXCLUDED.sync_run_id)
 RETURNING id
 """
 
@@ -175,6 +177,7 @@ class JobCtx:
     brand_id: Any
     group_id: Any
     created_by: str | None
+    sync_run_id: str | None = None  # LD3: feeding 019 connector_sync_runs row
     ml_repo: Path | None = None
     db_url: str | None = None
     timeout_s: float = 1800.0
@@ -587,7 +590,7 @@ async def run_pipeline(conn, pipeline: str, jobs: dict[str, dict],
                 continue
         run_row = await conn.fetchrow(
             UPSERT_RUN_SQL, pipeline, name, ctx.as_of,
-            ctx.brand_id, ctx.group_id)
+            ctx.brand_id, ctx.group_id, ctx.sync_run_id)
         rid = run_row["id"]
         try:
             if engine in DATA_ENGINES:
