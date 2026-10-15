@@ -21,14 +21,22 @@ dataset reads 940 cohort members). INSERT-only: bootstrap identity rows
 referenced. Rerun-safe: existing member_ids and external order ids
 are skipped in Python (deterministic RNG stream, seed 7).
 
-DETERMINISM IS CONDITIONAL ON DB STATE, not just on the seed: baskets
-draw from the `products` table, home stores from `stores`/`brands` and
-the campaign slice from `campaigns`, so the same seed over a different
-catalog yields a different dataset (pre-catalog 12-SKU run: 9,372
-orders starting 2024-10-25; the 68-SKU catalog + 3-year ladder: 8,685
-orders starting 2023-11-12). Reference binds with the catalog present:
-customers 1,208 / orders 8,685 / top20_share 0.76 / max_recency_d 400
-/ full_optout 107.
+DETERMINISM IS CONDITIONAL ON DB STATE AND ON THIS REVISION, not just
+on the seed: baskets draw from the `products` table, home stores from
+`stores`/`brands` and the campaign slice from `campaigns`, so the same
+seed over a different catalog yields different baskets and revenue. The
+COHORT LADDER is the loudest difference between revisions, which is why
+the summary line prints it: `SIGNUP_MONTHS = 36` (commit 510f62c and
+later) gives 36 first-order months starting 2023-11-12 with 8,670
+M-03 orders, while the pre-510f62c 24-month ladder gives 25
+first-order months starting 2024-10-25 with 9,357. Those are block-only
+counts; TOTALS add the 8 bootstrap demo customers / ~15 orders, i.e.
+8,685 vs 9,372 -- so a run reporting `orders=9372` or a 2024-10 first
+order ran a STALE CHECKOUT of this script, not a different catalog (a
+catalog swap moves baskets/revenue, never the ladder). Reference binds
+on this revision (totals): customers 1,208 / orders 8,685 /
+top20_share 0.76 / max_recency_d ~400 (measured against CURRENT_DATE,
+so it grows by 1 per day) / full_optout 107.
 
 Distribution spec (owner-approved, bound 2026-10-15):
 - 1,200 customers, M-03 block (M-030001..M-031200; no collision with
@@ -572,12 +580,17 @@ async def main() -> int:
             "SELECT max(CURRENT_DATE - max_od)::int FROM"
             " (SELECT customer_id, max(ordered_at)::date max_od"
             " FROM orders GROUP BY 1) t")
+        lad = await conn.fetchrow(
+            "SELECT count(DISTINCT date_trunc('month', f)) m,"
+            " min(f)::date lo FROM (SELECT customer_id, min(ordered_at) f"
+            " FROM orders GROUP BY 1) t")
         optout = await conn.fetchval(
             "SELECT count(*) FROM (SELECT customer_id FROM consents"
             " GROUP BY 1 HAVING bool_and(status = 'opted_out')) t")
         ncust = await conn.fetchval("SELECT count(*) FROM customers")
         print(f"customers={ncust} orders={span['n']} "
               f"range={span['lo']}..{span['hi']} "
+              f"cohort_months={lad['m']} first_cohort={lad['lo']} "
               f"top20_share={share:.2f} max_recency_d={rec} "
               f"full_optout={optout}")
     finally:
