@@ -340,3 +340,44 @@ def test_explain_argv_strips_scope_flags():
     # assoc DOES accept scope flags — untouched.
     a = sched.ENGINE_BUILDERS["assoc_batch"]({}, scoped)
     assert "--brand-id" in a and "11111111-1111-1111-1111-111111111111" in a
+
+
+def test_window_rolling_days():
+    end = date(2026, 10, 15)
+    assert sched.resolve_window("rolling", 30, "days", end) == (
+        date(2026, 9, 16), end)
+
+
+def test_window_rolling_guard_rejects_short():
+    with pytest.raises(ValueError):
+        sched.resolve_window("rolling", 7, "days", date(2026, 10, 15))
+    with pytest.raises(ValueError):
+        sched.resolve_window("rolling", 3, "weeks", date(2026, 10, 15))
+
+
+def test_window_past_months_excludes_current():
+    # Oct 15 -> past 1 month = all of September
+    assert sched.resolve_window("past", 1, "months",
+                                date(2026, 10, 15)) == (
+        date(2026, 9, 1), date(2026, 9, 30))
+
+
+def test_window_past_weeks_are_mon_sun():
+    # Wed 2026-10-14 -> past 1 week = Mon 10/5 .. Sun 10/11
+    assert sched.resolve_window("past", 1, "weeks",
+                                date(2026, 10, 14)) == (
+        date(2026, 10, 5), date(2026, 10, 11))
+
+
+def test_window_current_month_to_date():
+    assert sched.resolve_window("current", None, "months",
+                                date(2026, 10, 15)) == (
+        date(2026, 10, 1), date(2026, 10, 15))
+
+
+def test_window_rejects_unknown():
+    with pytest.raises(ValueError):
+        sched.resolve_window("someday", 30, "days", date(2026, 10, 15))
+    with pytest.raises(ValueError):
+        sched.resolve_window("rolling", 30, "fortnights",
+                             date(2026, 10, 15))
