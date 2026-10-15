@@ -117,3 +117,82 @@ def test_resolve_asof_rejects_unknown_mode():
 def test_latest_cutoff_sql_present():
     assert "MAX(snapshot_date)" in LATEST_KPI_DATE_SQL
     assert "MAX(cohort_period)" in LATEST_COHORT_DATE_SQL
+
+
+def test_ld11_validate_report_definition_ok():
+    from pipelines.reports import validate_report_definition
+    out = validate_report_definition({
+        "report_id": "rfm", "name": "RFM Segments", "kind": "segments",
+        "grain": "customer",
+        "definition": {"axes": ["recency", "frequency"],
+                       "metrics": ["count", "revenue_cents"],
+                       "rfm_note": "quintiles per scope"}})
+    assert out["version"] == 1
+    assert out["definition"]["rfm_note"].startswith("quintiles")
+
+
+def test_ld11_validate_rejects_thin_specs():
+    from pipelines.reports import validate_report_definition
+    with pytest.raises(ValueError, match="missing"):
+        validate_report_definition({"report_id": "x"})
+    with pytest.raises(ValueError, match="at least one"):
+        validate_report_definition({
+            "report_id": "x", "name": "X", "kind": "k", "grain": "g",
+            "definition": {"rfm_note": "no renderable content"}})
+    with pytest.raises(ValueError, match="version"):
+        validate_report_definition({
+            "report_id": "x", "name": "X", "kind": "k", "grain": "g",
+            "version": 0,
+            "definition": {"metrics": ["count"]}})
+
+
+@pytest.mark.asyncio
+async def test_ld11_report_versioning_latest_wins(database_url: str):
+    """New version = new row; readers take MAX(version); re-insert of
+    the same version is a no-op (immutable history)."""
+    import json
+    import re
+    from pathlib import Path
+
+    import asyncpg
+
+    from pipelines.reports import (
+        LATEST_DEFINITIONS_SQL,
+        REPORT_UPSERT_SQL,
+    )
+
+    pool = await asyncpg.create_pool(database_url)
+    assert pool is not None
+    try:
+        async with pool.acquire() as conn:
+            exists = await conn.fetchval(
+                "SELECT to_regclass('public.report_definitions')")
+            if exists is None:
+                up_re = re.compile(
+                    r"--\s*migrate:up(.*?)(?=--\s*migrate:down|\Z)",
+                    re.S | re.I)
+                mig = (Path(__file__).resolve().parents[3]
+                       / "db" / "migrations"
+                       / "026_report_definitions.sql")
+                m = up_re.search(mig.read_text(encoding="utf-8"))
+                assert m is not None
+                await conn.execute(m.group(1).strip())
+            for ver, metrics in ((1, ["count"]), (2, ["count", "ltv"])):
+                await conn.execute(
+                    REPORT_UPSERT_SQL, "ld11-probe", ver, "Probe",
+                    "custom", "customer",
+                    json.dumps({"metrics": metrics}))
+            again = await conn.execute(
+                REPORT_UPSERT_SQL, "ld11-probe", 2, "Probe",
+                "custom", "customer", json.dumps({"metrics": ["count"]}))
+            assert again == "INSERT 0 0"  # conflict -> no-op
+            rows = await conn.fetch(LATEST_DEFINITIONS_SQL)
+            probe = [r for r in rows if r["report_id"] == "ld11-probe"]
+            assert len(probe) == 1 and probe[0]["version"] == 2
+            got = json.loads(probe[0]["definition"])
+            assert got == {"metrics": ["count", "ltv"]}
+            await conn.execute(
+                "DELETE FROM report_definitions WHERE report_id = $1",
+                "ld11-probe")
+    finally:
+        await pool.close()

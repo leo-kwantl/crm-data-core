@@ -263,3 +263,17 @@ Method `trend_seasonal_naive`; thin categories counted in
 `skipped_count`, never silent. Shape mirrors
 `ml_engine/store_forecast.py` inserts. M4 simulator needs no migration
 (pure in-process engine, no DB).
+
+## 026: report definitions registry (LD11, [ADDITIVE] analytics)
+
+`026_report_definitions.sql` + `pipelines/reports.py`. Report pages
+are app-served, but their DEFINITIONS live here so snapshots and
+pages can't drift: `report_definitions(report_id, version, name,
+kind, grain, definition jsonb)` pins (axes, metrics, filters) per
+report version. Immutable rows (`REVOKE UPDATE/DELETE`, same
+convention as 013): a new version is a new row (`ON CONFLICT
+(report_id, version) DO NOTHING`), readers take MAX(version) via
+`LATEST_DEFINITIONS_SQL`. `validate_report_definition` requires
+`report_id/name/kind/grain` + `version >= 1` + at least one of
+`axes|metrics|filters` in `definition`. Any RFM/design writeup rides
+inside `definition` under `rfm_note` — deliberately no second table.
