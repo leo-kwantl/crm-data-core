@@ -300,7 +300,13 @@ table FIRST; ml's fitting engine writes rows matching this grain. One
 row per (as_of x activity x horizon_days x scope x model): `params`
 `{r, alpha, a, b}` all > 0, `n_customers`, `loglikelihood`, or
 `fit_error` when the fit fails (CHECK: params or error, never
-neither). Grain mirrors `churn_snapshots` (013) NULL-safe (COALESCE
+neither). MODEL STRINGS (034, post-repoint fallout 2026-10-15):
+canonical values are UNDERSCORE `bg_nbd`/`pareto_nbd` — 028 shipped
+hyphen `bg-nbd` but every production-shaped write bounced on the
+CHECK while ml's writer+readers were already underscore-consistent,
+so data moved (CHECK swap, no backfill — no live hyphen rows could
+exist). `validate_btyd_params` rejects hyphen. Grain mirrors
+`churn_snapshots` (013) NULL-safe (COALESCE
 sentinel UNIQUE) so the serving read joins scope-to-scope; refit =
 new `as_of` row, never UPDATE (REVOKE, same convention as 013).
 `LATEST_BTYD_PARAMS_SQL` serves the newest successful fit per grain

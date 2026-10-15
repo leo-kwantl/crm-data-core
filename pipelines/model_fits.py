@@ -10,7 +10,7 @@ from __future__ import annotations
 from datetime import date
 from typing import Any
 
-BTYD_MODELS = ("bg-nbd", "pareto-nbd")
+BTYD_MODELS = ("bg_nbd", "pareto_nbd")
 BTYD_PARAM_KEYS = ("r", "alpha", "a", "b")
 ACTIVITIES = ("orders", "all")
 
@@ -93,7 +93,7 @@ def validate_btyd_params(spec: dict[str, Any]) -> dict[str, Any]:
             or not 1 <= horizon <= 730):
         raise ValueError(
             f"horizon_days must be 1..730, got {horizon!r}")
-    model = spec.get("model", "bg-nbd")
+    model = spec.get("model", "bg_nbd")
     if model not in BTYD_MODELS:
         raise ValueError(f"model must be one of {BTYD_MODELS}")
     params = spec.get("params")
