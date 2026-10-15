@@ -12,9 +12,12 @@ import pytest
 from pipelines.snapshot import (
     KPI_DAILY_UPSERT_SQL,
     KPI_TREND_SQL,
+    LATEST_COHORT_DATE_SQL,
+    LATEST_KPI_DATE_SQL,
     clv_movement,
     kpi_movement,
     pct_change,
+    resolve_asof,
 )
 
 
@@ -94,3 +97,23 @@ async def test_kpi_daily_upsert_idempotent(database_url: str):
             assert int(n) == 1
     finally:
         await pool.close()
+
+
+def test_resolve_asof_latest_returns_data_max():
+    assert (resolve_asof("latest", date(2026, 10, 5), date(2026, 10, 9))
+            == date(2026, 10, 5))
+
+
+def test_resolve_asof_current_returns_yesterday():
+    assert (resolve_asof("current", date(2026, 10, 5), date(2026, 10, 9))
+            == date(2026, 10, 8))
+
+
+def test_resolve_asof_rejects_unknown_mode():
+    with pytest.raises(ValueError):
+        resolve_asof("whenever", date(2026, 10, 5), date(2026, 10, 9))
+
+
+def test_latest_cutoff_sql_present():
+    assert "MAX(snapshot_date)" in LATEST_KPI_DATE_SQL
+    assert "MAX(cohort_period)" in LATEST_COHORT_DATE_SQL

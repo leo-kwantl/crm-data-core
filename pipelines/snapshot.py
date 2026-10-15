@@ -204,3 +204,49 @@ WHERE granularity = $1::text
   AND group_id IS NOT DISTINCT FROM $3::uuid
 ORDER BY cohort_period, period_offset
 """
+
+# --- Twin as-of cutoffs (LD5, no migration) ---
+#
+# Two ways to read "as of" without duplicating tables, stolen from
+# legacy's vw_churn_clv_inference_latest/current pair (identical views,
+# different cutoff):
+#   latest  = MAX(date) present in the data (data-max cutoff; the table
+#             may lag wall-clock when a feed stalls).
+#   current = yesterday wall-clock (CURRENT_DATE - 1; complete-day rule).
+# The daily job resolves the data-max cutoff with LATEST_*_SQL, then
+# serves either cutoff through the same trend queries by passing the
+# resolved date as the end bound. Pure-Python resolve_asof() keeps the
+# rule unit-testable without a DB.
+from datetime import date as _date, timedelta as _timedelta
+
+ASOF_MODES = ("latest", "current")
+
+
+def resolve_asof(mode: str, latest_in_data: _date,
+                 today: _date) -> _date:
+    """Resolve an as-of cutoff date for a snapshot read.
+
+    latest  -> latest_in_data (data-max; feeds may lag wall-clock).
+    current -> today - 1 day (complete-day wall-clock rule).
+    Raises ValueError on unknown mode.
+    """
+    if mode == "latest":
+        return latest_in_data
+    if mode == "current":
+        return today - _timedelta(days=1)
+    raise ValueError(f"unknown as-of mode: {mode!r} "
+                     f"(expected one of {ASOF_MODES})")
+
+
+LATEST_KPI_DATE_SQL = """
+SELECT MAX(snapshot_date) FROM kpi_daily_snapshots
+WHERE brand_id IS NOT DISTINCT FROM $1::uuid
+  AND group_id IS NOT DISTINCT FROM $2::uuid
+"""
+
+LATEST_COHORT_DATE_SQL = """
+SELECT MAX(cohort_period) FROM cohort_snapshots
+WHERE granularity = $1::text
+  AND brand_id IS NOT DISTINCT FROM $2::uuid
+  AND group_id IS NOT DISTINCT FROM $3::uuid
+"""
