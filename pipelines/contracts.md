@@ -382,6 +382,19 @@ one row per stat per feature per cluster.
 at dispatch. No matching run = job `failed` with an actionable
 ManifestError and downstream jobs `skipped`.
 
+That containment is the whole dispatch, not just the resolver: the
+resolve call and `ENGINE_BUILDERS[engine](...)` both sit inside the job's
+`try` (`pipelines/schedule.py:634-641`), so a malformed manifest
+(a wrong `params` key raising in `_build_matrix`, an `argv` builder
+refusing its input) also lands as `status = 'failed'` with
+`type(exc).__name__: exc` on that job's `pipeline_runs` row (`:658`)
+and the tick carries on with the remaining jobs. Consequence for
+debugging: a wrong key is **discoverable, not dark** — the reason is on
+the run row and in the tick's `outcomes[<job>]['error']`, it just has
+no serving-time symptom, so no API response will ever point at it. Query
+`pipeline_runs.error` (or the tick result) before assuming a job never
+ran.
+
 CLI (ml, `ml_jobs/run_matrix_batch.py`): `python
 ml_jobs/run_matrix_batch.py DB_URL --segment-run-id UUID`. Argparse
 declares nothing else — the runner passes no `--as-of`, no
