@@ -8,8 +8,11 @@ Ded provisions: (source, source_event_id) unique; replays are no-ops.
 from __future__ import annotations
 
 
-def normalize(raw: dict) -> dict:
+def normalize(raw: dict, exclusions: list = ()) -> dict:
     """Validate + normalize one raw source event. Raises ValueError."""
+    from pipelines.exclusions import check_excluded
+    check_excluded(exclusions, "event", raw.get("source_event_id"))
+    check_excluded(exclusions, "customer", raw.get("member_id"))
     if not raw.get("customer_id"):
         raise ValueError("customer_id is required")
     if not raw.get("type"):

@@ -13,8 +13,10 @@ import re
 MEMBER_RE = re.compile(r"^M-[0-9]{6}$")
 
 
-def normalize_binding(raw: dict) -> dict:
+def normalize_binding(raw: dict, exclusions: list = ()) -> dict:
     """Validate one external-ID binding. Raises ValueError."""
+    from pipelines.exclusions import check_excluded
+    check_excluded(exclusions, "customer", raw.get("member_id"))
     member_id = raw.get("member_id", "")
     if not MEMBER_RE.match(member_id):
         raise ValueError(f"bad member_id (want M-NNNNNN): {member_id!r}")

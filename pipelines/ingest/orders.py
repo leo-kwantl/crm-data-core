@@ -11,8 +11,11 @@ Stages: extract (source client) -> normalize (this module) -> load
 from __future__ import annotations
 
 
-def normalize(raw: dict) -> dict:
+def normalize(raw: dict, exclusions: list = ()) -> dict:
     """Validate + normalize one raw source order. Raises ValueError."""
+    from pipelines.exclusions import check_excluded
+    check_excluded(exclusions, "order", raw.get("external_order_id"))
+    check_excluded(exclusions, "customer", raw.get("member_id"))
     if not raw.get("store_id"):
         raise ValueError("store_id is required (NOT NULL)")
     if not raw.get("external_order_id"):
