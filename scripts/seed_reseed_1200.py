@@ -1,8 +1,17 @@
 """Reseed generator: 1,200 realistic customers (DEV-ONLY, INSERT-only).
 
 Sibling to seed_dev_history.py, built for the owner-directed reseed
-(runbook: pushes -> wipe -> this seed -> run_pipeline nightly ->
-ml flows -> serving verify). INSERT-only: bootstrap identity rows
+(runbook: pushes -> seed_catalog.py -> wipe -> this seed ->
+run_pipeline nightly -> scheduler cohort snapshot engine -> ml flows
+-> serving verify). `--wipe-analytics` clears all 30 regenerable
+snapshot/batch tables (see ANALYTICS_TABLES; guarded by
+services/api/tests/test_seed_wipe.py) and deliberately keeps
+NEVER_WIPE ones (watermarks, connector config, report definitions,
+sessions). Ordering that matters: run_pipeline.py and the cohort
+snapshot engine must run BEFORE the ML slots, because the segments
+step reads RFM scores and the serving verify reads cohort snapshots
+(after a wipe, /cohort is empty until that engine runs; a rebuilt
+dataset reads 940 cohort members). INSERT-only: bootstrap identity rows
 (users/staff/tiers/campaigns/brands/groups) are never touched, only
 referenced. Rerun-safe: existing member_ids and external order ids
 are skipped in Python (deterministic RNG stream, seed 7).
@@ -21,6 +30,9 @@ Distribution spec (owner-approved, bound 2026-10-15):
 - Order counts Pareto-lognormal mix: top ~20% of customers yield
   ~80% of revenue (VIP lognormal(mu=3.3) vs base lognormal(mu=0.5),
   tuned; the measured share is printed at the end of every run).
+- Orders spread over every brand's stores: each customer gets a
+  deterministic home store (85% repeat visits), so brand-scoped
+  /cohort, /rfm and /segments views are populated for all brands.
 - Zero-order members are kept (base lognormal truncation, ~19%): real
   no-purchase members, and by contract they never appear in a cohort,
   so cohort members are always < the customer count.
