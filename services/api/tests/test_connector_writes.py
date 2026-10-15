@@ -229,3 +229,40 @@ async def test_all_writes_admin_only(client, db_pool):
         resp = await client.request(method, path, json=payload,
                                     headers=staff)
         assert resp.status_code == 403, (method, path, resp.text)
+
+
+# ---- merged reads (app-mirrored; staff-gated, SQL-backed) ----
+
+async def test_reads_list_detail_runs_staff_gated(client, db_pool):
+    staff = await make_session(db_pool, "connector-reader", role="manager")
+    r = await _create(client, {
+        "source_type": "csv", "name": "readable",
+        "config": {"column_map": {}}})
+    cid = r.json()["id"]
+    await client.post(f"/api/v1/connectors/{cid}/sync",
+                      json={"entity": "orders"}, headers=ADMIN_H)
+    lst = await client.get("/api/v1/connectors", headers=staff)
+    assert lst.status_code == 200, lst.text
+    items = lst.json()["connectors"]
+    assert any(i["id"] == cid for i in items)
+    mine = next(i for i in items if i["id"] == cid)
+    assert mine["last_run"] is not None
+    assert mine["last_run"]["status"] == "queued"
+    det = await client.get(f"/api/v1/connectors/{cid}", headers=staff)
+    assert det.status_code == 200
+    assert det.json()["name"] == "readable"
+    runs = await client.get(
+        f"/api/v1/connectors/{cid}/sync-runs", headers=staff)
+    assert runs.status_code == 200
+    assert runs.json()["sync_runs"][0]["entity"] == "orders"
+    filt = await client.get(
+        f"/api/v1/connectors/{cid}/sync-runs?entity=nope", headers=staff)
+    assert filt.status_code == 422
+
+
+async def test_reads_404_code(client):
+    r = await client.get(
+        "/api/v1/connectors/00000000-0000-0000-0000-000000000000",
+        headers=ADMIN_H)
+    assert r.status_code == 404
+    assert r.json()["detail"]["code"] == "connector_not_found"

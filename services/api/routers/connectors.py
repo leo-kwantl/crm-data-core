@@ -14,18 +14,34 @@ uploads: these move secrets + execution). Reads stay app-side.
 
 Secrets never round-trip: every response carries `has_secret`
 (presence bit) only. The rotation value is never logged or echoed.
+
+READS (mirrored verbatim from app `routers/connectors.py` so the
+mirror is a single whole file — merge, not overwrite):
+- GET /connectors (global registry + latest in-scope run each)
+- GET /connectors/{id} (one connector + latest in-scope run)
+- GET /connectors/{id}/sync-runs[?entity=&status=&limit=]
+Staff-gated (any signed-in role); SQL-backed via db/queries/connectors.sql.
 """
 
 from __future__ import annotations
 
+import re
+import uuid as uuid_mod
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import Annotated, Any
 from uuid import UUID
 
 import asyncpg
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 
-from ..deps import get_pool, require_admin
+from ..deps import (
+    CurrentUser,
+    get_current_user,
+    get_pool,
+    require_admin,
+    scope_filters,
+)
 from ..repos import connectors as repo
 from ..schemas.connector import (
     ConnectorCreate,
@@ -122,3 +138,137 @@ async def rotate_secret(connector_id: UUID, body: ConnectorSecretRotate,
     return {"id": upd["id"], "secret_ref": upd["secret_ref"],
             "has_secret": upd["has_secret"],
             "updated_at": upd["updated_at"]}
+
+
+# ---- reads (app-mirrored verbatim; app owns the text) ----
+
+QUERIES_PATH = (Path(__file__).resolve().parents[3] / "db" / "queries"
+                / "connectors.sql")
+
+_NAME_RE = re.compile(r"^--\s*name:\s*(\w+)\s*$", re.M)
+
+
+def _load_queries() -> dict[str, str]:
+    text = QUERIES_PATH.read_text(encoding="utf-8")
+    parts = _NAME_RE.split(text)
+    out: dict[str, str] = {}
+    for i in range(1, len(parts) - 1, 2):
+        out[parts[i]] = parts[i + 1].strip().rstrip(";")
+    return out
+
+
+Q = _load_queries()
+
+ENTITIES = ("customers", "orders", "events", "identity", "products")
+STATUSES = ("queued", "running", "succeeded", "failed")
+
+
+def _connector_row(r: asyncpg.Record) -> dict:
+    import json as _json
+
+    cfg = r["config"]
+    return {"id": str(r["id"]),
+            "source_type": r["source_type"],
+            "name": r["name"],
+            "config": dict(cfg) if isinstance(cfg, dict)
+                      else _json.loads(cfg),
+            "has_secret": bool(r["has_secret"]),
+            "enabled": bool(r["enabled"]),
+            "created_by": r["created_by"],
+            "created_at": r["created_at"].isoformat(),
+            "updated_at": r["updated_at"].isoformat()}
+
+
+def _run_row(r: asyncpg.Record) -> dict:
+    return {"id": str(r["id"]),
+            "entity": r["entity"],
+            "status": r["status"],
+            "rows_seen": int(r["rows_seen"]),
+            "rows_ok": int(r["rows_ok"]),
+            "rows_rejected": int(r["rows_rejected"]),
+            "error": r["error"],
+            "started_at": r["started_at"].isoformat()
+                         if r["started_at"] else None,
+            "finished_at": r["finished_at"].isoformat()
+                          if r["finished_at"] else None,
+            "created_at": r["created_at"].isoformat()}
+
+
+async def _get_connector_row(conn, connector_id: str) -> asyncpg.Record:
+    try:
+        cid = uuid_mod.UUID(connector_id)
+    except ValueError:
+        raise HTTPException(status_code=422, detail={
+            "code": "bad_connector_id", "value": connector_id})
+    row = await conn.fetchrow(Q["connector_by_id"], cid)
+    if row is None:
+        raise HTTPException(status_code=404,
+                            detail={"code": "connector_not_found"})
+    return row
+
+
+@router.get("/connectors")
+async def list_connectors(
+    user: Annotated[CurrentUser, Depends(get_current_user)],
+    pool: Annotated[asyncpg.Pool, Depends(get_pool)],
+) -> dict:
+    _ = user
+    brand_id, group_id = scope_filters(user)
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(Q["connector_list"])
+        items = []
+        for r in rows:
+            last = await conn.fetchrow(Q["connector_last_run"], r["id"],
+                                       brand_id, group_id)
+            d = _connector_row(r)
+            d["last_run"] = ({"status": last["status"],
+                              "finished_at": last["finished_at"].isoformat()
+                                             if last["finished_at"] else None}
+                             if last else None)
+            items.append(d)
+    return {"connectors": items}
+
+
+@router.get("/connectors/{connector_id}")
+async def get_connector(
+    connector_id: str,
+    user: Annotated[CurrentUser, Depends(get_current_user)],
+    pool: Annotated[asyncpg.Pool, Depends(get_pool)],
+) -> dict:
+    _ = user
+    brand_id, group_id = scope_filters(user)
+    async with pool.acquire() as conn:
+        row = await _get_connector_row(conn, connector_id)
+        last = await conn.fetchrow(Q["connector_last_run"], row["id"],
+                                   brand_id, group_id)
+    d = _connector_row(row)
+    d["last_run"] = ({"status": last["status"],
+                      "finished_at": last["finished_at"].isoformat()
+                                     if last["finished_at"] else None}
+                     if last else None)
+    return d
+
+
+@router.get("/connectors/{connector_id}/sync-runs")
+async def list_sync_runs(
+    connector_id: str,
+    user: Annotated[CurrentUser, Depends(get_current_user)],
+    pool: Annotated[asyncpg.Pool, Depends(get_pool)],
+    entity: Annotated[str | None, Query()] = None,
+    status: Annotated[str | None, Query()] = None,
+    limit: Annotated[int, Query(ge=1, le=50)] = 10,
+) -> dict:
+    if entity is not None and entity not in ENTITIES:
+        raise HTTPException(status_code=422, detail={
+            "code": "bad_entity", "value": entity})
+    if status is not None and status not in STATUSES:
+        raise HTTPException(status_code=422, detail={
+            "code": "bad_status", "value": status})
+    _ = user
+    brand_id, group_id = scope_filters(user)
+    async with pool.acquire() as conn:
+        row = await _get_connector_row(conn, connector_id)
+        rows = await conn.fetch(Q["connector_sync_runs"], row["id"],
+                                brand_id, group_id, limit, entity, status)
+        items = [_run_row(r) for r in rows]
+    return {"connector_id": str(row["id"]), "sync_runs": items}
