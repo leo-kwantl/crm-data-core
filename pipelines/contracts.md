@@ -227,3 +227,15 @@ verbatim); `explain_batch` manifests store `segment_run_id: latest`
 mean_abs_shap/mean_shap/min_shap/max_shap, UNIQUE against
 double-write). PNGs stay MLflow-only; app serves latest-run summaries.
 Shape mirrors `ml_engine/store_explain.py` inserts.
+
+## 022: demand-forecast snapshot tables (M3, [ADDITIVE] analytics)
+
+`022_forecast.sql`: `forecast_batches` (as_of/method/horizon_days/
+lookback_weeks/category_count/skipped_count/scope, grain UNIQUE for
+idempotent weekly cadence) + `forecast_rows` (one row per batch x
+category x Monday-week `period_start`: predicted_qty + 80% interval
+lower_qty/upper_qty, CHECK-ordered, UNIQUE against double-write).
+Method `trend_seasonal_naive`; thin categories counted in
+`skipped_count`, never silent. Shape mirrors
+`ml_engine/store_forecast.py` inserts. M4 simulator needs no migration
+(pure in-process engine, no DB).
