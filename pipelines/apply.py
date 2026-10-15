@@ -103,6 +103,43 @@ VALUES ($1, $2, $3, $4, $5, $6::jsonb)
 ON CONFLICT (upload_job_id, row_number) DO NOTHING
 """
 
+# LD1: side-table registry (table, pk column). Writers merge jsonb
+# patches key-by-key; D1 column_map leftovers call upsert_custom_data.
+CUSTOM_DATA_TABLES = {
+    "customers": ("customer_custom_data", "customer_id"),
+    "orders": ("order_custom_data", "order_id"),
+    "events": ("event_custom_data", "event_id"),
+    "products": ("product_custom_data", "product_id"),
+}
+
+
+def custom_data_upsert_sql(entity: str) -> str:
+    """INSERT..ON CONFLICT merge for an LD1 side table."""
+    try:
+        table, pk = CUSTOM_DATA_TABLES[entity]
+    except KeyError:
+        raise ValueError(
+            f"unknown custom-data entity: {entity!r} "
+            f"(expected one of {sorted(CUSTOM_DATA_TABLES)})") from None
+    return (
+        f"INSERT INTO {table} ({pk}, data) "
+        f"VALUES ($1, $2::jsonb) "
+        f"ON CONFLICT ({pk}) DO UPDATE SET "
+        f"data = {table}.data || EXCLUDED.data, "
+        f"updated_at = now()"
+    )
+
+
+async def upsert_custom_data(conn, entity: str, entity_id: str,
+                             patch: dict) -> None:
+    """Merge a jsonb patch into an LD1 side row (insert if missing)."""
+    import json
+
+    if not isinstance(patch, dict) or not patch:
+        raise ValueError("custom-data patch must be a non-empty mapping")
+    await conn.execute(custom_data_upsert_sql(entity), entity_id,
+                       json.dumps(patch))
+
 MARK_STAGED_SQL = """
 UPDATE staging_rows SET status = $3, reason = $4
 WHERE upload_job_id = $1 AND row_number = $2
