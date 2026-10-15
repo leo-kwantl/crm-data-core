@@ -335,8 +335,28 @@ gains `fit_id` (NULL for mean-method rows, SET NULL if the fit row
 goes); batches + rows gain `method` (`segment_mean` (all history —
 the default, zero backfill rewrite) | `xgb_surrogate_v1` (gate
 passed) | `surrogate_unfitted` (gate failed, NO shap rows)).
-`validate_explain_method` is the writer-side gate: unfitted +
+`validate_explain_write` (merge `844b770`, NOT the label-only
+`validate_explain_method`) is the writer-side gate: unfitted +
 shap_rows>0 raises; v1 requires a fit_id AND accuracy >= 0.90
 (passed explicitly, read back from the fit row). No tick writes
 under `xgb_surrogate_v1` until spec ACK — ACKED with this
 migration; ml may write.
+
+## 031: time-aware RFM storage (LD8, [ADDITIVE] analytics, joint with ml)
+
+`031_rfm_time_aware.sql` + validators/SQL in `pipelines/snapshot.py`.
+Per the ACKed LD8 joint contract: per-window snapshots reuse
+`rfm_snapshots`/`rfm_customer_scores` + a `window_key` label
+(`current` rolling-365/LD5-as-of | `mom` prev calendar month |
+`yoy` same month prior year | `lifetime`); `rules_version` 'v2' on
+time-aware rows (column pre-existed, default 'v1' — v1 history
+untouched). New: `rfm_segment_sizes` (as_of x window_key x
+segment: n + median_r/f/m; diff/pct vs comparator served by
+query) and `rfm_segment_movement` (as_of x pair x from x to:
+`current_x_mom`|`current_x_yoy`, n + pct_of_from). ENTERED (only
+as from) / EXITED (only as to) sentinels for newcomers/exited —
+uppercase, never collide with lowercase segments; pct_of_from NULL
+enforced (outside the flow pct denominator by construction).
+Lesson: `window` is a PG reserved word — column is `window_key`.
+ml executes the movement math verbatim via `validate_movement_row`
+/ `validate_segment_size` + the UPSERT/SELECT SQL.
