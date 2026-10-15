@@ -7,7 +7,12 @@ run_pipeline nightly -> scheduler cohort snapshot engine -> ml flows
 snapshot/batch tables (see ANALYTICS_TABLES; guarded by
 services/api/tests/test_seed_wipe.py) and deliberately keeps
 NEVER_WIPE ones (watermarks, connector config, report definitions,
-sessions). Ordering that matters: run_pipeline.py and the cohort
+sessions). Re-running over an EXISTING seed inserts nothing (members
+and orders are skipped), so pass `--reset-seed-block` to delete this
+seeder's own rows (`M-03%` members, `RS3-%` orders) and rebuild the
+dataset -- required for a distribution change to take effect. Note
+`run_daily_snapshot.py` takes no --database-url: it reads the
+DATABASE_URL env var. Ordering that matters: run_pipeline.py and the cohort
 snapshot engine must run BEFORE the ML slots, because the segments
 step reads RFM scores and the serving verify reads cohort snapshots
 (after a wipe, /cohort is empty until that engine runs; a rebuilt
@@ -180,6 +185,60 @@ def _draw_signup(rng: random.Random) -> date:
     return ANCHOR - timedelta(days=rng.randint(0, span))
 
 
+async def _reset_seed_block(conn) -> None:
+    """Delete every row this seeder owns: `M-03%` members, `RS3-%` orders.
+
+    Needed because the seeder is INSERT-only and skips existing members:
+    re-running it over its own output inserts nothing, so a distribution
+    change (e.g. the wider signup ladder) could never reach an existing
+    dataset. Callers wipe the analytics tables first and that ordering is
+    load-bearing: rfm/clv/churn `*_customer_scores` and
+    `segment_assignments` reference `customers (id)` with no ON DELETE and
+    are only cleared by the wipe (main() makes `--reset-seed-block` imply
+    `--wipe-analytics` for exactly this reason).
+
+    Scope is strictly this seeder's own rows (`M-03%` members and the
+    orders they own); bootstrap's demo block (`M-00%`) and any other
+    legacy customers are deliberately left alone -- their first orders sit
+    inside the signup ladder window, and deleting them would change the
+    customer count. `customer_access_logs` is unlinked, not deleted: the
+    audit trail survives the reseed.
+    """
+    block = "SELECT id FROM customers WHERE member_id LIKE 'M-03%'"
+    stray = await conn.fetchval(
+        "SELECT count(*) FROM orders o JOIN customers c"
+        " ON c.id = o.customer_id WHERE c.member_id LIKE 'M-03%'"
+        " AND o.external_order_id NOT LIKE $1", f"{SOURCE_TAG}-%")
+    print(f"reset: preflight: {stray} 'M-03%' order(s) without the"
+          f" {SOURCE_TAG}- tag (removed by customer_id regardless)")
+    steps: list[tuple[str, str, list[str]]] = [
+        ("order_items",
+         "DELETE FROM order_items oi USING orders o"
+         " WHERE oi.order_id = o.id AND (o.external_order_id LIKE $1"
+         f" OR o.customer_id IN ({block}))", [f"{SOURCE_TAG}-%"]),
+        ("orders",
+         "DELETE FROM orders WHERE external_order_id LIKE $1"
+         f" OR customer_id IN ({block})", [f"{SOURCE_TAG}-%"]),
+        ("consent_events",
+         f"DELETE FROM consent_events WHERE customer_id IN ({block})", []),
+        ("consents",
+         f"DELETE FROM consents WHERE customer_id IN ({block})", []),
+        ("customer_contacts",
+         f"DELETE FROM customer_contacts WHERE customer_id IN ({block})",
+         []),
+        # Audit trail: unlink instead of deleting the log rows.
+        ("customer_access_logs (unlink)",
+         "UPDATE customer_access_logs SET customer_id = NULL"
+         f" WHERE customer_id IN ({block})", []),
+        # campaign_members / customer_events / recommendations / custom
+        # data are ON DELETE CASCADE; analytics tables are already empty.
+        ("customers",
+         "DELETE FROM customers WHERE member_id LIKE 'M-03%'", []),
+    ]
+    for label, sql, params in steps:
+        print(f"reset: {label}: {await conn.execute(sql, *params)}")
+
+
 async def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--database-url",
@@ -187,11 +246,20 @@ async def main() -> int:
     ap.add_argument("--seed", type=int, default=SEED)
     ap.add_argument("--wipe-analytics", action="store_true",
                     help="TRUNCATE analytics tables before seeding")
+    ap.add_argument("--reset-seed-block", action="store_true",
+                    help="delete this seeder's own rows (M-03% members,"
+                         " RS3-% orders) first, so a distribution change"
+                         " reaches an existing dataset (implies"
+                         " --wipe-analytics)")
     args = ap.parse_args()
     if not args.database_url:
         print("set --database-url (never default a seeder at a live DB)",
               file=sys.stderr)
         return 2
+    if args.reset_seed_block and not args.wipe_analytics:
+        print("reset: --reset-seed-block implies --wipe-analytics"
+              " (analytics rows reference the removed customers)")
+        args.wipe_analytics = True
 
     rng = random.Random(args.seed)
     conn = await asyncpg.connect(args.database_url)
@@ -205,6 +273,8 @@ async def main() -> int:
                     continue
                 await conn.execute(f"TRUNCATE {t} CASCADE")
                 print(f"wipe: TRUNCATE {t} CASCADE")
+        if args.reset_seed_block:
+            await _reset_seed_block(conn)
         store_rows = await conn.fetch(
             "SELECT s.id, s.code, b.code AS brand FROM stores s"
             " JOIN brands b ON b.id = s.brand_id ORDER BY s.code")
