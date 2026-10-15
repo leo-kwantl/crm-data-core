@@ -218,3 +218,12 @@ as the forecast snapshot). Scheduler also carries argv builders for
 verbatim); `explain_batch` manifests store `segment_run_id: latest`
 (resolved at dispatch to the newest segment run for `segment_mode` +/
 `segment_k` + scope — manifests never hold a stale fixed id).
+
+## 021: SHAP cluster-explainer result tables (M2, [ADDITIVE] analytics)
+
+`021_explain.sql`: `explain_batches` (segment_run_id FK →
+`segment_runs` cascade + mode/k/seed/top_n/counts/scope) +
+`explain_rows` (top-N per batch+cluster by mean|SHAP|: rank/feature/
+mean_abs_shap/mean_shap/min_shap/max_shap, UNIQUE against
+double-write). PNGs stay MLflow-only; app serves latest-run summaries.
+Shape mirrors `ml_engine/store_explain.py` inserts.
