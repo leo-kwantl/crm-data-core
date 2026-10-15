@@ -291,3 +291,30 @@ the batch validated against; `manifest_pipeline` links
 enforced otherwise. Immutable (`REVOKE UPDATE/DELETE`, same
 convention as 013/026). `validate_receipt` is the writer-side gate;
 `RECEIPTS_FOR_JOB_SQL` serves the per-job proof.
+
+## 028: fitted BTYD params (LM1, [ADDITIVE] analytics, joint with ml)
+
+`028_btyd_params.sql` + `validate_btyd_params` /
+`LATEST_BTYD_PARAMS_SQL` in `pipelines/model_fits.py`. Data lands the
+table FIRST; ml's fitting engine writes rows matching this grain. One
+row per (as_of x activity x horizon_days x scope x model): `params`
+`{r, alpha, a, b}` all > 0, `n_customers`, `loglikelihood`, or
+`fit_error` when the fit fails (CHECK: params or error, never
+neither). Grain mirrors `churn_snapshots` (013) NULL-safe (COALESCE
+sentinel UNIQUE) so the serving read joins scope-to-scope; refit =
+new `as_of` row, never UPDATE (REVOKE, same convention as 013).
+`LATEST_BTYD_PARAMS_SQL` serves the newest successful fit per grain
+(failed fits stored but invisible to serving) — this is the read
+behind alive_path / prob_n / expected-purchases. ml: conform your
+fit writer to these columns; request changes while still additive.
+
+## 029: assoc-rule holdout eval (LM2, [ADDITIVE] analytics, joint with ml)
+
+`029_assoc_eval.sql` + `validate_assoc_eval` in
+`pipelines/model_fits.py`. One row per (batch_id x eval_set x
+metric): metric ROWS not columns, so new metrics never need DDL;
+`n_holdout` rides each row so a metric is never read without its
+denominator. Batches die → eval dies (CASCADE, same as `assoc_rules`
+in 018). Immutable (REVOKE UPDATE/DELETE). ml: write one row per
+metric per holdout set after each batch; `eval_set` defaults to
+`'holdout'`.
