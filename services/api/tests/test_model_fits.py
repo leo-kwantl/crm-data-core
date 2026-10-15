@@ -27,8 +27,14 @@ def test_btyd_ok_full_fit():
         "horizon_days": 90,
         "params": {"r": 0.5, "alpha": 2.0, "a": 1.0, "b": 3.0},
         "n_customers": 120})
-    assert out["model"] == "bg-nbd"
+    assert out["model"] == "bg_nbd"
     assert out["params"]["alpha"] == 2.0
+    with pytest.raises(ValueError, match="model must be"):
+        validate_btyd_params({
+            "as_of": date(2026, 10, 15), "activity": "orders",
+            "horizon_days": 90, "model": "bg-nbd",
+            "params": {"r": 0.5, "alpha": 2.0,
+                         "a": 1.0, "b": 3.0}})
 
 
 def test_btyd_failed_fit_needs_error():
