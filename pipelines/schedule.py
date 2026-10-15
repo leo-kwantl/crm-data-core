@@ -15,6 +15,9 @@ Execution model (zero import coupling to the ml repo):
   argv are locked; `rfm_snapshot` / `segments` / `recs_batch` builders
   land once ml supplies their CLI argv (unknown engine -> job `failed`
   with an actionable error; downstream jobs `skipped`).
+- `explain_batch` / `matrix_batch` take a RESOLVED `segment_run_id`
+  (newest segment run for the scope) instead of scope flags: their
+  CLIs reject --brand-id/--group-id and scope rides the segment run.
 
 Full manifest validation belongs to ml (`ml_jobs/manifest.py`
 validate()); the runner does structural parsing only and trusts stored
@@ -405,6 +408,23 @@ def _build_explain(params: dict, ctx: JobCtx) -> list[str]:
                         with_scope=False)
 
 
+def _build_matrix(params: dict, ctx: JobCtx) -> list[str]:
+    # CONFIRMED verbatim (ml, run_matrix_batch.py:33-38):
+    # run_matrix_batch DB_URL --segment-run-id (required). Argparse
+    # accepts NOTHING else — no --as-of, no scope flags, and unlike
+    # explain no --created-by — so pass only the resolved id (a flag
+    # the CLI does not declare = exit 2 on every tick). Writes BOTH
+    # layouts (029 wide + 032 long) for the one run.
+    sid = params.get("segment_run_id")
+    if not sid:
+        raise ManifestError(
+            "matrix_batch needs params.segment_run_id "
+            "(concrete UUID or 'latest')")
+    argv = _ml_module("ml_jobs.run_matrix_batch")(params, ctx)
+    argv += ["--segment-run-id", str(sid)]
+    return argv
+
+
 ENGINE_BUILDERS: dict[str, Callable[[dict, JobCtx], list[str]]] = {
     "rfm_snapshot": _build_rfm,
     "churn_snapshot": _build_churn,
@@ -414,16 +434,19 @@ ENGINE_BUILDERS: dict[str, Callable[[dict, JobCtx], list[str]]] = {
     "forecast_snapshot": _build_forecast,
     "assoc_batch": _build_assoc,
     "explain_batch": _build_explain,
+    "matrix_batch": _build_matrix,
 }
 
 
-async def _resolve_explain_run_id(conn, params: dict,
-                                   ctx: JobCtx) -> str:
-    """Resolve an explain_batch segment_run_id to a concrete UUID.
+async def _resolve_segment_run_id(conn, params: dict, ctx: JobCtx,
+                                  engine: str = "explain_batch") -> str:
+    """Resolve a segment-run-following job's run id to a concrete UUID.
 
-    Pass-through for concrete UUIDs. "latest" (or a missing/zero id)
-    resolves to the newest segment run for (segment_mode, [segment_k],
-    scope); no such run -> ManifestError with an actionable message.
+    Shared by `explain_batch` and `matrix_batch` (both read one segment
+    run instead of scope flags). Pass-through for concrete UUIDs.
+    "latest" (or a missing/zero id) resolves to the newest segment run
+    for (segment_mode, [segment_k], scope); no such run ->
+    ManifestError with an actionable message.
     """
     sid = params.get("segment_run_id")
     if sid and sid not in ("latest",
@@ -447,10 +470,17 @@ async def _resolve_explain_run_id(conn, params: dict,
             mode, int(seg_k), ctx.brand_id, ctx.group_id)
     if row is None:
         raise ManifestError(
-            "explain_batch: no segment_runs row for"
+            f"{engine}: no segment_runs row for"
             f" mode={mode!r} k={seg_k!r} in scope"
             " (run segments first)")
     return str(row["id"])
+
+
+async def _resolve_explain_run_id(conn, params: dict,
+                                   ctx: JobCtx) -> str:
+    """Alias kept for explain_batch callers/tests."""
+    return await _resolve_segment_run_id(conn, params, ctx,
+                                         "explain_batch")
 
 
 def _parse_run_id(output: str) -> uuid.UUID | None:
@@ -597,10 +627,11 @@ async def run_pipeline(conn, pipeline: str, jobs: dict[str, dict],
                 run_id = await _run_data_engine(engine, job["params"],
                                                 conn, ctx)
                 output_note = ""
-            elif engine == "explain_batch":
+            elif engine in ("explain_batch", "matrix_batch"):
                 job_params = dict(job["params"])
                 job_params["segment_run_id"] = \
-                    await _resolve_explain_run_id(conn, job_params, ctx)
+                    await _resolve_segment_run_id(conn, job_params, ctx,
+                                                  engine)
                 argv = ENGINE_BUILDERS[engine](job_params, ctx)
                 assert ctx.ml_repo is not None
                 output_note = await _run_subprocess(argv, ctx.ml_repo, ctx)
