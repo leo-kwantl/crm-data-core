@@ -1,0 +1,12 @@
+# Exclusion list (LD6). Empty by default: zero behavior change.
+# Each entry REQUIRES kind/value/reason/actor/created_at — bare IDs are
+# rejected at load (see pipelines/exclusions.py).
+#   kind: customer | order | event
+#   value: member_id | external_order_id | source_event_id
+# Example:
+# - kind: customer
+#   value: M-015300
+#   reason: test account leaking into production feeds
+#   actor: data-steward@company
+#   created_at: 2026-10-15
+[]
