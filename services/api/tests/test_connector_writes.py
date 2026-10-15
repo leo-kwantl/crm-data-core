@@ -302,3 +302,74 @@ async def test_write_404_code_aligned(client):
         json={"entity": "orders"}, headers=ADMIN_H)
     assert p.status_code == 404
     assert p.json()["detail"]["code"] == "connector_not_found"
+
+
+async def test_ld2_schedule_cron_lifecycle(client, db_pool):
+    """LD2: schedule_cron set at create, updated/cleared via PUT, bad
+    cron rejected; sync heartbeat stamps the checkpoint."""
+    r = await _create(client, {
+        "source_type": "csv", "name": "sched",
+        "config": {"column_map": {}},
+        "schedule_cron": "0 2 * * *"})
+    assert r.status_code == 201, r.text
+    assert r.json()["schedule_cron"] == "0 2 * * *"
+    assert r.json()["last_sync_at"] is None
+    cid = r.json()["id"]
+
+    bad = await _create(client, {
+        "source_type": "csv", "name": "bad-cron",
+        "config": {"column_map": {}},
+        "schedule_cron": "hourly"})
+    assert bad.status_code == 422
+
+    put = await client.put(f"/api/v1/connectors/{cid}/schedule",
+                           json={"schedule_cron": "30 3 * * 1"},
+                           headers=ADMIN_H)
+    assert put.status_code == 200, put.text
+    assert put.json()["schedule_cron"] == "30 3 * * 1"
+
+    clear = await client.put(f"/api/v1/connectors/{cid}/schedule",
+                             json={"schedule_cron": None},
+                             headers=ADMIN_H)
+    assert clear.status_code == 200, clear.text
+    assert clear.json()["schedule_cron"] is None  # back to manual-only
+
+    missing = await client.put(
+        "/api/v1/connectors/00000000-0000-0000-0000-000000000000/schedule",
+        json={"schedule_cron": "0 2 * * *"}, headers=ADMIN_H)
+    assert missing.status_code == 404
+
+
+async def test_ld2_sync_heartbeat_stamps_checkpoint(client, db_pool):
+    """LD2: note_sync_result closes the run row AND checkpoints the
+    connector row (last_sync_at/status) in one call."""
+    from services.api.repos import connectors as repo
+
+    r = await _create(client, {
+        "source_type": "csv", "name": "beat",
+        "config": {"column_map": {}}})
+    cid = r.json()["id"]
+    s = await client.post(f"/api/v1/connectors/{cid}/sync",
+                          json={"entity": "orders"}, headers=ADMIN_H)
+    run_id = s.json()["run_id"]
+    from uuid import UUID
+    out = await repo.note_sync_result(
+        db_pool, UUID(run_id), "running", rows_seen=100)
+    assert out == {"run_id": run_id, "status": "running"}
+    out = await repo.note_sync_result(
+        db_pool, UUID(run_id), "succeeded",
+        rows_seen=100, rows_ok=98, rows_rejected=2)
+    assert out["status"] == "succeeded"
+    async with db_pool.acquire() as conn:
+        run = await conn.fetchrow(
+            "SELECT status, rows_seen, rows_ok, rows_rejected,"
+            " started_at, finished_at FROM connector_sync_runs"
+            " WHERE id = $1", UUID(run_id))
+        assert (run["status"], run["rows_seen"], run["rows_ok"],
+                run["rows_rejected"]) == ("succeeded", 100, 98, 2)
+        assert run["finished_at"] is not None
+        con = await conn.fetchrow(
+            "SELECT last_sync_status, last_sync_at FROM connectors"
+            " WHERE id = $1", UUID(cid))
+        assert con["last_sync_status"] == "succeeded"
+        assert con["last_sync_at"] is not None
