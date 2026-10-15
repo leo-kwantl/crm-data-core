@@ -133,3 +133,60 @@ the registry); segments `--mode` + `--algorithm`
 untouched (example YAML still validates). App mirrors note: app carries
 verbatim 013/015 CREATEs for isolated test bootstrap — re-mirror 016
 on update; live dev DB needs 016 applied (through 015 already).
+
+## 019: source connector framework (D1, [BREAKING ingest])
+
+`019_connectors.sql` + `pipelines/ingest/connectors.py`. Source types
+are equals — `shopify | csv | excel | delta_lake | rest_api`
+(`woocommerce` RESERVED: registration rejected until its spec lands;
+widening the CHECK is the additive path). Every source funnels into the
+same normalize/load contracts above; per-type work is field mapping
+only:
+
+| source_type | required config | field mapping |
+|---|---|---|
+| `shopify` | `shop_domain` (+ optional `api_version`) | order `id` → `external_order_id`; `line_items` → `lines` (sku/qty/price→cents); shop/location → `store_id` resolve |
+| `csv` | `column_map` (+ `delimiter`, `encoding`) | header/column map → contract fields (member/order/event/identity kinds) |
+| `excel` | `column_map` (+ `sheet`, `header_row`) | same as csv after sheet/header selection |
+| `delta_lake` | `table` (+ catalog/path) | table scan → column map → contract fields; checkpoint in `connector_sync_runs` |
+| `rest_api` | `base_url` (+ pagination/auth refs) | paginated JSON per entity → contract fields |
+
+Validate-on-create (`validate_connector`): unknown type rejected,
+reserved `woocommerce` rejected, per-type required keys enforced, and
+any credential-shaped config key (`*_secret`, `*_token`, `*_key`,
+`*password*`, …) rejected — secrets are never embedded in config.
+Sanitize-on-read: `sanitize_for_log` redacts PII + secrets for logs;
+quarantine `raw` keeps PII (exact-match reprocessing) with secrets
+redacted at write (`redact_secrets`).
+
+Secrets-at-rest DECISION: `connectors.config` = non-secret params only;
+credentials live in env/secret-manager, `secret_ref` names the env var
+(e.g. `SHOPIFY_TOKEN`). The DB never stores a plaintext secret.
+Rotation = update env, no DDL.
+
+Sync-run history DECISION: new `connector_sync_runs`
+(connector + entity + status + rows_seen/rows_ok/rows_rejected + error +
+scope) — NOT an extension of 015 `pipeline_runs` (different grain:
+sync run vs scheduled job; different readers: connector health vs cron
+orchestration). `pipeline_runs` stays job-grain, untouched.
+
+Write/trigger API [ADDITIVE] (`services/api/routers/connectors.py` +
+`repos/connectors.py`, all `require_admin` — secrets + execution
+outrank uploads): `POST /connectors` (201; 409 duplicate
+(source_type, name); 422 validation) → `DELETE /connectors/{id}`
+(204, runs cascade) → `POST /{id}/sync {entity, scope?}` (202 queued;
+422 on disabled = kill-switch, no force) → `POST /{id}/test`
+(stored-or-prospective check, no persistence: config-shape +
+secret-presence) → `PUT /{id}/secret {value}` (performs the 019
+rotation: sets the env var at runtime, touches `updated_at`, no DDL;
+422 without `secret_ref`; process-scoped, lost on restart —
+secret-manager remains the pilot path). Every response carries
+`has_secret` (presence bit) only; values are never stored, logged,
+or echoed. CONVERGED (app ruling 2026-10-15): `has_secret` means
+env-live everywhere (can this connector authenticate right now?) —
+reads compute it Python-side from the stored `secret_ref` name, same
+as writes; 404 code aligned on `connector_not_found`. No migration
+(019 covers the tables). VENDORED COPY (2026-10-15): app mirrors
+`pipelines/ingest/connectors.py` (+ `__init__` chain) into its tree
+for serving; the data copy stays canonical — registry/validation
+changes here need an explicit re-mirror, app never edits its copy.
