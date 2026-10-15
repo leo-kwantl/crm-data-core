@@ -111,6 +111,23 @@ lineage row, model='segment'). Inertia is run-quality only, never a
 gate. Seeds: nightly + weekly content-verbatim from the agreed example
 YAML (split per pipeline, ON CONFLICT DO NOTHING so admin edits win).
 
+Segments k: the seed pins `k: 5` EXPLICITLY on every `engine:
+segments` job, because serving reads the LATEST run for (mode, k,
+scope) and its own default is `k=5` (app segment/explain routers,
+`k: Query(ge=2, le=20) = 5`). An unwritten k is not a soft miss: the
+read answers 404 `no_snapshot` with `available_k`. A cadence that only
+ever fits k=6 therefore leaves the product's default surface dark
+right after a wipe while every job reports succeeded -- and the
+product exposes exactly ONE k (no picker; `segments/page.tsx:561-564`),
+so one fitted k is enough and a miss is answered with guidance built
+from `available_k`. Extending to a ladder (e.g. {5,6}) is a manifest
+edit if a second k ever gets a consumer, not a code change. Do NOT
+"serve the latest available k" instead -- that relabels k=6 clusters
+as the k the caller asked for. The runner default (`schedule.py
+_build_segments`) now mirrors serving (5) so an omitted param cannot
+diverge; ml's CLI default stays ml's call (never exercised by the
+cadence, which always passes --k).
+
 Runner: `pipelines/schedule.py` + `scripts/run_pipeline.py --pipeline
 <name> --ml-repo <path>` (cron entrypoint). Tick-time DB resolution:
 `--db-url` > `$DATABASE_URL` > live pgembed pidfiles re-read every

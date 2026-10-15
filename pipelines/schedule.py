@@ -348,7 +348,11 @@ def _build_segments(params: dict, ctx: JobCtx) -> list[str]:
     # Values pass through; ml validates against the registry/dispatcher.
     argv = _ml_module("ml_jobs.run_segments_snapshot")(params, ctx)
     argv += ["--mode", str(_p(params, "mode", default="purchase")),
-             "--k", str(_p(params, "k", default=6)),
+             # Default mirrors serving's read default (k=5): the read is
+             # per (mode, k, scope) over the latest run, so an omitted
+             # param must not diverge from what the product reads.
+             # Manifests still pin k explicitly (015 seeds k: 5).
+             "--k", str(_p(params, "k", default=5)),
              "--seed", str(_p(params, "seed", default=0)),
              "--algorithm",
              str(_p(params, "algorithm", default="kmeans"))]

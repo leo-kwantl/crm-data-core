@@ -13,6 +13,15 @@
 -- pipeline_runs records scheduled job executions; pipeline_manifests stores
 -- the validated manifest YAML (edits go through the app config API, which
 -- validates via ml; the runner trusts stored rows).
+--
+-- Segments jobs pin k EXPLICITLY at 5, which is serving's own read default:
+-- the read is per (mode, k, scope) over the LATEST run, so fitting only k=6
+-- leaves the product's default surface dark (404 no_snapshot with available_k)
+-- while every job reports succeeded. The product exposes exactly one k (no
+-- picker; a hand-edited URL miss renders guidance from available_k), so one k
+-- is enough -- extending to a ladder is a manifest edit if a second k ever
+-- gets a product consumer. The runner's own default mirrors serving (5) so an
+-- omitted param cannot diverge.
 
 CREATE TABLE segment_runs (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -137,14 +146,14 @@ pipelines:
         engine: segments
         params:
           mode: purchase
-          k: 6
+          k: 5
       segments_overall:
         engine: segments
         depends_on:
         - segments_purchase
         params:
           mode: overall
-          k: 6
+          k: 5
       recs:
         engine: recs_batch
         params:

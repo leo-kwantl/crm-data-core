@@ -52,6 +52,35 @@ def test_seed_file_mentions_expected_engines():
     assert "upload_apply" in text and "recs_batch" in text
 
 
+def test_seed_segments_jobs_pin_serving_default_k():
+    """The cadence must fit the k that serving reads by default.
+
+    Serving serves the LATEST run for (mode, k, scope) and defaults to
+    k=5, so a segments job that omits k (or picks another value) leaves
+    the product's default surface dark after a wipe while every job
+    reports success. Parse the seed's own YAML -- a text grep would not
+    fail if a param were dropped.
+    """
+    import re
+
+    import yaml
+
+    text = (REPO / "db" / "migrations" / "015_segments_pipelines.sql"
+            ).read_text(encoding="utf-8")
+    body = re.search(r"VALUES \('weekly', \$\$(.*?)\$\$", text, re.S)
+    assert body, "weekly manifest seed not found"
+    jobs = yaml.safe_load(body.group(1))["pipelines"]["weekly"]["jobs"]
+    segs = {n: j for n, j in jobs.items() if j.get("engine") == "segments"}
+    assert segs, "weekly seed has no segments jobs"
+    ks = set()
+    for name, job in segs.items():
+        k = (job.get("params") or {}).get("k")
+        assert isinstance(k, int) and not isinstance(k, bool), \
+            f"{name} must pin k explicitly, got {k!r}"
+        ks.add(k)
+    assert 5 in ks, f"cadence must fit serving's default k=5, got {ks}"
+
+
 def test_topo_sort_orders_and_detects_cycles():
     jobs = {"a": {"engine": "e", "depends_on": [], "params": {}},
             "b": {"engine": "e", "depends_on": ["a"], "params": {}},
