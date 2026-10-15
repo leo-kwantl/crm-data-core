@@ -52,6 +52,13 @@ Distribution spec (owner-approved, bound 2026-10-15):
 - Store visits span every brand (home store per customer, 85% repeat
   visits) so brand-scoped RFM / cohort / segment pages have data.
 - Tiers assigned by spend decile (top 10% PLATINUM, next 25% GOLD).
+- Catalog campaign membership: every campaign seeded by
+  `seed_catalog.py` gets a deterministic 120-300 member slice -- a
+  blake2b-ranked cut of the M-03% pool, ranked independently per
+  campaign so the slices overlap a little (real customers receive two
+  campaigns). Additive only: demo/bootstrap assignments are never
+  touched, and a `--reset-seed-block` re-run reproduces the same
+  membership exactly.
 
 Run (after bootstrap wipe, before the pipeline):
     python scripts/seed_reseed_1200.py --database-url postgresql://...
@@ -76,6 +83,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import math
 import os
 import random
@@ -237,6 +245,29 @@ async def _reset_seed_block(conn) -> None:
     ]
     for label, sql, params in steps:
         print(f"reset: {label}: {await conn.execute(sql, *params)}")
+
+
+CATALOG_CAMPAIGN_CODES = (
+    "SUMMER-FRAME-FIESTA", "DOUBLE-11-LENS-UPGRADE",
+    "MTR-COMMUTER-PRESCRIPTION", "BACK-TO-SCHOOL-KIDS-EYEWEAR",
+    "GOLDEN-WEEK-SUNGLASS-EDIT", "VIP-EYE-EXAM-FRAME-BUNDLE",
+)
+CAMPAIGN_SLICE_MIN = 120  # app-decided band per catalog campaign
+CAMPAIGN_SLICE_MAX = 300
+
+
+def _campaign_slice_size(code: str) -> int:
+    """Deterministic member-count target for one campaign (120..300)."""
+    h = hashlib.blake2b(code.encode(), digest_size=8).digest()
+    span = CAMPAIGN_SLICE_MAX - CAMPAIGN_SLICE_MIN + 1
+    return CAMPAIGN_SLICE_MIN + int.from_bytes(h, "big") % span
+
+
+def _campaign_slice_key(code: str, member_id: str) -> bytes:
+    """Rank key for (campaign, member): independent cuts therefore
+    overlap (mean ~1 campaign per member at 6x200 over 1,200)."""
+    return hashlib.blake2b(f"{code}|{member_id}".encode(),
+                           digest_size=8).digest()
 
 
 async def main() -> int:
@@ -477,6 +508,37 @@ async def main() -> int:
                         "UPDATE customers SET tier_code = $1"
                         " WHERE id = $2 AND tier_code IS NULL",
                         tier, cid)
+        # --- catalog campaign membership: deterministic hash slice ---
+        # App decision: catalog campaigns holding a handful of members
+        # read as broken on the campaigns page, so each one gets a
+        # 120-300 member slice of THIS seeder's members. Independent
+        # per-campaign rankings -> slices overlap. Strictly additive:
+        # demo/bootstrap campaigns are not in the code list and the
+        # INSERT never deletes. Re-run => same rows (ON CONFLICT).
+        camps = await conn.fetch(
+            "SELECT id, code FROM campaigns WHERE code = ANY($1)"
+            " ORDER BY code", list(CATALOG_CAMPAIGN_CODES))
+        mem_of = {r["member_id"]: str(r["id"]) for r in await conn.fetch(
+            "SELECT id, member_id FROM customers"
+            " WHERE member_id = ANY($1)", members)}
+        if camps and mem_of:
+            slice_rows = []
+            for c in camps:
+                ranked = sorted(mem_of.items(),
+                                key=lambda kv: _campaign_slice_key(
+                                    c["code"], kv[0]))
+                for _mid, cid in ranked[:_campaign_slice_size(c["code"])]:
+                    slice_rows.append((str(c["id"]), cid, "reseed"))
+            await conn.executemany(
+                "INSERT INTO campaign_members (campaign_id, customer_id,"
+                " assigned_by) VALUES ($1::uuid, $2::uuid, $3)"
+                " ON CONFLICT (campaign_id, customer_id) DO NOTHING",
+                slice_rows)
+            per = {c["code"]: _campaign_slice_size(c["code"])
+                   for c in camps}
+            print(f"campaign_members: {len(camps)} catalog campaign(s), "
+                  f"{len(slice_rows)} slice row(s) "
+                  f"targets={per}")
         span = await conn.fetchrow(
             "SELECT min(ordered_at)::date lo, max(ordered_at)::date hi,"
             " count(*) n, coalesce(sum(total_cents),0) rev FROM orders")
