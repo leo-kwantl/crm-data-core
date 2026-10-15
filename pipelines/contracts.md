@@ -277,3 +277,17 @@ convention as 013): a new version is a new row (`ON CONFLICT
 `report_id/name/kind/grain` + `version >= 1` + at least one of
 `axes|metrics|filters` in `definition`. Any RFM/design writeup rides
 inside `definition` under `rfm_note` — deliberately no second table.
+
+## 027: landing receipts (LD12, [ADDITIVE] ingest)
+
+`027_landing_receipts.sql` + `pipelines/receipts.py`. One receipt per
+landed batch: file uploads (`upload_job_id` FK, UNIQUE — one receipt
+per job, `ON DELETE RESTRICT` so landed proof outlives nothing) OR
+vendor batch imports (`vendor_batch_id` external key) — CHECK exactly
+one of the two. Counts reconcile (`loaded + quarantined <= seen` in
+both validation and DDL); `contract` names the contracts.md section
+the batch validated against; `manifest_pipeline` links
+`pipeline_manifests(pipeline)` — NULL for manual/ad-hoc loads, FK
+enforced otherwise. Immutable (`REVOKE UPDATE/DELETE`, same
+convention as 013/026). `validate_receipt` is the writer-side gate;
+`RECEIPTS_FOR_JOB_SQL` serves the per-job proof.
