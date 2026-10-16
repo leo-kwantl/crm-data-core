@@ -1845,3 +1845,25 @@ argument, never a module-level constant resolved at import.
   owner's call, not a unilateral one (see the LD8 section above). This
   paragraph is appended at the tail on purpose: mid-document insertions shift
   every line number below them, and peers cite this file by line.
+- **The invocation is part of the verdict** (app, ml, 2026-10-17). Every run
+  prints its own universe (`trees:` then `peers: … + absent: …`), because a cite
+  can only be judged against the trees that are checked out and a wrong universe
+  is indistinguishable from a defective document. Measured at app's root with
+  the old default peer list: `unresolved=10`, `pin-unresolved=1`,
+  `unclassified=4` — fifteen findings, all fifteen the invocation, in the same
+  buckets, same wording, `exit 0`. The default is now the sibling
+  `crm-cdp-{app,data,ml}` trees that exist minus the audited root; a declared
+  peer that is absent prints `peer-missing` (hard under `--strict`); and
+  `--require-peer <path>` (repeatable, for CI) makes absence hard always. Read
+  the `peers:` line before believing those three buckets — dropping one tree from
+  the list turned data's clean run into `unresolved=73`,
+  `pin-unresolved=10`, `unclassified=31` **with no document change at all**.
+  `unclassified` is the bucket that misleads hardest: `unresolved` at least says
+  "path in no tree", while `unclassified` reads as a shape defect and would send
+  a reader to rewrite a correct citation. **The pass reads each tree's working
+  tree** (tracked + untracked-not-ignored files), which is what a human reads but
+  means an uncommitted edit moves buckets — app's `ok=35 / pin-ok=1` and data's
+  `ok=34 / pin-ok=2` for the same trees differ by one cite (`79b4eb0`) that an
+  in-flight edit had rewritten into the pin form; one cite moving from
+  `ok`+`repo-ok` to `pin-ok` is a text change, not a disagreement, so compare
+  the two trees' *states* before calling a number difference a defect.
