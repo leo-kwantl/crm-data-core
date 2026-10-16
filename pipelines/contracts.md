@@ -407,8 +407,16 @@ than by accident.
 The POST path is why the explicit-range branch exists rather than being
 deferred: `SNAPSHOT_INSERT_SQL` (`store_rfm.py:35-43`) omits `window_key` from
 its column list (`:36-38`, nine columns), so the DDL default stamps `'current'`
-on every app-POSTed row **regardless of mode or user dates**; the `RETURNING`
-(`:40-42`) does carry the key, so a POST response does expose it. Two
+on every app-POSTed row **regardless of mode or user dates**. The `RETURNING`
+did not name the key either until ml `e423f70` (2026-10-17, *fix(store_rfm):
+name the window in the write path's RETURNING too*), which makes this the
+**third** snapshot projection to carry it (`:40-42`; `git show
+e234563:ml_engine/store_rfm.py` shows the pre-fix `RETURNING id, mode,
+window_from, window_to, scored_at, …`), and ml's
+`test_snapshot_projections_expose_window_key` now covers all three. So a
+POSTed row comes back **self-identifying** — `mode='custom'` *and*
+`window_key='current'` — in a response the app already holds, with no schema
+change and no extra request. Two
 app-POSTed `custom` snapshots for different user ranges would therefore both be
 `current` and pair under a `current` pin alone (app/ml, 2026-10-17).
 `window_key` does have a job in this area — in the **guard**, not in the
