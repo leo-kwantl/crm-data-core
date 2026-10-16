@@ -1571,9 +1571,20 @@ usable part of this section:
   **not built**.
 - **Carriers that also have an artifact parent — 2 edges** (schema-derived,
   app, 2026-10-17): `explain_batches → segment_runs` and
-  `pipeline_runs → connector_sync_runs`. Here stamp equality *is* expressible
-  and worth asserting in a DB test, because both stamps are written by the same
-  statement (above).
+  `pipeline_runs → connector_sync_runs`. Here stamp equality *is* expressible,
+  because both stamps are written by the same statement (above) — but
+  **expressible is not enforceable, and the measured status matters**: on the
+  live DB that is 7 rows compared / 0 violations for `explain_batches`↔
+  `segment_runs`, 2 / 0 for the fit_id run-identity edge, and **0 rows** for
+  `pipeline_runs`↔`connector_sync_runs` (app, 2026-10-17) — so that third edge
+  is *untested rather than verified*, and a future writer that resolved scope
+  separately would have no data to catch it. In a suite that seeds these
+  artifacts with direct SQL and no scope columns
+  (`../crm-cdp-app/services/api/tests/test_explain.py:47-53`, and 6 sibling test
+  files seed the same tables), both ends are NULL, so a stamp-equality assertion
+  there cannot fail for any code change. Teeth need a test that drives ml's
+  writers (`ml_engine/store_explain.py`, `ml_engine/store_ld8.py`,
+  `ml_engine/store_rfm.py`), not a query over seeded rows.
 - **Negatives (7):** no visibility obligation; a predicate over their scope
   column is an ordinary population filter.
 - **Unscoped outputs (3):** shape 1 gates at the reader and abstains at the
