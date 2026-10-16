@@ -1146,8 +1146,11 @@ orchestration). `pipeline_runs` stays job-grain, untouched.
 
 Write/trigger API [ADDITIVE] (`services/api/routers/connectors.py` — all
 **six** mutations carry `Depends(require_admin)` (`Admin` at `:60`; the
-three GETs are not gated; the module docstring at `:3` still says five,
-so count the signatures, not the prose) — with its data-access module
+three GETs are not gated; count the signatures, not the prose — that
+docstring's numeral was accurate until the LD2 schedule route arrived and
+stayed at *five* after it, until app `327a48b` replaced the count with the
+rule, "Every mutation below is admin-gated", which cannot drift again) —
+with its data-access module
 `services/api/repos/connectors.py` **below** the auth layer, where a gate
 would be the wrong place and is absent by design; secrets + execution
 outrank uploads): `POST /connectors` (201; 409 duplicate
