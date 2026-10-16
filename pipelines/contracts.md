@@ -272,6 +272,22 @@ than to a caller who forgot the flag (`rfm_snapshots.e234dc57` is one). Pass a s
 or the row is indistinguishable from "written by an unset caller" (this
 cost a manual row dump to diagnose).
 
+The hole is **structural, not incidental**: all 12 `created_by` columns in
+this repo's DDL are declared `text NULL` with no `DEFAULT`
+(`db/migrations/007_customer_events.sql:14`, `010_analytics_rfm.sql:15`,
+`011_recommendations.sql:14`, `013_analytics_history.sql:24,57,115`,
+`014_upload_staging.sql:39`, `015_segments_pipelines.sql:37`,
+`018_assoc_rules.sql:25`, `019_connectors.sql:27`, `021_explain.sql:27`,
+`022_forecast.sql:30`), so an unstamped hand-run **cannot fail anywhere** —
+there is no NOT NULL guard that would have turned an unattributed write into
+an error. Data's own CLI follows the same convention (`scripts/run_upload.py:124`
+declares `--created-by` with `default=None`; the API path stamps the session
+instead, `services/api/routers/customer_events.py:73`). Making `--created-by`
+**required** in the 10 ml CLIs was considered and **declined, not missed**:
+it is a 10-file argv change (`[BREAKING @both]`) and it forces every
+dev/one-off invocation to pass a value, so the rule below closes the hole
+operationally instead.
+
 Never pair v1 with v2 for movement: different writers decide the windows
 (same maths both ways — `store_ld8.compute_window` calls
 `store_rfm.compute_current` verbatim, `ml_engine/store_ld8.py:130-153`;
@@ -389,6 +405,13 @@ with a NULL `group_id`** — so the customer half is a no-op here and the
 predicate cannot be exercised on demo data (a `--group-id DEMO` run is
 customer-identical to hq). Treat it as a contract property, not a testable
 one: it only becomes a live edge on operator data with pre-group customers.
+Nobody asserts the exclusion either — ML's suite is pure/DB-less by design, and
+app's group tests cover CRUD (`services/api/tests/test_groups.py:90`), the seed
+backfill (`:133`), cross-brand 403 + group-wide managers (`:155`), silo and
+unlinkable defaults (`:217`), tier brand scope (`:287`) and staff-link defaults
+(`:331`) — none of them puts a NULL-`group_id` customer under a group-scoped
+run, so this predicate is a property with **no coverage in either suite**; a
+fixture would have to be added app/data-side if it is ever challenged.
 The switch that would **include** those rows instead of dropping them is
 `c.group_id IS NOT DISTINCT FROM $4::uuid` at the aggregate's `:30` (the
 operator the *listing* query already uses at `:57-58`, where unfiltered
