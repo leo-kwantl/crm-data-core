@@ -104,6 +104,16 @@ claim was made, plus the revision you read, separates them (ml,
 2026-10-17) — so "I verified this citation" is not portable, only "verified
 for the tree it was written in".
 
+A **docstring-only commit in a BREAKING-category file** is still a claim, so
+check it rather than accept it: `git show --stat` for the shape, then parse
+both revisions, blank every leading string constant (`ast.Constant` at
+`body[0]`) and compare `ast.dump` — equal means no code moved, which is what
+"comments only" asserts (app/data, 2026-10-17, on app's `bc9cb59` and
+`9f5a67b`: both AST-identical, while `--stat` read `+15/-0` and `+6/-5`). The
+check is only meaningful when the diff touches string constants — the case
+where `--stat` looks alarming — and it is cheaper than reading the docstring
+to decide whether to believe its own commit message.
+
 ## customers
 
 | source field | table column | rule |
@@ -752,17 +762,19 @@ is which operator a query that does not exist yet should use (ml/app,
 
 The same split has a second, independent statement on the app side, and it is
 the reference *decision* rather than an implementation detail:
-`../crm-cdp-app/services/api/analytics/scope.py:1-40` — the docstring, pinned
-at app `bc9cb59` (that file's last commit; app's worktree carried one more
-line when this was written) — a stamped row is visible iff `row.brand == session.brand AND row.group == session.group`,
+`../crm-cdp-app/services/api/analytics/scope.py:1-41` — the docstring, pinned
+at app `9f5a67b` (that file's last commit; it was `:1-40` one commit earlier,
+`bc9cb59`) — a stamped row is visible iff `row.brand == session.brand AND row.group == session.group`,
 NULL-safe on both sides — with the deliberate consequence named there,
 **quarantine-by-default**: legacy pre-scope rows and admin-created global
 batches are `NULL/NULL` and therefore **HQ-only**, so no group session can
 list or open a row computed over all brands. That consequence is the one data's
 writers live under: an unstamped write is not an error in this system, it is a
 row only HQ can see. The docstring's own invariant is "keep the two in sync —
-`row_visible` is the reference implementation" (`scope.py:61-65`, app
-`bc9cb59`). The failure
+`row_visible` is the reference implementation" (`scope.py:62-66` at app
+`9f5a67b`; the same function was `:61-65` one commit earlier — a docstring-only
+commit moves the pin of every symbol below it, including the one it merely
+precedes). The failure
 direction that matters, verified 2026-10-17 by app's sweep and re-derived here:
 a **stamped** surface using the population form would leak `NULL/NULL` rows
 into a brand session — a visibility bug, not a semantics curiosity; none in
