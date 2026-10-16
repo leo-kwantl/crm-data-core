@@ -395,7 +395,11 @@ Two things are still the owner's call rather than either team's (app,
 shape is mode-shaped — "appears once two snapshots of this window exist for
 this scope" implies an achievable wait that is true for `rolling_365` and
 year-to-date and false for a custom range, where option (a) makes the stored
-band *unreachable* rather than pending until the POST path is wired.
+band *unreachable* rather than pending until the POST path is wired. The
+trade-off in one line each, for the owner (app, 2026-10-17): **(a)** state
+plainly that the band cannot be computed for a range — a copy change in both
+locales; **(b)** show the all-time pair with its real bounds — no copy change.
+App recommends (a); nothing else differs between them.
 
 **Successive-period rule, branched by what the page displays** (app/ml,
 2026-10-17, both branches verified live against the pairs above). Where the
