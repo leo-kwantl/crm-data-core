@@ -5,7 +5,7 @@ DB: kpi_daily upsert is idempotent per day x scope; 013 tables exist.
 """
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
@@ -14,6 +14,8 @@ from pipelines.snapshot import (
     KPI_TREND_SQL,
     LATEST_COHORT_DATE_SQL,
     LATEST_KPI_DATE_SQL,
+    BUSINESS_TZ_NAME,
+    business_today,
     clv_movement,
     kpi_movement,
     pct_change,
@@ -107,6 +109,20 @@ def test_resolve_asof_latest_returns_data_max():
 def test_resolve_asof_current_returns_yesterday():
     assert (resolve_asof("current", date(2026, 10, 5), date(2026, 10, 9))
             == date(2026, 10, 8))
+
+
+def test_business_today_is_business_calendar_not_host_clock():
+    """+08 business day, computed from the wall clock, not the host.
+
+    Guards the class of defect the cohort/`current` fix removed: an
+    implicit environmental clock (host `date.today()` or server
+    CURRENT_DATE) deciding a business boundary. Server here runs GMT and
+    the host is +08, so `date.today()` is right for 16 h a day and wrong
+    for the other 8 — the failure is invisible in daylight.
+    """
+    assert business_today() == (
+        datetime.now(timezone(timedelta(hours=8))).date())
+    assert BUSINESS_TZ_NAME == "Asia/Hong_Kong"
 
 
 def test_resolve_asof_rejects_unknown_mode():

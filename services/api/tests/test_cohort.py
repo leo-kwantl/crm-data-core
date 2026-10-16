@@ -10,6 +10,9 @@ from datetime import datetime, timezone
 import pytest
 
 from pipelines.snapshot import (
+    BUSINESS_TZ_NAME,
+    BUSINESS_TZ_OFFSET_HOURS,
+    BUSINESS_TZ_SQL,
     COHORT_GRANULARITIES,
     COHORT_SNAPSHOT_UPSERT_SQL,
     COHORT_TREND_SQL,
@@ -31,6 +34,16 @@ def test_cohort_sql_shape():
     assert "cohort_snapshots" in COHORT_SNAPSHOT_UPSERT_SQL
     assert "ON CONFLICT DO NOTHING" in COHORT_SNAPSHOT_UPSERT_SQL
     assert "cohort_snapshots" in COHORT_TREND_SQL
+    # Business-day rule (contracts.md): every trunc that decides a bucket
+    # carries the +08 offset, and the zone NAME is carried with it so the
+    # offset never floats free.
+    assert BUSINESS_TZ_NAME == "Asia/Hong_Kong"
+    assert BUSINESS_TZ_OFFSET_HOURS == 8
+    assert BUSINESS_TZ_SQL == "AT TIME ZONE interval '8 hours'"
+    assert COHORT_SNAPSHOT_UPSERT_SQL.count(BUSINESS_TZ_SQL) == 2
+    # Bare trunc = the defect this guards (buckets were UTC on a GMT server).
+    assert "date_trunc($1::text, MIN(ordered_at))" \
+        not in COHORT_SNAPSHOT_UPSERT_SQL
 
 
 @pytest.mark.asyncio
@@ -102,5 +115,68 @@ async def test_cohort_month_upsert_and_rerun_noop(database_url: str):
             trend = await conn.fetch(COHORT_TREND_SQL, "month", None, None)
             assert any(r["cohort_period"].isoformat() == "2026-01-01"
                        for r in trend)
+    finally:
+        await pool.close()
+
+
+@pytest.mark.asyncio
+async def test_cohort_bucket_instant_is_business_tz(database_url: str):
+    """The cohort job buckets an order by its +08 instant, not the session zone.
+
+    2025-09-30T18:00Z is 2025-10-01T02:00+08, so the business month is
+    2025-10-01; a UTC-truncating implementation files it under 2025-09-01.
+    This runs the SHIPPED COHORT_SNAPSHOT_UPSERT_SQL (not a copy of its
+    expression) against a throwaway group/brand/store/customer created
+    inside a transaction that is always rolled back — so the assertion is
+    on the real artifact and leaves no rows and no dummy customers behind.
+
+    Host note: on a +08 server a reverted bare trunc would coincide with
+    the right answer, which is why the zone's presence in the SQL is
+    asserted separately (test_cohort_sql_shape) — the host-independent
+    half of this guard.
+    """
+    import asyncpg
+
+    pool = await asyncpg.create_pool(database_url)
+    assert pool is not None
+    try:
+        async with pool.acquire() as conn:
+            tx = conn.transaction()
+            await tx.start()
+            gid = await conn.fetchval(
+                "INSERT INTO groups (code, name)"
+                " VALUES ('COHORT-TZ-T', 'Cohort TZ Test') RETURNING id")
+            bid = await conn.fetchval(
+                "INSERT INTO brands (group_id, code, name)"
+                " VALUES ($1, 'COHORT-TZ-T', 'Cohort TZ Test')"
+                " RETURNING id", gid)
+            sid = await conn.fetchval(
+                "INSERT INTO stores (code, name, brand_id)"
+                " VALUES ('COHORT-TZ-T', 'Cohort TZ Test Store', $1)"
+                " RETURNING id", bid)
+            cid = await conn.fetchval(
+                "INSERT INTO customers (member_id, full_name)"
+                " VALUES ('M-009901', 'Cohort TZ C1') RETURNING id")
+            await conn.execute(
+                "INSERT INTO orders (customer_id, store_id, ordered_at,"
+                " total_cents, status) VALUES ($1, $2,"
+                " TIMESTAMPTZ '2025-09-30 18:00:00+00', 1000, 'completed')",
+                cid, sid)
+
+            await conn.execute(COHORT_SNAPSHOT_UPSERT_SQL, "month", 0,
+                               bid, None)
+            oct_size = await conn.fetchval(
+                "SELECT cohort_size FROM cohort_snapshots"
+                " WHERE granularity = 'month'"
+                " AND cohort_period = '2025-10-01'::date"
+                " AND period_offset = 0 AND brand_id = $1", bid)
+            sep_size = await conn.fetchval(
+                "SELECT cohort_size FROM cohort_snapshots"
+                " WHERE granularity = 'month'"
+                " AND cohort_period = '2025-09-01'::date"
+                " AND period_offset = 0 AND brand_id = $1", bid)
+            assert oct_size == 1, "order not bucketed in the +08 month"
+            assert sep_size is None, "order bucketed in the UTC month"
+            await tx.rollback()
     finally:
         await pool.close()

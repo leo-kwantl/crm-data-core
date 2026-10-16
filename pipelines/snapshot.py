@@ -121,7 +121,8 @@ ORDER BY snapshot_date
 
 # --- Cohort retention snapshots (020, one table feeds line + heatmap) ---
 #
-# Cohort of a customer = date_trunc(granularity, first completed order).
+# Cohort of a customer = date_trunc(granularity, first completed order)
+# ON THE BUSINESS CALENDAR (+08), not the session/server zone.
 # retained(offset k) = cohort members with >= 1 completed order in the
 # period (cohort_period + k·granularity). retention_rate =
 # retained / cohort_size (NULL when cohort_size = 0). Offset 0 is 1.0 by
@@ -129,6 +130,20 @@ ORDER BY snapshot_date
 # Params: $1 granularity ('week'|'month'|'year'), $2 max_offset (>= 0),
 # $3 brand_id scope (NULL = all), $4 group_id scope (NULL = all).
 # Re-run = no-op via the grain UNIQUE in 020_cohort_snapshots.sql.
+#
+# Business-day boundary: the product's calendar day is Asia/Hong_Kong
+# (+08, no DST) — see contracts.md "Day boundary is business time".
+# The zone NAME is carried here even though the SQL must use the offset
+# form: this pgembed install ships no tzdata, so
+# `AT TIME ZONE 'Asia/Hong_Kong'` raises `time zone "Asia/Hong_Kong"
+# not recognized`, while the interval form works. The two are exactly
+# equivalent because HK has never observed DST, so the offset never
+# floats free of the name.
+BUSINESS_TZ_NAME = "Asia/Hong_Kong"
+BUSINESS_TZ_OFFSET_HOURS = 8
+BUSINESS_TZ_SQL = (
+    f"AT TIME ZONE interval '{BUSINESS_TZ_OFFSET_HOURS} hours'"
+)
 
 COHORT_GRANULARITIES = ("week", "month", "year")
 
@@ -140,7 +155,7 @@ def retention_rate(cohort_size: int, retained: int) -> float | None:
     return retained / cohort_size
 
 
-COHORT_SNAPSHOT_UPSERT_SQL = """
+COHORT_SNAPSHOT_UPSERT_SQL = f"""
 WITH scoped_orders AS (
   SELECT o.customer_id, o.ordered_at
   FROM orders o
@@ -154,7 +169,7 @@ WITH scoped_orders AS (
 ),
 cohort_of AS (
   SELECT customer_id,
-         date_trunc($1::text, MIN(ordered_at))::date AS cohort
+         date_trunc($1::text, MIN(ordered_at) {BUSINESS_TZ_SQL})::date AS cohort
   FROM scoped_orders
   GROUP BY customer_id
 ),
@@ -179,7 +194,7 @@ retained AS (
   FROM periods p
   JOIN cohort_of co ON co.cohort = p.cohort
   JOIN scoped_orders so ON so.customer_id = co.customer_id
-    AND date_trunc($1::text, so.ordered_at)::date = p.period_start
+    AND date_trunc($1::text, so.ordered_at {BUSINESS_TZ_SQL})::date = p.period_start
   GROUP BY p.cohort, p.k
 )
 INSERT INTO cohort_snapshots
@@ -212,14 +227,30 @@ ORDER BY cohort_period, period_offset
 # different cutoff):
 #   latest  = MAX(date) present in the data (data-max cutoff; the table
 #             may lag wall-clock when a feed stalls).
-#   current = yesterday wall-clock (CURRENT_DATE - 1; complete-day rule).
+#   current = yesterday on the BUSINESS calendar (Asia/Hong_Kong, +08;
+#             complete-day rule). Explicit and host-independent: the
+#             caller supplies `today` (use business_today()), never
+#             server CURRENT_DATE or host date.today(), because those
+#             disagree by a day for 8 h of every local day.
 # The daily job resolves the data-max cutoff with LATEST_*_SQL, then
 # serves either cutoff through the same trend queries by passing the
 # resolved date as the end bound. Pure-Python resolve_asof() keeps the
 # rule unit-testable without a DB.
-from datetime import date as _date, timedelta as _timedelta
+from datetime import (date as _date, datetime as _datetime,
+                      timedelta as _timedelta, timezone as _timezone)
 
 ASOF_MODES = ("latest", "current")
+
+
+def business_today() -> _date:
+    """Today on the business calendar (Asia/Hong_Kong, +08).
+
+    Host-independent by construction: an implicit `date.today()` or the
+    server's CURRENT_DATE would make the business day depend on where the
+    process happens to run (see contracts.md).
+    """
+    return _datetime.now(
+        _timezone(_timedelta(hours=BUSINESS_TZ_OFFSET_HOURS))).date()
 
 
 def resolve_asof(mode: str, latest_in_data: _date,

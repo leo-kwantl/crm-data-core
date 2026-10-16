@@ -23,6 +23,7 @@ REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
 from pipelines import schedule as sched  # noqa: E402
+from pipelines.snapshot import business_today  # noqa: E402
 
 
 def _uuid_or_none(v: str | None):
@@ -122,7 +123,8 @@ async def run(pipeline: str, as_of: date, ml_repo: Path | None,
 def main() -> None:
     ap = argparse.ArgumentParser(description="Run one scheduled pipeline")
     ap.add_argument("--pipeline", required=True)
-    ap.add_argument("--as-of", default=None, help="YYYY-MM-DD (default: today)")
+    ap.add_argument("--as-of", default=None,
+                    help="YYYY-MM-DD (default: business today, Asia/Hong_Kong)")
     ap.add_argument("--ml-repo", type=Path, default=None,
                     help="path to the crm-cdp-ml checkout (ml engines)")
     ap.add_argument("--brand-id", default=None)
@@ -139,7 +141,7 @@ def main() -> None:
                     help="LD3: feeding connector_sync_runs id (lineage)")
     args = ap.parse_args()
     as_of = (date.fromisoformat(args.as_of) if args.as_of
-             else date.today())
+             else business_today())
     try:
         out = asyncio.run(run(args.pipeline, as_of, args.ml_repo,
                               _uuid_or_none(args.brand_id),

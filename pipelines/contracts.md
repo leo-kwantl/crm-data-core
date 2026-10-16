@@ -70,27 +70,52 @@ naive->aware conversion explicitly (`ml_engine/rfm.py:_day_start`,
 `ZoneInfo("Asia/Hong_Kong")`); zero stored values change on a +08 host,
 so no `RULES_VERSION` bump was needed.
 
-Two **OPEN** data-side gaps in the same class (found 2026-10-17, held
-pending GO because unlike the ML pin they WOULD move stored cohort
-numbers):
+Two data-side gaps in the same class (found 2026-10-17, owner GO
+2026-10-17, **both FIXED in the same commit** — see below):
 
-1. `pipelines/snapshot.py` cohort SQL truncates with
+1. `pipelines/snapshot.py` cohort SQL truncated with
    `date_trunc($1::text, ordered_at)`, which PG evaluates in the
-   **session** zone (GMT) — so week/month cohort buckets are UTC
+   **session** zone (GMT) — so week/month cohort buckets were UTC
    boundaries while the snapshot dates are +08. Blast radius over 8,685
    orders: 137 shift month bucket, 628 shift week bucket, 3,698 shift
    day bucket.
-2. The `current` cutoff is server `CURRENT_DATE - 1`, while
-   `scripts/run_daily_snapshot.py` defaults `--as-of` to host
-   `date.today()`; during 00:00-08:00 local those disagree (observed
-   server `2026-10-16` vs +08 `2026-10-17`).
+2. The `current` cutoff was server `CURRENT_DATE - 1`, while
+   `scripts/run_daily_snapshot.py` / `scripts/run_pipeline.py` defaulted
+   `--as-of` to host `date.today()`; during 00:00-08:00 local those
+   disagree (observed server `2026-10-16` vs +08 `2026-10-17`).
+
+**FIXED 2026-10-17 (`pipelines/snapshot.py`, no migration, no schema
+change):** every bucket-deciding trunc now carries the offset
+(`BUSINESS_TZ_SQL = f"AT TIME ZONE interval
+'{BUSINESS_TZ_OFFSET_HOURS} hours'"`), the cohort UPSERT + `/stats/overview`
+month series use it, and the cutoff source is explicit:
+`business_today()` = `datetime.now(timezone(timedelta(hours=8))).date()`,
+used by both scripts as the default `--as-of`. The zone NAME is kept in
+`BUSINESS_TZ_NAME` + the constant's comment so the offset never floats
+free of the business zone (app pins `TIME_ZONE` in
+`apps/web/lib/format.ts`, ML pins `ZoneInfo("Asia/Hong_Kong")` — all
+three repos now name the same business day).
+
+**Cohort figures change by design and old/new are NOT comparable.**
+Recomputed over the 940 purchasing customers: 10 customers' month
+cohort, 62 week cohort, 0 year cohort move (they are the customers whose
+FIRST order sits in the 16h band). `cohort_snapshots` was purged and
+regenerated in the same commit — the grain UNIQUE
+(`granularity, cohort_period, period_offset, COALESCE(brand_id),
+COALESCE(group_id)`, `020_cohort_snapshots.sql:31`) has **no tz
+component**, so without the purge a re-run would leave the UTC
+generation alongside the +08 rows and the heatmap would silently mix two
+generations. Verified post-fix: stored offset-0 `cohort_size` ==
++08 recomputation for all 36 month / 152 week / 4 year buckets, 0
+missing, 0 extra, 0 mismatches; 940 members at every granularity.
 
 Environment note: this pgembed install ships **no tzdata**
 (`pgembed/pginstall/share/postgresql/timezone` missing), so no named zone
 works in SQL here — `AT TIME ZONE 'Asia/Hong_Kong'` raises
 `time zone "Asia/Hong_Kong" not recognized`, while an explicit offset
 (`AT TIME ZONE interval '8 hours'`) works. Any SQL-side pin must use the
-offset form (Hong Kong has no DST).
+offset form (Hong Kong has no DST, so it is semantically identical
+forever).
 
 ## Batch upload ETL (frontend files land here)
 

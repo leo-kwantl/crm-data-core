@@ -1,6 +1,8 @@
 """Daily snapshot job (data owns history; app serves, ML scores).
 
-Writes one kpi_daily_snapshots row for --as-of (default: today), idempotent
+Writes one kpi_daily_snapshots row for --as-of (default: today on the
+BUSINESS calendar, Asia/Hong_Kong — never the host/server clock),
+idempotent
 per day x scope (re-run = no-op via ON CONFLICT DO NOTHING). Run daily via
 cron/scheduler, once per scope that needs trends:
 
@@ -29,7 +31,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
-from pipelines.snapshot import KPI_DAILY_UPSERT_SQL  # noqa: E402
+from pipelines.snapshot import KPI_DAILY_UPSERT_SQL, business_today  # noqa: E402
 from services.api.db import get_database_url  # noqa: E402
 
 
@@ -64,7 +66,8 @@ def main() -> None:
     ap.add_argument("--brand-id", default=None)
     ap.add_argument("--group-id", default=None)
     args = ap.parse_args()
-    as_of = date.fromisoformat(args.as_of) if args.as_of else date.today()
+    as_of = (date.fromisoformat(args.as_of) if args.as_of
+             else business_today())
     out = asyncio.run(run(as_of, _uuid_or_none(args.brand_id),
                           _uuid_or_none(args.group_id)))
     print(out)
