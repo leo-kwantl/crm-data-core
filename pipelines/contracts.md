@@ -1815,3 +1815,33 @@ incident one layer over. It is safe today because ml's default is **no
 read** (`ml_engine/features.py:286-287` returns built-in `DEFAULT_ENABLED`
 when `path is None`): keep any spec-file read opt-in through an explicit
 argument, never a module-level constant resolved at import.
+- **A frozen-interface marker names what a copy was taken from, at which
+  level — and neither it nor the test can replace the other** (ml, app,
+  2026-10-17). Where a cross-tree copy must stay equal to its original —
+  ml's four `snapshot.py` statements, app's four `db/queries/*.sql` copies,
+  the `031` schema under both — the form is
+  `frozen: <owning path>:<symbol> @ <rev> -> <consumer site(s)>, level=<token|byte|grain>, guard=<test>`.
+  Each field is there because leaving it out was already tried: the **path
+  plus symbol name** is the pin and the line number is illustration, so a
+  stale line cannot orphan the claim; the **revision** is exactly what app's
+  copies lacked (`already are` the frozen artifact, "with no label saying
+  which revision each was taken from"); the **level** is not decoration,
+  because "verbatim"/"byte-equal" in prose cannot be contradicted by any run
+  while the real level is token-equality under `_norm` (`tests/test_ld8.py:43`,
+  ml); and the **guard** is named so a reader sees which half actually runs.
+  **The marker supplements the skip-if-absent test and cannot replace it**
+  (ml): the test is the half that compares tokens, so it needs both trees and
+  *skips* otherwise — `tests/test_ld8.py:98` (ml) names the path it looked in,
+  and a green suite with the sibling absent proves nothing — while the marker
+  still reads on a one-tree clone and compares nothing. The converse is why
+  both stay: **a marker is a label, so the cite genres apply to it —
+  resolution and currency of `path:symbol @ rev` are checkable
+  (`scripts/audit_doc_cites.py`), and equality is not.** A green audit run
+  therefore means the marker resolves and is current, never that the copies
+  agree; equality has exactly one judge, the cross-repo test, and it only
+  convenes where the sibling tree is present. **Form only — nothing is
+  declared frozen by this clause:** whether to freeze the four LD8 constants
+  in `pipelines/snapshot.py`, the `031` schema, and app's four copies is the
+  owner's call, not a unilateral one (see the LD8 section above). This
+  paragraph is appended at the tail on purpose: mid-document insertions shift
+  every line number below them, and peers cite this file by line.
