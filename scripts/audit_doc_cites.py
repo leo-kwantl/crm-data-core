@@ -25,12 +25,28 @@ about the file's *current* last change, not as history. A historical anchor
 ("naming ``f889386``", "``path:LINE`` at ``sha``") is prose and does not match
 the pin form.
 
+**The verdict is only as good as the universe it was computed in, and a wrong
+universe is indistinguishable from a defective cite** (app, ml, 2026-10-17): run
+from app's root without ``--peer``, the old hardcoded default listed app twice
+and left data out, and app's own tree then reported ``unresolved=10``,
+``pin-unresolved=1``, ``unclassified=4`` — fifteen findings, all fifteen the
+invocation, in the same buckets with the same wording and ``exit 0``. So the peer
+set is printed beside the verdict, the default is *the sibling
+``crm-cdp-{app,data,ml}`` trees that exist, minus the audited root*,
+``--require-peer`` makes an absent tree a hard failure, and a declared peer that
+is missing prints ``peer-missing <path>`` (hard under ``--strict``).
+``unclassified`` is the worst of the three universe-dependent buckets:
+``unresolved`` at least says "path in no tree", while ``unclassified`` reads as a
+*shape* defect and would send a reader to rewrite a correct citation.
+
 Read-only, stdlib only. Exit 1 on a hard failure (a cite out of range in every
-tree holding it, a stale pin; or — under ``--strict`` — a path in no tree).
+tree holding it, a stale pin; under ``--strict``, a path in no tree or a declared
+peer that is absent; always, a ``--require-peer`` that is absent).
 
     python scripts/audit_doc_cites.py
     python scripts/audit_doc_cites.py --comments
     python scripts/audit_doc_cites.py --strict
+    python scripts/audit_doc_cites.py --require-peer ../crm-cdp-app
 
 ``--comments`` extends the same genres to the places the cites actually live:
 comment lines (``#`` in .py, ``--`` in .sql) and triple-quoted string bodies,
@@ -513,12 +529,14 @@ def basename_index(roots: list[Path]) -> dict[str, list[Path]]:
 
 
 def audit(root: Path, peers: list[Path], strict: bool,
-          comments: bool = False) -> int:
+          comments: bool = False, peer_notes: list[str] | None = None,
+          peer_hard: list[str] | None = None,
+          absent: list[str] | None = None) -> int:
     roots = [root, *peers]
     idx = basename_index(roots)
     counts = {"ok": 0, "disagrees": 0, "out-of-range": 0, "unresolved": 0}
-    hard: list[str] = []
-    info: list[str] = []
+    hard: list[str] = list(peer_hard or [])
+    info: list[str] = list(peer_notes or [])
 
     for doc in iter_md(root, comments):
         rel_doc = doc.relative_to(root)
@@ -572,7 +590,11 @@ def audit(root: Path, peers: list[Path], strict: bool,
             # end line loop
     pin_counts, pin_hard, pin_info = audit_pins(root, roots, idx, comments)
     audited = list(iter_md(root, comments))
+    universe = ", ".join(r.name for r in roots[1:]) or "(none)"
+    if absent:
+        universe += " + absent: " + ", ".join(absent)
     print("trees: " + ", ".join(str(r) for r in roots if r.is_dir()))
+    print("peers: " + universe)
     print("coverage: %d file(s) -- %s" % (
         len(audited),
         "markdown + comment lines/docstrings in .py/.sql" if comments else
@@ -586,6 +608,15 @@ def audit(root: Path, peers: list[Path], strict: bool,
     print("  (*-unreferenced = reached by no origin ref or tag: a fresh clone"
           " cannot resolve it and the object dies at the next gc, so it is a"
           " clock on the reader, not an error in the cite)")
+    # Printed only when such a bucket is non-zero, so a clean run stays short:
+    # the number in these three buckets is decided by the peer set, not only by
+    # the text, and the reader must be told that where the number is read.
+    if (counts["unresolved"] or pin_counts["pin-unresolved"]
+            or pin_counts["unclassified"]):
+        print("  (peers: %s -- unresolved, pin-unresolved and unclassified are"
+              " decided against that universe: a cite that lives only in an"
+              " absent tree reports as missing or unclassifiable, so a short"
+              " universe is the first hypothesis, not the last)" % universe)
     # `hard` is never capped (it is the exit condition); the informational
     # stream is, so the findings above cannot be buried by a long tail.
     shown = info + pin_info
@@ -600,21 +631,59 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Audit markdown code-line citations.")
     ap.add_argument("--repo", default=".", help="repo whose markdown to audit")
     ap.add_argument("--peer", nargs="*", default=None,
-                    help="trees to resolve cites against (default: sibling "
-                         "crm-cdp-app / crm-cdp-ml if present)")
+                    help="trees to resolve cites against (default: the sibling "
+                         "crm-cdp-app / crm-cdp-data / crm-cdp-ml trees that "
+                         "exist, minus the audited root)")
+    ap.add_argument("--require-peer", action="append", default=[], metavar="PATH",
+                    help="a tree that must be present (repeatable); absent -> "
+                         "exit 1, for CI where a forgotten peer must not read "
+                         "as a shorter report")
     ap.add_argument("--strict", action="store_true",
-                    help="also fail when a cited path is in no tree")
+                    help="also fail when a cited path is in no tree, or when a "
+                         "declared --peer is absent")
     ap.add_argument("--comments", action="store_true",
                     help="also read cites in `#`/`--` comments and docstrings")
     args = ap.parse_args()
 
     root = Path(args.repo).resolve()
     if args.peer is None:
-        peers = [p for p in (root.parent / "crm-cdp-app", root.parent / "crm-cdp-ml")
-                 if p.is_dir()]
+        named = [root.parent / n for n in
+                 ("crm-cdp-app", "crm-cdp-data", "crm-cdp-ml")]
     else:
-        peers = [Path(p).resolve() for p in args.peer]
-    return audit(root, peers, args.strict, args.comments)
+        named = [Path(p) for p in args.peer]
+    required = [Path(p) for p in args.require_peer]
+
+    # The audited root is never its own peer: from app's root the old default
+    # named app twice and omitted data, and fifteen invocation-caused findings
+    # then read exactly like text defects.
+    peers: list[Path] = []
+    seen: set[Path] = set()
+    for p in named + required:
+        r = p.resolve()
+        if r == root or r in seen:
+            continue
+        seen.add(r)
+        if r.is_dir():
+            peers.append(r)
+
+    info: list[str] = []
+    hard: list[str] = []
+    absent: list[str] = []
+    for p in named:
+        r = p.resolve()
+        if not r.is_dir():
+            absent.append(r.name)
+            msg = ("peer-missing %s (declared): a cite that lives only there "
+                   "reports as unresolved or unclassified, so a short universe "
+                   "reads like a defective cite" % r)
+            (hard if args.strict else info).append(msg)
+    for p in required:
+        r = p.resolve()
+        if not r.is_dir():
+            absent.append(str(r))
+            hard.append("peer-missing %s (--require-peer): this run was told "
+                        "that tree must be present" % r)
+    return audit(root, peers, args.strict, args.comments, info, hard, absent)
 
 
 if __name__ == "__main__":
