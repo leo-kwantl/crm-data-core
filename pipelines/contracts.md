@@ -1569,11 +1569,17 @@ usable part of this section:
   2026-10-17: that formulation flags 23 of 23 query blocks, and every flag is
   correct code. The house convention is that the **caller** resolves the parent
   in scope and passes its id down, so the child query contains no parent join by
-  design. Confirmed here: `../crm-cdp-app/services/api/routers/analytics_explain.py:49`
-  scopes with `scope_filters(user)`, `:51-56` reads the parent scoped (global vs
-  `brand_id`/`group_id` variants), `:59-60` 404s on a miss, and `:61` calls the
-  child with `batch["id"]` — whose block is `WHERE batch_id = $1`, parent id as a
-  parameter (`../crm-cdp-app/db/queries/analytics_explain.sql:19-25`). So the
+  design. Confirmed at app `ce5a65a` (the file is 91 lines):
+  `../crm-cdp-app/services/api/routers/analytics_explain.py:54-64` is the whole
+  shape — `:54` `scope_filters(user)`, `:56-61` the parent read (global `:57-58`,
+  scoped `:60-61`), `:62-63` the 404 on a miss, `:64` the child call with
+  `batch["id"]` — whose block is `WHERE batch_id = $1`, parent id as a parameter
+  (`../crm-cdp-app/db/queries/analytics_explain.sql:19-25`). One checkable range
+  rather than four bare `:NN` continuations on purpose: the continuations fall
+  outside `scripts/audit_doc_cites.py`'s regex (`CITE` at
+  `scripts/audit_doc_cites.py:34` needs a `file.ext:LINE` token), so the first
+  version of this sentence carried four offsets the guard could not check — and
+  all four were wrong. So the
   checkable invariant is cross-file: for every call of a child query carrying a
   parent id, the same code path must first perform a scope-guarded read of that
   parent — i.e. SQL blocks joined to their call sites in
@@ -1583,20 +1589,33 @@ usable part of this section:
   **not built**.
 - **Carriers that also have an artifact parent — 2 edges** (schema-derived,
   app, 2026-10-17): `explain_batches → segment_runs` and
-  `pipeline_runs → connector_sync_runs`. Here stamp equality *is* expressible,
-  because both stamps are written by the same statement (above) — but
-  **expressible is not enforceable, and the measured status matters**: on the
-  live DB that is 7 rows compared / 0 violations for `explain_batches`↔
-  `segment_runs`, 2 / 0 for the fit_id run-identity edge, and **0 rows** for
-  `pipeline_runs`↔`connector_sync_runs` (app, 2026-10-17) — so that third edge
-  is *untested rather than verified*, and a future writer that resolved scope
-  separately would have no data to catch it. In a suite that seeds these
-  artifacts with direct SQL and no scope columns
-  (`../crm-cdp-app/services/api/tests/test_explain.py:47-53`, and 6 sibling test
-  files seed the same tables), both ends are NULL, so a stamp-equality assertion
-  there cannot fail for any code change. Teeth need a test that drives ml's
-  writers (`ml_engine/store_explain.py`, `ml_engine/store_ld8.py`,
-  `ml_engine/store_rfm.py`), not a query over seeded rows.
+  `pipeline_runs → connector_sync_runs` — and the two edges are **not the same
+  case**, which is why writer attribution belongs in this list:
+  - `explain_batches → segment_runs` (**writer: ml**): equality is structural,
+    because the child's stamp is copied from the parent row read in the same
+    call. Live, 2026-10-17: **7 rows compared, 0 violations**. The paired
+    run-identity check (`explain_batches.fit_id → seg_surrogate_fits`) is **2 /
+    0**.
+  - `pipeline_runs → connector_sync_runs` (**writer: data, both sides**): the
+    stamps are **not** written by one statement. The sync row is inserted by
+    `services/api/repos/connectors.py:218-224` with the session's scope, while
+    the run row's stamps arrive as caller flags
+    (`scripts/run_pipeline.py:113-116`) and are stored by
+    `pipelines/schedule.py:65-79` — one statement for the row, but the runner
+    **never reads the sync row's stamps**, so agreement across the edge is
+    *caller-supplied* and nothing structural holds it. Live: **0 rows** (no
+    pipeline runs exist) — untested rather than verified. The harness for this
+    edge is data's, because the writer is data's: app cannot build this half.
+  - **Expressible is not enforceable either.** Where a suite seeds these
+    artifacts with direct SQL and no scope columns
+    (`../crm-cdp-app/services/api/tests/test_explain.py:47-53`, plus 6 sibling
+    files seeding the same tables) both ends are NULL, so a stamp-equality
+    assertion there cannot fail for any code change. Teeth need a test that
+    drives the writers: ml's `ml_engine/store_explain.py`,
+    `ml_engine/store_ld8.py`, `ml_engine/store_rfm.py`, and for the second edge
+    data's `services/api/tests/test_schedule.py`
+    (`test_sync_lineage_stamps_agree`, which asserts a tick's `pipeline_runs`
+    stamps equal the feeding `connector_sync_runs` row's).
 - **Negatives (7):** no visibility obligation; a predicate over their scope
   column is an ordinary population filter.
 - **Unscoped outputs (3):** shape 1 gates at the reader and abstains at the
