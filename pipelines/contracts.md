@@ -725,6 +725,18 @@ all three demonstrations in this section at once: `analytics_snapshots.sql`
 row), `store_churn.py:193-198` vs `:253-261` (same two columns, opposite
 operators). app's wording, adopted over data's row-role phrasing, which could
 not express the middle case (app/ml, 2026-10-17).
+
+Two boundary tests, because each half-solution fails one of them. **The column
+*name* is not the rule:** `brand_id` sits under both operators in one file and
+at one parameter position — `store_rfm.py:29` population form over the joined
+`stores` row (`$3::uuid IS NULL OR s.brand_id = $3::uuid`) against `:58`
+artifact form over `rfm_snapshots`. **The row's kind is not the rule either:**
+the middle case above is one row carrying both forms. What decides is what the
+column *is* on the row being located — the artifact's own stamp, or a
+dimension of a source row — which also disposes of the one apparent
+counterexample to the column framing, `analytics_snapshots.sql:110-111`
+(`b.id`/`g.id`): those filter a joined dimension row by its identity, not an
+artifact by a stamp.
 — **declined on purpose, not missed**: 011's design is exclusion, and a group
 run means the group's pool, not "the pool plus unassigned rows". Recorded so
 the choice is visible rather than rediscovered.
