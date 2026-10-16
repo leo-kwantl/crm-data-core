@@ -298,7 +298,15 @@ params (`db/migrations/010_analytics_rfm.sql:6-16`), so a caller-chosen
 cap row would be indistinguishable from a default one and its M cuts
 unattributable from storage. Do not add a `--m-cap-pct` flag: a rendered
 flag would re-open exactly that. Cap experiments belong on the live
-endpoints, which persist nothing.
+endpoints, which persist nothing — and the GETs must stay unpinned for the
+mirror-image reason: a live response **self-attributes**, returning the cap it
+used inside the boundaries payload (`"m": {"m_cap_pct": …, "winsor_cap_cents": …}`,
+`ml_engine/rfm.py:317`, validated `:292-295`), so a cap-chosen response states
+its own M cuts and cannot be silently incomparable, while a stored row cannot.
+Do not pin the GETs to the default either: that would delete the only place a
+cap can be inspected before it is proposed as an engine default. The refusals
+are covered by app tests since `0fb9fba` (mutation-checked: disable the branch
+and the refusal answers 201).
 
 **Third writer, non-scheduled:** `POST /analytics/rfm/snapshots` writes
 **v1** through the same `store_rfm.create_snapshot`, stamped
