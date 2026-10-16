@@ -257,7 +257,10 @@ hand-run-only either: the app's own
 imported at request time), so an `ml_engine/` change is live for `ml_jobs/`
 immediately (fresh process per run) but **live in the API only after that process
 restarts** — "landed" and "live" differ by one process lifetime on the serving
-side).
+side; the test is to compare the changed file's mtime against the serving
+process's start time rather than infer it from `git log` (app runbook
+`docs/reseed-runbook.md`, `9674976`: `Get-NetTCPConnection -LocalPort 8000
+-State Listen` for the PID, then `Get-Process -Id <pid> | Select StartTime`)).
 `ld8_snapshot` find-or-creates on `(mode, window_from, window_to, v2,
 window_key, scope)` (`ml_engine/store_ld8.py:63-66`, the `SNAPSHOT_FIND_V2_SQL`
 find predicate), so an `--as-of`
@@ -527,6 +530,20 @@ on SelectorEventLoop) with DATABASE_URL passthrough; stdout run-id
 parsed, else NULL. Re-runnable: succeeded skipped unless `--force`;
 upstream failure → downstream `skipped`. Cron owns the tick; scopes
 fan-out is future (runner takes one --brand/--group per invocation).
+That ownership is a **split, not a to-do for ml**:
+`pipeline_manifests.schedule` is a *declaration* whose 5-field shape ml
+validates (`ml_jobs/manifest.py:141-142` `is_valid_cron` — "Light 5-field
+cron shape check. The runner owns full parsing.", called only at
+`:189-190`/`:218-219`) and never evaluates, and ml has no scheduler entry
+point at all (every entry is a one-shot `python -m ml_jobs.run_*` that
+connects, writes, exits — no loop, no daemon). So wiring a trigger is a
+change to **this repo's runner only, zero ML change**. Two halves are
+open and they are different problems: the **feature** (015 gives
+manifests + `pipeline_runs`, but nothing in the product schedules a tick
+or shows one — app, after 015) and the **infrastructure** (nothing fires
+the tick at all: no cron entry on any host, no in-repo loop; verified
+2026-10-17). Do not read a green `pipeline_runs` row as proof a scheduler
+exists — those rows are hand-runs.
 
 ## 016: modeling-upgrade flag mapping (ml registry / algorithms / signals)
 
