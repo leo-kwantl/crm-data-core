@@ -203,6 +203,23 @@ The builder rejects the legacy param with a named `ManifestError` rather
 than letting the CLI exit 2 on every tick (`pipelines/schedule.py`
 `_build_ld8`).
 
+First-tick triage, so a failure is not misread as the wrong subsystem:
+the argv's positional DB URL is the runner's resolved `ctx.db_url`
+(`pipelines/schedule.py:281` emits `[python, -m, <module>, ctx.db_url]`,
+sourced from `scripts/run_pipeline.py:96-116` via `_connect_resolved`),
+**never** a manifest `params` value. So a wrong row fails at dispatch as
+a `ManifestError` with a message *above* the spawn, while a bad URL is a
+runner/env fault that takes every ml job in the tick down with it — and
+an unset one is caught pre-spawn too (`pipelines/schedule.py:278-280`,
+`UnknownEngineError`). The ml CLI connects *before* it validates its own
+args (`ml_jobs/run_ld8_snapshot.py:20-27`), so a malformed `--as-of` or
+scope UUID surfaces as `ValueError` only after a successful connect and a
+bad URL as a driver error (`exit 1`, e.g. `socket.gaierror` /
+`ConnectionRefusedError`) — which reads as a connectivity incident. That
+ordering only bites **hand-runs**: the tick always passes
+`ctx.as_of.isoformat()` (`pipelines/schedule.py:293`, a `date`, so never
+malformed) together with the runner's own URL.
+
 `created_by` is passed through (`--created-by`;
 `scripts/run_pipeline.py:132` default `scheduler`), so a NULL in that
 column means nobody set it — pass a staff code wherever a job writes, or
