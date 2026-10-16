@@ -280,9 +280,14 @@ is an engine kwarg (`ml_engine/rfm.py:278` → `store_rfm.py:114/139`,
 `store_ld8.py:132-151`) reachable from the app's two live GETs only
 (`../crm-cdp-app/services/api/routers/analytics_rfm.py:107`, `:266`,
 `Query(ge=0.01, le=1.0)`); the scheduled writer always uses
-`DEFAULT_M_CAP_PCT = 0.99`, and no renderer emits a flag for it, so
-`ml_jobs/manifest.py:75 m_cap_pct: (False, None)` on `rfm_snapshot` is a
-declaration nothing can turn into argv (being dropped, ml). The snapshot
+`DEFAULT_M_CAP_PCT = 0.99`, and no renderer emits a flag for it, so the
+`m_cap_pct: (False, None)` entry `rfm_snapshot` carried was a declaration
+nothing could turn into argv (removed, ml `f78d127`). Deleting it is
+editorial, not protective: `_validate_job` (`ml_jobs/manifest.py:226-234`)
+checks known keys only for `required`/`allowed` values, and unknown params
+pass through by design (`:64-72`, so that scheduler-only keys reach the
+pipeline), so a stored row setting it would still validate and still be
+ignored. The guards are this line, the absent renderer, and app's pin. The snapshot
 write path is **pinned by decision** (app `6bdf2b4`): a non-default cap
 is rejected by name — `422 {"code": "non_default_m_cap_pct",
 "default": 0.99}` (`analytics_rfm.py:58-66`), plus `bad_m_cap_pct`
