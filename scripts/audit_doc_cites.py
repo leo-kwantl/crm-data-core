@@ -50,9 +50,13 @@ peer that is absent; always, a ``--require-peer`` that is absent).
 
 ``--comments`` extends the same genres to the places the cites actually live:
 comment lines (``#`` in .py, ``--`` in .sql) and triple-quoted string bodies,
-where ml's and app's anchors are. Two boundaries are stated in the output rather
-than left to the reader: a default run is a pass over **markdown only**, and a
-trailing ``# …`` after code is not read, because attributing it means guessing.
+where ml's and app's anchors are. Boundaries are stated in the output rather
+than left to the reader: a default run is a pass over **markdown only** (with
+the outside surface counted, so a zero is bounded), a trailing ``# …`` after
+code is not read because attributing it means guessing, and a range cite whose
+naming identifier sits on a *neighbouring* line is counted in
+``cite-symbol-unchecked`` instead of being resolved -- the window-scoped version
+of that fix flagged correct cites, so the sites are listed for hand-reading.
 """
 
 from __future__ import annotations
@@ -105,6 +109,26 @@ PATH_TOK = r"(?:`[\w./-]+\.(?:" + "|".join(EXTS) + r")`|" + PATH_BARE + r")"
 PIN = re.compile(r"((?:" + PATH_TOK + r"(?:\s*[/,]\s*)?)+)\s*`(" + SHA + r")`")
 PIN_PATH = re.compile(r"`([\w./-]+\.(?:" + "|".join(EXTS) + r"))`")
 SHA_TOK = re.compile(r"`(" + SHA + r")`")
+# A file is "citation-shaped" if it carries a token **this guard would read**: its
+# own two requirements -- a backticked sha, or a path token followed by a line
+# number -- and nothing else, so a scope count and the pass cannot drift apart
+# about what a citation is. A hex-shaped grep is a different and worse
+# classifier: it printed 41 files in app's tree where the honest number is 4
+# (their four pins), which is the failure this whole guard exists to prevent,
+# one level up (app, 2026-10-17).
+# `[0-9]+` rather than `\d+` on purpose: this pattern is also handed to `git
+# grep -E` for the files outside the pass, and `\d` is a GNU-ERE extension that
+# silently matches a literal `d` -- the first version of this counter printed
+# "0 outside" against a tree with four pin-bearing files, i.e. a vacuous zero
+# produced by the counter itself.
+CITATION_SHAPE = re.compile(SHA_TOK.pattern + "|" + PATH_TOK + r":[0-9]+")
+# The same idea, handed to `git grep -E` for the files outside the pass. POSIX
+# ERE has no non-capturing groups, no `\d`, and no lookahead, and an invalid
+# pattern exits 128 -- which the first version of this counter read as "not a
+# repo" and turned into a vacuous "0 outside" against a tree whose four pins
+# were exactly what it was counting.
+GREP_CITATION_SHAPE = (CITATION_SHAPE.pattern.replace("(?:", "(")
+                       .replace("(?![A-Za-z0-9])", ""))
 
 
 def repo_files(root: Path) -> list[Path] | None:
@@ -628,22 +652,83 @@ DEF_RE = re.compile(r"^\s*(?:async\s+)?(?:def|class)\s+([A-Za-z_]\w*)"
                     r"|^\s*([A-Za-z_]\w*)\s*[:=]")
 
 
+def _encloses(lines: list[str], def_line: int, span_start: int) -> bool:
+    """Does the block opened at `def_line` (1-based) contain `span_start`?
+
+    Indentation, not `ast`, because the cited file may be `.sql` -- and this
+    answers only "is the span inside that definition's body", which is the
+    question the allowance below asks.
+    """
+    if def_line >= span_start:
+        return False
+    head = lines[def_line - 1]
+    indent = len(head) - len(head.lstrip())
+    for ln in lines[def_line:span_start - 1]:
+        if not ln.strip() or ln.lstrip().startswith("#"):
+            continue
+        if len(ln) - len(ln.lstrip()) <= indent:
+            return False
+    return True
+
+
+def _window(units: list[tuple[int, str]], i: int, start: int, end: int,
+            back: int = 120, fwd: int = 120) -> str:
+    """Text around a cite: its **own clause**, capped at ~120 characters a side.
+
+    A naming identifier sits after its cite as often as before it: app's
+    `snapshots_serve.py:656-657` cites a comment inside `compute_current` while
+    the backticked name is on the following line. Line-scoped, the candidate
+    set is empty and the span goes *unchecked* -- the loss is silence, which is
+    the one outcome this guard must not produce (app, 2026-10-17).
+
+    The window is deliberately *tight*, and that is a measurement, not a
+    preference: the paragraph-sized version of this fix reported two correct
+    cites in `pipelines/contracts.md` (`:717` on `tests/test_ld8.py:43`, `:817`
+    on `pipelines/schedule.py:255-263`) because identifiers from the *rest of
+    the paragraph* -- a test name, a parameter -- joined the candidate set and
+    were then found absent from the span. A bucket that fires on correct cites
+    is as useless as one that hides bad ones, so the radius is characters
+    around the cite, not the paragraph around the line.
+    """
+    pre = ("\n".join(t for _, t in units[max(0, i - 2):i]) + "\n"
+           + units[i][1][:start])[-back:]
+    post = (units[i][1][end:] + "\n"
+            + "\n".join(t for _, t in units[i + 1:i + 3]))[:fwd]
+    return pre + units[i][1][start:end] + post
+
+
+def _symbols(text: str) -> set[str]:
+    """Symbol-shaped backticked identifiers in `text` -- the candidate subjects."""
+    return {n for n in SYMBOL.findall(text) if n}
+
+
 def symbol_moved(roots: list[Path], cited: str, text: str, start: int,
-                 end: int, rel_doc: str, lineno: int) -> str | None:
+                 end: int, rel_doc: str, lineno: int,
+                 window: str = "") -> str | None:
     """A range cite proving the range exists, never that it bounds the subject.
 
-    app cited `ml_engine/store_ld8.py:101-107` for `resolve_ld8_window` while
-    those lines are `SIZES_FOR_WINDOW_SQL` and the delegation is at `:122-123`
-    (app, 2026-10-17): in range, so `ok` and `out-of-range=0` were both true
-    while the sentence pointed at a different object. Two filters keep the hit
-    honest: the sentence must name a symbol-shaped token, and the cited span
-    must *define* some other name -- otherwise a sentence that names a
-    statement while deliberately citing part of it (contracts.md:475 cites the
-    scope conjuncts `:63-66` of `SNAPSHOT_FIND_V2_SQL`) would be reported as a
-    defect, and a bucket that fires on correct cites is as useless as one that
-    hides bad ones.
+    A peer cited `<file>.py:101-107` for `<symbol>` while those lines are
+    `<other statement>` and the delegation is 20 lines lower (app, 2026-10-17):
+    in range, so `ok` and `out-of-range=0` were both true while the sentence
+    pointed at a different object. Written with schematic names on purpose -- an
+    example carrying live values is itself a citation, and this docstring's
+    first version was reported by its own guard (2026-10-17).
+
+    Three filters keep the hit honest: the sentence must name a symbol-shaped
+    token **on the cite's own line**, and the cited span must *define* some
+    other name -- otherwise a sentence that names a statement while deliberately
+    citing part of it (contracts.md:475 cites the scope conjuncts `:63-66` of
+    `SNAPSHOT_FIND_V2_SQL`) would be reported as a defect, and a bucket that
+    fires on correct cites is as useless as one that hides bad ones -- and a
+    candidate that *encloses* the span is the subject, not a mismatch (app,
+    2026-10-17: their `:656-657` names the enclosing `compute_current`).
+
+    `window` is accepted but not used as a candidate source: candidates are
+    line-scoped because the window-scoped version fired on two correct cites in
+    `pipelines/contracts.md` (measured 2026-10-17), and the caller counts those
+    sites as `cite-symbol-unchecked` instead.
     """
-    names = [n for n in SYMBOL.findall(text) if n not in ("",)]
+    names = sorted(_symbols(text))
     if not names:
         return None
     for tree in roots:
@@ -668,6 +753,16 @@ def symbol_moved(roots: list[Path], cited: str, text: str, start: int,
               if any(_defines(ln, n) for n in names)]
         if not at:
             return None  # the named object is not here at all, so not this cite's
+        # A cite may name the **enclosing definition** rather than a line in the
+        # span: app's `:656-657` names `compute_current`, whose `def` is at
+        # `:108` and whose body contains the cited comment at `:123`. That is a
+        # correct cite, and app withdrew the window refinement on exactly this
+        # measurement -- so an identifier that *contains* the span is the cite's
+        # subject, not a mismatch (app, 2026-10-17).
+        for n in names:
+            for ln_no, ln in enumerate(lines, start=1):
+                if _defines(ln, n) and _encloses(lines, ln_no, start):
+                    return None
         return ("cite-symbol %s:%d -> %s:%d-%d in %s names %s, which the span"
                 " does not contain -- it defines %s (the named object is at"
                 " :%s)"
@@ -683,31 +778,47 @@ def symbol_moved(roots: list[Path], cited: str, text: str, start: int,
 PASS_EXTS = {False: {".md"}, True: {".md", ".py", ".sql"}}
 
 
-def outside_pass(root: Path, comments: bool) -> list[str]:
-    """Files this pass cannot read that still carry sha-like tokens.
+def outside_pass(root: Path, comments: bool) -> tuple[int, list[str], str]:
+    """(files skipped by this pass, citation-shaped among them, a caveat)."""
+    """Files outside this pass that are citation-shaped -- i.e. files the
+    ``--comments`` pass would have something to check in.
 
     `coverage: 3 file(s) -- markdown only` with every bucket at zero is honest
     and still misleading when four `.sql` files outside the pass hold pins: the
     identical zero means "nothing to check" in one tree and "the checks are
-    elsewhere" in another, and only the excluded surface separates them (app,
-    2026-10-17: theirs was the wrong one, not the vacuous one). One git-aware
-    grep, reported as a name-not-list because the point is that the surface
-    exists.
+    elsewhere" in another, and only the outside surface separates them (app,
+    2026-10-17: theirs was the wrong one, not the vacuous one).
+
+    The predicate is ``CITATION_SHAPE``, the guard's own token requirement, not
+    a hex-shaped grep -- and it uses the same regex object, so there is one
+    definition of "citation-shaped" in the file rather than two that can drift.
+    Measured against the mode boundary: a run skips whole file *types*, so the
+    honest count is how many of those types carry citations, not how many carry
+    hex. Both sides are printed as a ratio of files-in / files-with-citations,
+    because those are different claims and only the file count catches a whole
+    file dropping out of the pass.
     """
     if comments:
-        return []  # this pass reads every file type the guard knows; the finer
-        # scope (comment lines only, not code) is stated in `coverage:` itself
+        return 0, [], ""  # every file type the guard knows is already in pass
+    files = repo_files(root)
+    if files is None:
+        return 0, [], "not a git checkout, so the outside surface is unknown"
+    skipped = [p for p in files if p.suffix in {".py", ".sql"}]
     try:
         out = subprocess.run(
-            ["git", "-C", str(root), "grep", "-lIE", r"\b[0-9a-f]{7,40}\b",
+            ["git", "-C", str(root), "grep", "-lIE", GREP_CITATION_SHAPE,
              "--", "*.py", "*.sql"],
             capture_output=True, text=True, encoding="utf-8",
             errors="replace", timeout=60)
-    except (OSError, subprocess.SubprocessError):
-        return []
-    if out.returncode not in (0, 1):  # 1 = no match, 128 = not a repo
-        return []
-    return [n for n in out.stdout.splitlines() if n]
+    except (OSError, subprocess.SubprocessError) as exc:
+        return len(skipped), [], "git grep could not run (%s)" % type(exc).__name__
+    if out.returncode not in (0, 1):  # 1 = no match; 2/128 = bad pattern / no repo
+        # Never `return []` here: an invalid pattern exits 128, which reads as
+        # "no citations outside" -- a vacuous zero manufactured by the counter
+        # itself, which is the exact failure this whole guard exists to catch.
+        return len(skipped), [], ("git grep failed (rc=%d), so the outside surface"
+                                  " is unknown" % out.returncode)
+    return len(skipped), [n for n in out.stdout.splitlines() if n], ""
 
 
 def basename_index(roots: list[Path]) -> dict[str, list[Path]]:
@@ -732,14 +843,14 @@ def audit(root: Path, peers: list[Path], strict: bool,
     idx = basename_index(roots)
     universe0 = _peers(roots)
     counts = {"ok": 0, "disagrees": 0, "out-of-range": 0, "unresolved": 0,
-              "cite-symbol": 0}
+              "cite-symbol": 0, "cite-symbol-unchecked": 0}
     hard: list[str] = list(peer_hard or [])
     info: list[str] = list(peer_notes or [])
 
     for doc in iter_md(root, comments):
         rel_doc = doc.relative_to(root)
         with doc_units(doc, comments) as units:
-            for lineno, text in units:
+            for i, (lineno, text) in enumerate(units):
                 for m in re.finditer(
                         r"[\w./-]+\.(?:" + "|".join(EXTS) + r"):\d+(?:\s*-\s*\d+)?", text):
                     span = m.group(0)
@@ -772,11 +883,34 @@ def audit(root: Path, peers: list[Path], strict: bool,
                             f"(path in no tree; peers checked: {_peers(roots)})")
                     elif all(ok for _, _, ok in where):
                         counts["ok"] += 1
+                        win = _window(units, i, m.start(), m.end())
                         moved = symbol_moved(roots, cited, text, start, end,
-                                             rel_doc, lineno)
+                                             rel_doc, lineno, window=win)
                         if moved:
                             counts["cite-symbol"] += 1
                             info.append(moved)
+                        elif (not _symbols(text) and _symbols(win)
+                              and len(CITE.findall(win)) <= 1):
+                            # `<= 1` = this cite is the window's only one. With a
+                            # second cite in the window its own identifier is
+                            # the neighbour, and reporting it would bury the
+                            # sites that genuinely have one.
+                            # A naming identifier exists, but on a *neighbouring*
+                            # line: the span is then unchecked, and silence is
+                            # the one outcome this guard must not produce. It is
+                            # reported rather than resolved, because widening
+                            # the candidate set to the window flags correct
+                            # cites (`pipelines/contracts.md:369` on
+                            # `store_segments.py:174-181`, `:817` on
+                            # `schedule.py:255-263` -- measured 2026-10-17).
+                            counts["cite-symbol-unchecked"] += 1
+                            info.append(
+                                "cite-symbol-unchecked %s:%d -> %s (no naming"
+                                " identifier on the line; the next line offers"
+                                " %s -- the span is unchecked until they sit"
+                                " together, so this is a site to read by hand)"
+                                % (rel_doc, lineno, span,
+                                   ", ".join(sorted(_symbols(win))[:2])))
                     elif any(ok for _, _, ok in where):
                         counts["disagrees"] += 1
                         info.append(
@@ -807,15 +941,22 @@ def audit(root: Path, peers: list[Path], strict: bool,
     print("  (scope: every count below is decided by the peers printed above"
           " and by the coverage mode below; a number pasted without them is a"
           " claim about the harness, not about the docs)")
-    outside = outside_pass(root, comments)
-    print("coverage: %d file(s) -- %s%s" % (
-        len(audited),
-        "markdown + comment lines/docstrings in .py/.sql" if comments else
-        "markdown only: cites in Python docstrings and SQL comments are outside"
-        " this pass, so green means green over one file type (add --comments)",
-        "; EXCLUDED SURFACE: %d file(s) outside this pass carry sha-like tokens"
-        " (%s) -- the zeroes below are bounded by that"
-        % (len(outside), ", ".join(sorted(outside)[:3])) if outside else ""))
+    n_skipped, outside, outside_note = outside_pass(root, comments)
+    in_shape = sum(
+        1 for p in audited
+        if any(CITATION_SHAPE.search(t) for _, t in text_units(p, comments)))
+    if outside_note:
+        out_txt = "; %d file(s) outside this pass, citations UNKNOWN (%s)" % (
+            n_skipped, outside_note)
+    else:
+        out_txt = "; %d file(s) outside this pass (%d contain citations)" % (
+            n_skipped, len(outside))
+    print("coverage: %d file(s) in pass (%d contain citations)%s -- %s" % (
+        len(audited), in_shape, out_txt,
+        "markdown + comment lines/docstrings in .py/.sql" if comments
+        else "markdown only: cites in Python docstrings and SQL comments are"
+        " outside this pass, so green means green over one file type (add"
+        " --comments)"))
     # The scope rides on the counts line as well as on `coverage:`, because the
     # counts line is the one that gets pasted into a chat -- and a clean run is
     # pasted alone far more often than a dirty one.
@@ -867,7 +1008,11 @@ def main() -> int:
                          "--peer, so it is printed as the first `trees:` entry "
                          "and the audited root is never its own peer -- every "
                          "count below is about this tree and the peers it was "
-                         "resolved against")
+                         "resolved against. `coverage:` counts FILES, the "
+                         "bucket lines count CITATIONS: `ok=5` over 3 files and "
+                         "`ok=5` over 5 files are different claims, and the file "
+                         "count is the one that catches a whole file leaving "
+                         "the pass")
     # `action="append"` + flatten, not a bare `nargs="*"`: with the latter a
     # repeated flag silently overwrites, so `--peer data --peer ml` registered
     # only ml and the run manufactured findings out of a short universe (app,
