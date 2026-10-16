@@ -703,10 +703,18 @@ into a brand session — a visibility bug, not a semantics curiosity; none in
 app's tree, whose population-form hits are all source-row filters over
 `orders`/`customers`/`brands`/`groups` (`analytics_snapshots.sql:110-111`,
 `analytics_simulate.sql:16-18`, `analytics_recs_fallback.sql`, `stats.py:23-29`
-`_ORDER_SCOPE`/`_CUST_SCOPE`). Granularity worth keeping: the choice is per
-**row role inside a predicate**, not per file — `analytics_snapshots.sql`
-carries both, artifact form on the stamped row (`:22-23`) and population form
-on the joined source rows (`:110-111`).
+`_ORDER_SCOPE`/`_CUST_SCOPE`). **Granularity, sharpened to its smallest case:** the discriminator is
+**per column, read over a specific row — "is this column the row's scope
+stamp?"** — not per file, not per table, and not even per statement. The
+smallest instance carries both forms in one statement over one row:
+`SNAPSHOTS_LIST_SQL` (`store_rfm.py:56-59`) asks population-form for `mode`
+(`:57`, `$1::text IS NULL OR mode = $1`, where NULL means "every mode") and
+artifact-form for the scope stamp (`:58-59`, `brand_id`/`group_id IS NOT
+DISTINCT FROM`), so row role cannot be the variable there. The file-level
+counterpart is `analytics_snapshots.sql` — artifact form on the stamped row
+(`:22-23`), population form on the joined dimension rows (`:110-111`) — which
+is why a per-file label ("this query file is artifact-form") would annotate
+one of those two lines wrongly.
 — **declined on purpose, not missed**: 011's design is exclusion, and a group
 run means the group's pool, not "the pool plus unassigned rows". Recorded so
 the choice is visible rather than rediscovered.
