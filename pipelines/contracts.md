@@ -1543,6 +1543,36 @@ visibility stamp: `brands` (`group_id`), `customers` (`group_id`), `stores`
 `campaigns` (`brand_id`), `consents` (`brand_id`). A predicate over these is an
 ordinary filter over live rows, and is expected to use the population form.
 
+**Obligations per group, and what a guard can actually assert.** The groups
+exist because the obligations differ, so which table sits in which group is the
+usable part of this section:
+
+- **Carriers (15)** and **inheritors (14)** — one invariant, and it is a *reader*
+  invariant: no query may touch an inheritor without joining the parent that
+  carries its scope. That is a property of code, not of data, so a DB test over
+  these rows passes **vacuously** — there is no second column to compare. The
+  enforceable form is a static sweep over `db/queries/*.sql`: a reference to an
+  inheritor with no parent join in the statement is the defect, and it is the
+  shape that would have caught the app `7cc4495` leak class.
+- **Carriers that also have an artifact parent — 2 edges** (schema-derived,
+  app, 2026-10-17): `explain_batches → segment_runs` and
+  `pipeline_runs → connector_sync_runs`. Here stamp equality *is* expressible
+  and worth asserting in a DB test, because both stamps are written by the same
+  statement (above).
+- **Negatives (7):** no visibility obligation; a predicate over their scope
+  column is an ordinary population filter.
+- **Unscoped outputs (3):** shape 1 gates at the reader and abstains at the
+  writer; shape 2 has neither obligation.
+
+**The trap in any schema-derived edge list:** enumerating FKs over
+scope-carrying tables yields **25 edges whose two ends both carry a stamp, and
+23 of them point at dimension relations** (`brand_id → brands.id` ×20, plus
+`consents → customers`, `customers → membership_tiers`, `staff → stores`). They
+must be excluded — and not only because equality is unexpressible there: it is
+**wrong by design**, since a brand-scoped row carries `group_id = NULL` while
+its `brands` row carries the owning group, so equality fails on correct data.
+Only artifact→artifact edges (the 2 above) are candidates.
+
 **Unscoped outputs — 3**, a real category rather than a leftover bucket, and
 listed so absence cannot read as coverage. It has **two shapes, split by what
 the relation stores, not by how carefully it was written** (app, 2026-10-17):
