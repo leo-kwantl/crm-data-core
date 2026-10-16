@@ -900,7 +900,16 @@ WHERE-clause tweak in a migration — and where the intent really is "this
 session's rows *or* the global ones", the population form cannot express it
 (with a brand session `(B, None)` it reduces to `brand_id = B` and drops the
 globals it was meant to add): app writes the disjunction out explicitly at
-`scope.py:29-37`. The mutuality is app's own text at `scope.py:21-27`
+`scope.py:29-37` — as an **added term**, never a relaxed operator. The
+divergence has exactly one trigger, a **NULL session parameter**: the
+population form's NULL test is on the *parameter* (`$3::uuid IS NULL OR …`
+means "no restriction on this column"), while the artifact form compares
+*column to parameter* NULL-safely (`IS NOT DISTINCT FROM …` means "only rows
+whose stamp is NULL here"). So relaxing that column is the disclosure
+direction above, and the term's explicit tuple is also what keeps a
+group-stamped `(NULL, G)` row — the *normal* shape, since `session_scope`
+returns `(brand, None)` or `(None, group)` — out of a brand session (ml,
+2026-10-17). The mutuality is app's own text at `scope.py:21-27`
 (app `bc9cb59` "state the mutuality of the stamp predicate and the per-row
 rule", cited here rather than re-derived). The split falls
 on statement boundaries by architecture rather than luck: the serving layer
