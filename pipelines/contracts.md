@@ -1465,7 +1465,10 @@ uppercase, never collide with lowercase segments; pct_of_from NULL
 enforced (outside the flow pct denominator by construction).
 Lesson: `window` is a PG reserved word — column is `window_key`.
 ml executes the movement math verbatim via `validate_movement_row`
-/ `validate_segment_size` + the UPSERT/SELECT SQL.
+/ `validate_segment_size` + the UPSERT/SELECT SQL. **Scope:** both
+aggregates are **unscoped outputs** — no scope column, no parent FK, global
+by construction (see *The stamped set* below for the enumeration and the
+pending writer-side choice).
 
 **Frozen-interface marker (proposed, deliberately unlanded — the owner's call,
 ml 2026-10-17).** Both repos execute the same statements (this repo's four
@@ -1474,6 +1477,137 @@ can only assert agreement in a skip-if-absent test that copy-reads this tree.
 A version marker on the interface would let both sides assert agreement at
 import or in the manifest instead. That is a contract change, so neither side
 lands it unilaterally; recorded here so the trade-off is not rediscovered.
+
+## The stamped set: which relations carry a scope stamp (app+data+ml, 2026-10-17)
+
+A **stamped relation** is one whose row carries a scope stamp
+(`brand_id`/`group_id`) on the row itself, or inherits exactly one through its
+parent artifact. That is the set `row_visible` decides on
+(`../crm-cdp-app/services/api/analytics/scope.py:1-51`, reference
+implementation `:72-76`), so it is also the set the artifact-vs-population
+operator rule above applies to. It is written down because all three repos
+classified a relation from its **name** — a suffix (`order_items`, CTE names),
+a filename, a pair of alias letters — and each was wrong once: the category was
+not enumerated anywhere, so every repo re-derived it. **Derive it, do not
+infer it.**
+
+**Derivation (re-checkable):** every `CREATE TABLE` body and every
+`ALTER TABLE … ADD COLUMN` in `db/migrations/*.sql`, **`migrate:up` sections
+only, in filename order**. At data `1faf31d` that is **22** scope-carrying
+tables = **15 carriers + 7 negatives**, exactly, with nothing left over. The
+direction matters: `012_analytics_scope.sql` adds the scope columns at `:15-16`
+(`rfm_snapshots`) and `:21-22` (`rec_batches`) while its `migrate:down` `:26-32`
+drops them, and `031_rfm_time_aware.sql`'s down `DROP TABLE`s both
+`rfm_segment_*` tables — so a `CREATE TABLE`-only scan, or one unioned across
+directions, reports a different set (a first pass of ours reported 14, missing
+the inline and multi-column ALTERs).
+
+**Carriers — 15.** The row's own stamp decides its visibility: `rfm_snapshots`,
+`rec_batches`, `clv_snapshots`, `churn_snapshots`, `kpi_daily_snapshots`,
+`cohort_snapshots`, `segment_runs`, `assoc_batches`, `explain_batches`,
+`forecast_batches`, `model_training_runs`, `pipeline_runs`, `connector_sync_runs`,
+`upload_jobs`, `btyd_params`.
+
+**Inheritors — 14.** No scope column of their own; visibility follows the
+parent's stamp through an FK, so a scope predicate can only be applied by
+joining the parent — the parent→child edges, which are the whole list (writer
+→ carrier → carrier's children): `rfm_customer_scores` ← `rfm_snapshots`
+(`snapshot_id`), `churn_customer_scores` ← `churn_snapshots` (`snapshot_id`),
+`clv_customer_scores` ← `clv_snapshots` (`snapshot_id`),
+`segment_assignments` ← `segment_runs` (`run_id`), `cluster_feature_matrix` ←
+`segment_runs`, `cluster_feature_matrix_long` ← `segment_runs`, and
+`seg_surrogate_fits` ← `segment_runs` (all `segment_run_id`), `assoc_rules` ←
+`assoc_batches` (`batch_id`), `explain_rows` ← `explain_batches` (`batch_id`),
+`forecast_rows` ← `forecast_batches` (`batch_id`), `rec_items` ← `rec_batches`
+(`batch_id`), and `landing_receipts` / `quarantine_rows` / `staging_rows` ←
+`upload_jobs` (`upload_job_id`). Thirteen of the fourteen edges are
+`NOT NULL … ON DELETE CASCADE`; the exception is the fourteenth, and it is a
+boundary case rather than a detail: `landing_receipts.upload_job_id` is
+`uuid NULL UNIQUE … REFERENCES upload_jobs (id) ON DELETE RESTRICT`
+(`027_landing_receipts.sql:16-17`) because exactly one of it and
+`vendor_batch_id` must be set (`:31-33` `CHECK ((upload_job_id IS NOT NULL)::int
++ (vendor_batch_id IS NOT NULL)::int = 1)`). So the table is an inheritor on
+the **file-upload** path only: a **vendor batch import** receipt has no parent
+artifact, no scope column and no join to a stamped relation — it is unscoped by
+construction, and it is the one row shape where the parent→child coherence
+check has nothing to compare.
+`cluster_feature_matrix` and `cluster_feature_matrix_long` are **two relations,
+not one**: `029` carries a `layout` column with
+`CHECK (layout IN ('wide','long'))`, and `032` gives the melted-stat grain its
+own table because the wide PK cannot hold those rows; serving reads both
+(`db/queries/analytics_segment_matrix.sql`, wide by `layout`, long by table).
+
+**Negatives — 7.** Live entities carrying a scope column that is **not** a
+visibility stamp: `brands` (`group_id`), `customers` (`group_id`), `stores`
+(`brand_id`), `staff` (`brand_id`), `membership_tiers` (`brand_id`),
+`campaigns` (`brand_id`), `consents` (`brand_id`). A predicate over these is an
+ordinary filter over live rows, and is expected to use the population form.
+
+**Unscoped outputs — 3**, a real category rather than a leftover bucket, and
+listed so absence cannot read as coverage. It has **two shapes, split by what
+the relation stores, not by how carefully it was written** (app, 2026-10-17):
+
+1. **Holds scope-dependent results with no scope column** — both obligations:
+   readers must gate, writers must abstain. `rfm_segment_sizes` and
+   `rfm_segment_movement` (031; writer ml). No predicate can distinguish a
+   per-scope row from a global one, which is why the gate is the reader's and
+   why this shape is the one with a failure mode in it (app `7cc4495`).
+2. **Holds no results at all** — neither obligation, and the reason is the
+   table's content, not the writer's discipline: `report_runs` (app-only,
+   `../crm-cdp-app/db/migrations/033_report_runs.sql`; data carrying no 033 is
+   the bootstrap-subset rule, not drift) is a scope-free **ledger** — columns
+   `id, report_id, version, status, requested_by, error, created_at,
+   finished_at`, and nothing anywhere stores a report's output
+   (`../crm-cdp-app/db/queries/reports.sql` has zero `result` hits; the
+   migration's own header says results "are never fabricated"). Grouping it
+   with shape 1 invites the one wrong fix available here: adding scope columns
+   to a table that carries no computed content.
+
+The neighbouring LD11 surface is a third case, and the honest wording is
+narrower than "no scope content": the only scope-bearing thing there is a
+definition's **filters** (`definition jsonb`, `026_report_definitions.sql:18`;
+data's validator vocabulary is `CONTENT_KEYS = ("axes", "metrics", "filters")`,
+`pipelines/reports.py:15`, so a brand pin rides inside `filters` as content) —
+**configuration, not results**, and its visibility is a stated choice rather
+than an oversight: staff-level gating, because "Definitions carry no secrets
+and trigger no execution, so admin-gating … would only block the staff authors
+these reports exist for" (`../crm-cdp-app/services/api/routers/reports.py:9-13`).
+
+**Two shapes a three-list split cannot express.** First, a **carrier that also
+inherits**: `explain_batches.segment_run_id uuid NOT NULL REFERENCES
+segment_runs (id)` (`021_explain.sql:18`) alongside its own `brand_id`/
+`group_id` (`:29-30`, indexed `:34-35`), and `pipeline_runs.sync_run_id`
+(`023_pipeline_sync_link.sql:12-13`, NULL). Ruling (app, 2026-10-17): **the
+row's own stamp governs**, because that is the only column `row_visible` reads
+— the parent FK is lineage, not a second visibility path. A child/parent
+disagreement is therefore **not a case to define away: it is a write bug**, and
+the guard belongs at the writer that inserts both in one transaction (ml's,
+e.g. `ml_engine/store_explain.py:47`), since PG cannot express a cross-table
+CHECK without a trigger. Second, an **unscoped output**.
+
+**Their write path, and the choice about it.** Nothing scoped connects the two
+031 aggregates to anything else. The writers
+`SEGMENT_SIZE_UPSERT_SQL` / `MOVEMENT_UPSERT_SQL` (`pipelines/snapshot.py:373`,
+`:380` — names are the contract, lines illustration) are `ON CONFLICT … DO
+NOTHING`; the readers `SIZES_FOR_WINDOW_SQL` / `MOVEMENT_FOR_PAIR_SQL` (`:387`,
+`:394`) filter `as_of` + window/pair only. Nothing records which session a row
+came from, so these numbers are **global by construction** and first-writer-wins
+for a given `as_of`. A scoped LD8 run is reachable
+(`ml_jobs/run_ld8_snapshot.py:23-28`, `--brand-id`/`--group-id` at `:49-50`)
+while `run_ld8` threads scope into the window snapshot and not into these two
+(`ml_engine/store_ld8.py:256-257`, `:261-263`) — so under a scoped run a brand's
+aggregates would *become* the global rows, and every unscoped session would read
+them as global truth. The read gate
+(`../crm-cdp-app/services/api/routers/analytics_rfm_windows.py:1-24`: scoped
+sessions 403 "until the artifact gains a scope column") closes only the read
+direction; nothing but the writer can close the write one. **Owner choice
+pending (A / B′ / defer), with B′ recommended by app and ml:** a scoped run
+still writes its scope-stamped snapshots/scores and **skips** these two, the
+skip **reported as skipped** rather than left to `DO NOTHING` — a bare zero is
+indistinguishable from "nothing changed", and no later query can recover a
+row's provenance. Under that choice `:669`'s remedy ("a scoped LD8 run") keeps
+its wording: that scope still gets its scoped snapshots; only these two
+aggregates stay HQ-only.
 
 ## Tree ownership & the mirror boundary (app ruling 2026-10-17)
 
