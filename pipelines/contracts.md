@@ -789,10 +789,29 @@ ran.
 
 CLI (ml, `ml_jobs/run_matrix_batch.py`): `python
 ml_jobs/run_matrix_batch.py DB_URL --segment-run-id UUID`. Argparse
-declares nothing else — the runner passes no `--as-of`, no
-`--brand-id`/`--group-id`, and (unlike `explain_batch`) no
-`--created-by`; a flag the CLI does not declare is an exit-2 on every
-tick. Exit codes are a signal (taxonomy confirmed by ml): 0 = success
+declares nothing else, so the runner passes exactly DB_URL +
+`--segment-run-id` — **no `--as-of`, no `--brand-id`/`--group-id`, no
+`--created-by`**; a flag the CLI does not declare is an exit-2 on every
+tick. (Read the "no `--created-by`" separately from the scope clause —
+scope and `created-by` are independent, and `explain_batch` differs on
+the second only.)
+
+**What a job's argv may carry is per-engine, and the split is what a
+*row* can carry.** On a scoped tick
+(`services/api/tests/test_schedule.py:415-424` pins all three):
+
+| engine | receives `--brand-id`/`--group-id`? | receives `--created-by`? |
+|---|---|---|
+| `explain_batch` | **no** — scope rides the resolved segment run (`pipelines/schedule.py:426-444`, `_with_common(..., with_as_of=False, with_scope=False)`) | yes |
+| `matrix_batch` | **no** — same reason | **no** (argparse declares none) |
+| `assoc_batch` | **yes** — reads the catalog directly and no row carries a scope for it (`pipelines/schedule.py:410-423`, `with_scope` default) | yes |
+
+Rule, and the reason a blanket sentence about it would be wrong: scope
+arrives as argv only for a job that reads the catalog directly; a job
+that reads a resolved **row** (`segment_runs`) takes its scope from the
+row, and an argv copy would be a second source of truth that can
+disagree with the run it actually read (ml's review catch, fixed
+`bce2721`). Exit codes are a signal (taxonomy confirmed by ml): 0 = success
 (both layouts written); 2 = argparse refusal, which only a drifted argv
 builder can produce; 1 = a genuine runtime failure -- unreachable DB, a
 `segment_run_id` the writer rejects, or any exception inside
