@@ -22,8 +22,21 @@ claim, and cite the revision **you read**, not HEAD — a witness number stays
 true forever, while "as of HEAD" rots on the next unrelated commit to that
 file. In a **code comment** (which carries no revision context at all) cite
 the content plus that pinned sha, because its reader is the person least
-likely to know the thread existed (app, 2026-10-17). The `ml_engine` anchors
-Anchors carry their **file's** last-changed revision, not ml's repo HEAD (`git log -1 --format=%h -- <path>`), because a HEAD pin rots on any commit to *any* file (ml, 2026-10-17). As read here: `ml_engine/store_rfm.py` `e423f70`, `ml_engine/store_ld8.py` `9f9093f`, `ml_engine/rfm.py` `4a8f994`, `ml_engine/store_segments.py`/`store_explain.py`/`store_forecast.py` `4a8f994`, `ml_engine/segment_movement.py` `e8934a7`, `ml_engine/btyd.py` `87734e8`, `ml_jobs/manifest.py` `0b834f9`, `ml_jobs/run_matrix_batch.py` `bb6b45c`. Two further failure modes need no movement at all, and archaeology separated
+likely to know the thread existed (app, 2026-10-17).
+
+Anchors carry their **file's** last-changed revision, not ml's repo HEAD
+(`git log -1 --format=%h -- <path>`), because a HEAD pin rots on any commit
+to *any* file (ml, 2026-10-17) — and per-file pins are only half the rule: a
+commit **inside** the pinned file still moves every anchor below it, so pins
+are taken per file and anchors re-derived per cite, never offset (app,
+2026-10-17). As read here: `ml_engine/store_rfm.py` `e423f70`,
+`ml_engine/store_ld8.py` `9f9093f`, `ml_engine/rfm.py` `4a8f994`,
+`ml_engine/store_segments.py`/`store_explain.py`/`store_forecast.py`
+`4a8f994`, `ml_engine/segment_movement.py` `e8934a7`, `ml_engine/btyd.py`
+`87734e8`, `ml_jobs/manifest.py` `0b834f9`, `ml_jobs/run_matrix_batch.py`
+`bb6b45c`.
+
+Two further failure modes need no movement at all, and archaeology separated
 them (app, 2026-10-17, times +0800 from the commit clock):
 
 - **Stale at birth** — construct right, number right *in the message it was
@@ -40,8 +53,8 @@ them (app, 2026-10-17, times +0800 from the commit clock):
   `412f9d7` 18:13:32 through `5f91e16` — the four mirrored statements were a
   contiguous run seven lines apart, `:342`/`:349`/`:356`/`:363`, so the cite
   named the **first line of the exact block it described**, and they are
-  `:373`/`:380`/`:387`/`:394` (+31) at `f889386`) and rotted only with data's `f889386`
-  window (10-17 01:09); app's `db/queries/rfm_windows.sql:2` is the same
+  `:373`/`:380`/`:387`/`:394` (+31) at `f889386`) and rotted only with data's
+  `f889386` (10-17 01:09:24); app's `db/queries/rfm_windows.sql:2` is the same
   case — at its 22:06:05 write `:342` *was* the row-defining statement, so the
   defect was an **ambiguous referent** ("canonical row SQL", writer vs
   readers), not a wrong construct. Keep the check, not the examples.
@@ -51,7 +64,13 @@ repos**, not about the revision the author says they read, and the pin has to
 be taken **at paste time**. What stands demonstrated is the part that makes
 any of this decidable at all: each sentence above was unresolvable while it
 was a prose referent plus a number — naming the construct is the fix, not the
-number. Two copies of one source line also share one **expiry date**: ml's
+number. A bare `:NN` is legitimate where the file is named in the same
+sentence (both repos cite that way; app's sweep found six such hits and no
+defect), but a bare number with **no referent in scope** clears all three
+checks at once because there is no file to disagree with — data's own
+`:938-943`, offered as the file's `segment_movement` pair cite, matched no ml
+file at all and is the one instance of that class found here (data,
+2026-10-17). Two copies of one source line also share one **expiry date**: ml's
 `store_ld8.py:70` (21:29:02) and app's `db/queries/rfm_windows.sql:2`
 (22:06:05) both cited `snapshot.py:342`, both were true when written, and
 both died in data's `f889386` window — so "I verified this citation" is not
@@ -521,7 +540,12 @@ anywhere, where a lagged ml constant at least raises a column/conflict error
 — so the freeze would have to cover ML's four `snapshot.py` statements **and**
 app's four copies, with the `031` schema under both. A guard alone reports
 every lag after it happens; a freeze with no guard still lets a later
-re-freeze lag unnoticed.
+re-freeze lag unnoticed. For app the freeze is the **cheap** half, because
+nothing in the app reads data's tree at serve time: those four copies
+*already are* the frozen artifact, implicitly and with no label saying which
+revision each was taken from, so what the freeze adds there is a **version
+marker** rather than a new artifact — and the guard stays a developer-time
+detector on that side too (app, 2026-10-17).
 
 **`m_cap_pct` is a live-request knob, never a stored property.** The cap
 is an engine kwarg (`ml_engine/rfm.py:278` → `store_rfm.py:115/140`,
