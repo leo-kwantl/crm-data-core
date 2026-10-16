@@ -2,8 +2,13 @@
 db/queries/customers_search.sql (parsed by -- name: markers).
 
 PII rules:
-- phone/email match EXACT normalized values only (E.164 / lowercase).
-- Partial phone/email input never matches (normalization rejects it).
+- email matches exact normalized (lowercase) first, then a
+  case-insensitive substring fallback for staff keyword search
+  (needles under EMAIL_PARTIAL_MIN_CHARS match nothing).
+- phone matches exact E.164 first, then falls back to a digit-substring
+  LIKE over value_normalized (staff keyword search, e.g. last-4 "9021");
+  needles under PHONE_PARTIAL_MIN_DIGITS digits match nothing.
+- phone/email stay POST-body-only (never URL), auth + rate-limit + audit.
 - Contacts are returned in FULL for staff (owner override 2026-10-08:
   staff MUST see full values in list + record UI). mask_* helpers are
   retained for potential future use + tests, but serialization never masks.
@@ -21,6 +26,21 @@ QUERIES_PATH = Path(__file__).resolve().parents[3] / "db" / "queries" / "custome
 _NAME_RE = re.compile(r"^--\s*name:\s*(\w+)\s*$", re.M)
 NAME_LIMIT = 20
 MEMBER_PARTIAL_LIMIT = 20
+PHONE_PARTIAL_LIMIT = 20
+EMAIL_PARTIAL_LIMIT = 20
+# Digit-substring phone fallback needs at least this many digits: 1-2 digit
+# needles would match a meaningless slice of the base (capped at the limit
+# above). Mirrors the topbar fan-out gate in apps/web/lib/api.ts.
+PHONE_PARTIAL_MIN_DIGITS = 3
+# Email fallback needs at least this many chars: 1-2 char needles ("a@")
+# would match a meaningless slice of the base (capped at the limit above).
+EMAIL_PARTIAL_MIN_CHARS = 3
+
+
+def phone_digits(raw: str | None) -> str:
+    """Digits-only needle for the phone-partial fallback (LIKE-safe: no
+    %, _, or backslash can survive stripping)."""
+    return re.sub(r"\D", "", raw or "")
 
 
 def escape_like(s: str) -> str:
@@ -33,7 +53,7 @@ def name_tokens(needle: str) -> list[str]:
 
     Whitespace-separated; every token must match (case-insensitive partial
     ILIKE %token%). Backslash/%/_ are escaped so user input is literal.
-    Phone/email matching is untouched (exact normalized only, elsewhere)."""
+    Contact fallbacks (phone/email) escape the same way in search()."""
     tokens = []
     for tok in needle.strip().split():
         tok = escape_like(tok)
@@ -126,8 +146,12 @@ async def search(conn, *, phone: str | None, email: str | None,
     """AND-intersect per-criterion matches. Returns (items, criteria_type).
 
     Name matching is multi-keyword AND: every whitespace-separated token must
-    match (case-insensitive partial ILIKE %token%). Phone/email stay
-    exact-normalized-only; member_id matches exact first, then falls back to
+    match (case-insensitive partial ILIKE %token%). Email matches exact
+    normalized first, then a case-insensitive substring fallback (min
+    EMAIL_PARTIAL_MIN_CHARS chars, LIKE-escaped); phone matches exact E.164
+    first, then a digit-substring fallback (min PHONE_PARTIAL_MIN_DIGITS
+    digits); member_id
+    matches exact first, then falls back to
     a case-insensitive substring over member_id + external_member_id
     (low-sensitivity counter IDs, capped at MEMBER_PARTIAL_LIMIT) — unless
     member_partial=False, which keeps the GET direct-fetch path exact-only.
@@ -139,27 +163,42 @@ async def search(conn, *, phone: str | None, email: str | None,
     q = load_queries()
     sets: list[set[str]] = []
     kinds: list[str] = []
-    # Unnormalizable input (e.g. last-4-digits partial phone) matches NOTHING
-    # (200 empty) rather than erroring or returning candidates: exact-only.
+    # Unnormalizable or too-short email/phone fragments match NOTHING
+    # (200 empty) rather than erroring or returning candidates.
     norm_phone: str | None = None
     norm_email: str | None = None
     if phone is not None:
+        digits = phone_digits(phone)
         try:
             norm_phone = normalize_phone(phone)
         except ValueError:
             norm_phone = None
-            sets.append(set())
+        exact = await _ids_for(conn, q["customers_by_phone"], norm_phone) if norm_phone else set()
+        if exact:
+            sets.append(exact)
+        elif len(digits) >= PHONE_PARTIAL_MIN_DIGITS:
+            partial = await conn.fetch(q["customers_by_phone_partial"], digits, PHONE_PARTIAL_LIMIT)
+            sets.append({str(r["id"]) for r in partial})
         else:
-            sets.append(await _ids_for(conn, q["customers_by_phone"], norm_phone))
+            sets.append(set())
         kinds.append("phone")
     if email is not None:
         try:
             norm_email = normalize_email(email)
         except ValueError:
             norm_email = None
-            sets.append(set())
+        exact = await _ids_for(conn, q["customers_by_email"], norm_email) if norm_email else set()
+        needle = (email or "").strip().lower()
+        if exact:
+            sets.append(exact)
+        elif len(needle) >= EMAIL_PARTIAL_MIN_CHARS:
+            partial = await conn.fetch(
+                q["customers_by_email_partial"],
+                escape_like(needle), EMAIL_PARTIAL_LIMIT,
+            )
+            sets.append({str(r["id"]) for r in partial})
         else:
-            sets.append(await _ids_for(conn, q["customers_by_email"], norm_email))
+            sets.append(set())
         kinds.append("email")
     if member_id is not None:
         needle = member_id.strip()
@@ -192,9 +231,9 @@ async def search(conn, *, phone: str | None, email: str | None,
         return [], criteria_type
     # Re-fetch full rows for matched ids (single query path per kind keeps SQL simple).
     if kinds == ["phone"]:
-        rows = await conn.fetch(q["customers_by_phone"], norm_phone) if norm_phone else []
+        rows = await _phone_rows(conn, q, norm_phone, phone_digits(phone))
     elif kinds == ["email"]:
-        rows = await conn.fetch(q["customers_by_email"], norm_email) if norm_email else []
+        rows = await _email_rows(conn, q, norm_email, (email or "").strip().lower())
     elif kinds == ["member_id"]:
         needle = (member_id or "").strip()
         rows = await conn.fetch(q["customers_by_member_id"], needle)
@@ -217,10 +256,10 @@ async def search(conn, *, phone: str | None, email: str | None,
         if not rows and matched:
             # mixed without name: pull each single-criterion set's rows cheaply
             rows = []
-            if norm_phone is not None:
-                rows += [r for r in await conn.fetch(q["customers_by_phone"], norm_phone) if str(r["id"]) in matched]
-            if norm_email is not None:
-                rows += [r for r in await conn.fetch(q["customers_by_email"], norm_email) if str(r["id"]) in matched]
+            if phone is not None:
+                rows += [r for r in await _phone_rows(conn, q, norm_phone, phone_digits(phone)) if str(r["id"]) in matched]
+            if email is not None:
+                rows += [r for r in await _email_rows(conn, q, norm_email, (email or "").strip().lower()) if str(r["id"]) in matched]
             if member_id is not None:
                 needle = member_id.strip()
                 mrows = await conn.fetch(q["customers_by_member_id"], needle)
@@ -234,6 +273,30 @@ async def search(conn, *, phone: str | None, email: str | None,
     items = await _with_contacts(conn, rows)
     # Staff sees FULL contact values (owner override 2026-10-08). No masking.
     return items, criteria_type
+
+
+async def _email_rows(conn, q: dict[str, str], norm_email: str | None,
+                    needle: str) -> list:
+    """Exact normalized email rows first, case-insensitive substring
+    fallback when the exact lookup is empty or the input never normalized.
+    The needle is lowercased + LIKE-escaped by the caller."""
+    rows = await conn.fetch(q["customers_by_email"], norm_email) if norm_email else []
+    if not rows and len(needle) >= EMAIL_PARTIAL_MIN_CHARS:
+        rows = await conn.fetch(
+            q["customers_by_email_partial"],
+            escape_like(needle), EMAIL_PARTIAL_LIMIT,
+        )
+    return rows
+
+
+async def _phone_rows(conn, q: dict[str, str], norm_phone: str | None,
+                    digits: str) -> list:
+    """Exact normalized phone rows first, digit-substring fallback when the
+exact lookup is empty or the input never normalized."""
+    rows = await conn.fetch(q["customers_by_phone"], norm_phone) if norm_phone else []
+    if not rows and len(digits) >= PHONE_PARTIAL_MIN_DIGITS:
+        rows = await conn.fetch(q["customers_by_phone_partial"], digits, PHONE_PARTIAL_LIMIT)
+    return rows
 
 
 async def fetch_by_id(conn, customer_id: UUID) -> dict | None:

@@ -202,43 +202,36 @@ async def update_product(
         )
         if exists is None:
             return None
+        # Single dynamic UPDATE: same partial-edit semantics (explicit
+        # null clears, *_set flags gate), one round-trip instead of up
+        # to seven. Unchanged fields are simply absent from SET.
+        assignments: list[str] = []
+        params: list = [product_id]
         if name is not None:
-            await conn.execute(
-                "UPDATE products SET name = $2 WHERE id = $1", product_id, name
-            )
+            params.append(name)
+            assignments.append(f"name = ${len(params)}")
         if category is not None:
-            await conn.execute(
-                "UPDATE products SET category = $2 WHERE id = $1", product_id, category
-            )
+            params.append(category)
+            assignments.append(f"category = ${len(params)}")
         if price_cents is not None:
-            await conn.execute(
-                "UPDATE products SET price_cents = $2 WHERE id = $1",
-                product_id,
-                price_cents,
-            )
+            params.append(price_cents)
+            assignments.append(f"price_cents = ${len(params)}")
         if description_set:
-            await conn.execute(
-                "UPDATE products SET description = $2 WHERE id = $1",
-                product_id,
-                description,
-            )
+            params.append(description)
+            assignments.append(f"description = ${len(params)}")
         if specs_set:
-            await conn.execute(
-                "UPDATE products SET specs = $2::jsonb WHERE id = $1",
-                product_id,
-                json.dumps(specs if specs is not None else {}),
-            )
+            params.append(json.dumps(specs if specs is not None else {}))
+            assignments.append(f"specs = ${len(params)}::jsonb")
         if image_url_set:
-            await conn.execute(
-                "UPDATE products SET image_url = $2 WHERE id = $1",
-                product_id,
-                image_url,
-            )
+            params.append(image_url)
+            assignments.append(f"image_url = ${len(params)}")
         if is_active is not None:
+            params.append(bool(is_active))
+            assignments.append(f"is_active = ${len(params)}")
+        if assignments:
             await conn.execute(
-                "UPDATE products SET is_active = $2 WHERE id = $1",
-                product_id,
-                bool(is_active),
+                f"UPDATE products SET {', '.join(assignments)} WHERE id = $1",
+                *params,
             )
         row = await conn.fetchrow(GET_PRODUCT_SQL, product_id)
         assert row is not None

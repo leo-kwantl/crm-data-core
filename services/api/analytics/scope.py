@@ -18,10 +18,36 @@ Consequences (deliberate, quarantine-by-default):
 - a group-wide manager sees group-stamped runs but not individual brand
   rows; brand detail needs a brand-scoped session. Live compute endpoints
   (RFM/churn/CLV/segments) still aggregate the whole group for managers.
+- the equality is mutual, so a brand-less HQ session (None, None) matches
+  only NULL/NULL rows: brand- and group-stamped runs are invisible to HQ by
+  construction, the same comparison read the other way. Read a brand's runs
+  from a brand-scoped session; do not relax either SQL predicate to the
+  population form to "let admin see brand runs" — that trades a blindness
+  bug for a disclosure bug, since a brand session would then also match
+  global/legacy rows.
+
+If a product case ever needs "this session's rows or the global ones", the
+population form cannot express it: with a brand session (B, None) it reduces
+to `brand_id = B` and excludes the global rows it was meant to add. Write the
+disjunction out instead — global rows by their explicit tuple, session rows by
+stamp-equality: `(brand_id IS NULL AND group_id IS NULL) OR (brand_id IS NOT
+DISTINCT FROM $n AND group_id IS NOT DISTINCT FROM $m)`. The tuple form is
+also what keeps a group-stamped (NULL, G) row out of a brand session, and
+(NULL, G) is the normal shape: session_scope returns (brand, None) or
+(None, group).
 
 The SQL list filters use the identical predicate
 (brand_id IS NOT DISTINCT FROM $brand AND group_id IS NOT DISTINCT FROM
 $group); keep the two in sync — row_visible is the reference implementation.
+
+Classify each predicate by the row being located, not by the column or the
+table: the located row takes stamp-equality on its scope stamp (NULL-safe on
+both sides), a joined source row takes the parameter-guarded population form
+($n IS NULL OR col = $n) — the same column name is a stamp on one and a plain
+dimension on the other. One stamped surface may carry both — a snapshot list
+filtered by mode, or a join to live brands/groups (see
+db/queries/analytics_snapshots.sql:110-111, whose stamped reads are
+stamp-equality at :20-23/:40-43/:62-65).
 """
 
 from __future__ import annotations

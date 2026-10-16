@@ -3,7 +3,10 @@
 
 -- name: customer_by_id
 -- params: customer_id uuid
-SELECT id, member_id, external_member_id, full_name, attributes, created_at, updated_at
+SELECT id, member_id, external_member_id, full_name, attributes,
+  gender, date_of_birth, district, address_line,
+  date_part('year', age(date_of_birth))::int AS age_years,
+  created_at, updated_at
 FROM customers
 WHERE id = $1 AND deleted_at IS NULL;
 
@@ -29,10 +32,13 @@ FROM orders
 WHERE customer_id = $1;
 
 -- name: customer_insert
--- params: member_id text, external_member_id text|None, full_name text, attributes jsonb
-INSERT INTO customers (member_id, external_member_id, full_name, attributes)
-VALUES ($1, $2, $3, $4)
-RETURNING id, member_id, external_member_id, full_name, attributes, created_at, updated_at;
+-- params: member_id text, external_member_id text|None, full_name text, attributes jsonb,
+--   gender text|None, date_of_birth date|None, district text|None, address_line text|None
+INSERT INTO customers (member_id, external_member_id, full_name, attributes,
+  gender, date_of_birth, district, address_line)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+RETURNING id, member_id, external_member_id, full_name, attributes,
+  gender, date_of_birth, district, address_line, created_at, updated_at;
 
 -- name: customer_contact_insert
 -- params: customer_id uuid, kind text, value_normalized text, value_display text, is_primary bool

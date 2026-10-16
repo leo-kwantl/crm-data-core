@@ -5,7 +5,8 @@
 - PUT /inventory {product_id, store_id, qty} — upsert the pair row (200).
   Unknown product/store -> 404; negative qty -> 422 (schema + CHECK).
 
-Non-PII resource like the catalogue: no session requirement (public).
+Non-PII resource like the catalogue: reads are public; the PUT upsert
+requires a staff session.
 """
 
 from __future__ import annotations
@@ -16,7 +17,7 @@ from typing import Annotated
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from ..deps import get_pool
+from ..deps import CurrentUser, get_current_user, get_pool
 from ..repos import inventory as repo
 from ..schemas.inventory import InventoryUpsert
 
@@ -39,6 +40,7 @@ async def list_inventory(
 async def upsert_inventory(
     payload: InventoryUpsert,
     pool: Annotated[asyncpg.Pool, Depends(get_pool)],
+    user: Annotated[CurrentUser, Depends(get_current_user)],
 ) -> dict:
     async with pool.acquire() as conn:
         result = await repo.upsert_inventory(

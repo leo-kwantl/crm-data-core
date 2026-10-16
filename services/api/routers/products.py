@@ -17,7 +17,7 @@ from typing import Annotated
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 
-from ..deps import get_pool
+from ..deps import CurrentUser, get_current_user, get_pool
 from ..repos import products as repo
 from ..repos.paging import clamp_page_size
 from ..schemas.product import ProductCreate, ProductUpdate
@@ -71,6 +71,7 @@ async def get_product(
 async def create_product(
     payload: ProductCreate,
     pool: Annotated[asyncpg.Pool, Depends(get_pool)],
+    user: Annotated[CurrentUser, Depends(get_current_user)],
 ) -> dict:
     async with pool.acquire() as conn:
         try:
@@ -92,6 +93,7 @@ async def patch_product(
     product_id: uuid.UUID,
     payload: ProductUpdate,
     pool: Annotated[asyncpg.Pool, Depends(get_pool)],
+    user: Annotated[CurrentUser, Depends(get_current_user)],
 ) -> dict:
     provided = payload.model_fields_set
     async with pool.acquire() as conn:

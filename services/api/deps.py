@@ -31,16 +31,22 @@ _rate_counters: dict[tuple[str, str], list[float]] = defaultdict(lambda: [0.0, 0
 
 
 async def get_pool() -> AsyncIterator[asyncpg.Pool]:
-    """Yield the shared asyncpg pool (created from DATABASE_URL)."""
+    """Yield the shared asyncpg pool (created from resolve_db_url())."""
     global _pool
     if _pool is None:
-        dsn = os.environ.get("DATABASE_URL")
-        if not dsn:
-            from .db import get_database_url
-
-            dsn = get_database_url()
-        _pool = await asyncpg.create_pool(dsn)
+        _pool = await asyncpg.create_pool(resolve_db_url())
     yield _pool
+
+
+def resolve_db_url() -> str:
+    """The DSN this app instance serves: env DATABASE_URL, else the
+    pgembed default. Routers pass this (not the raw env var) to
+    out-of-process CLIs so the subprocess lands on the SAME database
+    the request just wrote to — under pytest the pool is overridden to
+    an ephemeral instance while the env var may be absent."""
+    from .db import get_database_url
+
+    return get_database_url()
 
 
 async def close_pool() -> None:
@@ -120,8 +126,8 @@ async def require_customer_in_scope(pool, customer_id, user: CurrentUser,
     least one completed order in that brand. Brand-less HQ sessions
     (group None, brand None) pass. Authenticated per-customer routers
     (events, orders, consents, tier assign) call this so UUID-keyed history
-    reads cannot cross the silo. (The unauthenticated profile CRUD router is
-    pre-existing no-auth design and stays untouched — see report.)
+    reads cannot cross the silo. The profile CRUD router (customers.py)
+is authenticated and guards its {id} routes with this helper.
     """
     if user.group_id is None and brand_id is None:
         return

@@ -1,6 +1,6 @@
 """Connector write/trigger endpoints (data D1, admin-only).
 
-All five mutations are admin-gated (require_admin — same precedent as
+Every mutation below is admin-gated (require_admin — same precedent as
 uploads: these move secrets + execution). Reads stay app-side.
 
 - POST /connectors (create, validate-on-create, 409 on duplicate)
@@ -11,6 +11,9 @@ uploads: these move secrets + execution). Reads stay app-side.
   config-shape validation + secret presence; stored or prospective)
 - PUT /connectors/{id}/secret (credential rotation: sets the named env
   var at runtime per the 019 contract, touches updated_at, no DDL)
+- PUT /connectors/{id}/schedule (LD2 per-connector timetable: 5-field
+  cron per the 025 contract, null clears to manual-only; the sync
+  checkpoint last_sync_at/last_sync_status is worker-owned, read-only)
 
 Secrets never round-trip: every response carries `has_secret`
 (presence bit) only. The rotation value is never logged or echoed.
@@ -89,8 +92,7 @@ async def create_connector(body: ConnectorCreate, _admin: Admin,
                            pool: Pool) -> dict:
     return await _guard(lambda: repo.create_connector(
         pool, body.source_type, body.name, body.config,
-        body.secret_ref, body.enabled,
-        schedule_cron=body.schedule_cron))
+        body.secret_ref, body.enabled))
 
 
 @router.delete("/connectors/{connector_id}",
@@ -99,14 +101,6 @@ async def delete_connector(connector_id: UUID, _admin: Admin,
                            pool: Pool) -> Response:
     await _guard(lambda: repo.delete_connector(pool, connector_id))
     return Response(status_code=status.HTTP_204_NO_CONTENT)
-
-
-@router.put("/connectors/{connector_id}/schedule")
-async def update_schedule(connector_id: UUID,
-                          body: ConnectorScheduleUpdate, _admin: Admin,
-                          pool: Pool) -> dict:
-    return await _guard(lambda: repo.update_schedule(
-        pool, connector_id, body.schedule_cron))
 
 
 @router.post("/connectors/{connector_id}/sync",
@@ -146,6 +140,28 @@ async def test_connector(_admin: Admin, pool: Pool,
             "secret_ref": secret_ref,
             "secret_present": present,
             "has_secret": present}
+
+
+@router.put("/connectors/{connector_id}/schedule")
+async def update_schedule(connector_id: UUID, body: ConnectorScheduleUpdate,
+                          _admin: Admin, pool: Pool) -> dict:
+    """Set (or clear with null = manual-only) a connector's schedule.
+
+    Admin-gated like the other connector mutations; the 5-field cron is
+    validated per the 025 contract (bad timetables -> 422). No audit
+    row: connector mutations carry no PII and none of the existing
+    connector write endpoints audit. The sync checkpoint
+    (last_sync_at/last_sync_status) is worker-owned and read-only here.
+    """
+    upd = await _guard(lambda: repo.update_schedule(
+        pool, connector_id, body.schedule_cron))
+    out = dict(upd)
+    out["id"] = str(out["id"])
+    out["created_at"] = out["created_at"].isoformat()
+    out["updated_at"] = out["updated_at"].isoformat()
+    out["last_sync_at"] = (out["last_sync_at"].isoformat()
+                             if out["last_sync_at"] else None)
+    return out
 
 
 @router.put("/connectors/{connector_id}/secret")
@@ -189,7 +205,7 @@ def _connector_row(r: asyncpg.Record) -> dict:
     # CONVERGED (app ruling 2026-10-15): has_secret = env-live, computed
     # Python-side from the stored secret_ref NAME (never a value).
     ref = r["secret_ref"]
-    return {"id": str(r["id"]),
+    row = {"id": str(r["id"]),
             "source_type": r["source_type"],
             "name": r["name"],
             "config": dict(cfg) if isinstance(cfg, dict)
@@ -199,7 +215,15 @@ def _connector_row(r: asyncpg.Record) -> dict:
             "enabled": bool(r["enabled"]),
             "created_by": r["created_by"],
             "created_at": r["created_at"].isoformat(),
-            "updated_at": r["updated_at"].isoformat()}
+            "updated_at": r["updated_at"].isoformat(),
+            # LD2 schedule + sync checkpoint (025; NULL = never
+            # scheduled / never synced). last_sync_at renders ISO;
+            # the UI formats it via lib/format (never raw).
+            "schedule_cron": r["schedule_cron"],
+            "last_sync_at": (r["last_sync_at"].isoformat()
+                               if r["last_sync_at"] else None),
+            "last_sync_status": r["last_sync_status"]}
+    return row
 
 
 def _run_row(r: asyncpg.Record) -> dict:

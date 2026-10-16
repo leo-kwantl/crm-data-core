@@ -10,7 +10,9 @@ from __future__ import annotations
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+from ..repos.connectors import validate_schedule_cron
 
 
 class ConnectorCreate(BaseModel):
@@ -19,11 +21,6 @@ class ConnectorCreate(BaseModel):
     config: dict[str, Any] = Field(default_factory=dict)
     secret_ref: str | None = Field(default=None, max_length=128)
     enabled: bool = True
-    schedule_cron: str | None = Field(default=None, max_length=64)  # LD2
-
-
-class ConnectorScheduleUpdate(BaseModel):
-    schedule_cron: str | None = Field(default=None, max_length=64)
 
 
 class ConnectorSyncTrigger(BaseModel):
@@ -43,3 +40,15 @@ class ConnectorTestRequest(BaseModel):
 
 class ConnectorSecretRotate(BaseModel):
     value: str = Field(min_length=1, max_length=4096)
+
+
+class ConnectorScheduleUpdate(BaseModel):
+    # LD2 per-connector schedule (025): 5-field cron, or null to clear
+    # back to manual-only. Full cron validation raises ValueError ->
+    # FastAPI 422 on bad timetables.
+    schedule_cron: str | None = Field(default=None, max_length=64)
+
+    @field_validator("schedule_cron")
+    @classmethod
+    def _check_cron(cls, v: str | None) -> str | None:
+        return validate_schedule_cron(v)

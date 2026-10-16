@@ -1,3 +1,7 @@
+# Install the analytics engine FIRST (sibling package, editable):
+#   pip install -e ../crm-cdp-ml
+# Then install this file. Analytics routers import `ml_engine`
+# (calculation internals); serving-side scope stays app-owned.
 fastapi>=0.110
 uvicorn>=0.29
 pydantic>=2.0
@@ -11,4 +15,3 @@ pytest>=8.0
 pytest-asyncio>=0.23
 httpx>=0.27
 bcrypt>=4.0
-pyyaml>=6.0

@@ -10,7 +10,14 @@ from uuid import UUID
 
 import asyncpg
 
-from ..schemas.customer import normalize_contact, normalize_external_member_id
+from ..schemas.customer import (
+    normalize_address_line,
+    normalize_contact,
+    normalize_date_of_birth,
+    normalize_district,
+    normalize_external_member_id,
+    normalize_gender,
+)
 from . import consents as consents_repo
 from . import search as search_repo
 
@@ -72,6 +79,10 @@ async def create_customer(
     attributes: dict,
     external_member_id: str | None = None,
     group_id: UUID | None = None,
+    gender: str | None = None,
+    date_of_birth=None,
+    district: str | None = None,
+    address_line: str | None = None,
 ) -> dict:
     """Insert customer + contacts. Retries member_id on collision. Returns profile dict.
 
@@ -79,6 +90,10 @@ async def create_customer(
     lookup raises LookupError on a fresh DB without migrations."""
     normalized = _contacts_in(contacts)
     ext_id = normalize_external_member_id(external_member_id)
+    gender = normalize_gender(gender)
+    dob = normalize_date_of_birth(date_of_birth)
+    district = normalize_district(district)
+    address_line = normalize_address_line(address_line)
     attrs_json = json.dumps(attributes or {})
     async with pool.acquire() as conn:
         if group_id is None:
@@ -94,14 +109,19 @@ async def create_customer(
                 async with conn.transaction():
                     row = await conn.fetchrow(
                         "INSERT INTO customers"
-                        " (member_id, external_member_id, full_name, attributes, group_id)"
-                        " VALUES ($1, $2, $3, $4::jsonb, $5)"
+                        " (member_id, external_member_id, full_name, attributes, group_id,"
+                        " gender, date_of_birth, district, address_line)"
+                        " VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8, $9)"
                         " RETURNING id, member_id, external_member_id, full_name, attributes, created_at, updated_at",
                         member_id,
                         ext_id,
                         full_name,
                         attrs_json,
                         group_id,
+                        gender,
+                        dob,
+                        district,
+                        address_line,
                     )
                     for c in normalized:
                         try:
@@ -131,7 +151,8 @@ async def create_customer(
 async def _build_profile(conn: asyncpg.Connection, customer_id: UUID) -> dict | None:
     row = await conn.fetchrow(
         "SELECT id, member_id, external_member_id, full_name, attributes, created_at, updated_at,"
-        " group_id, linked_customer_id"
+        " group_id, linked_customer_id, gender, date_of_birth, district, address_line,"
+        " date_part('year', age(date_of_birth))::int AS age_years"
         " FROM customers WHERE id = $1 AND deleted_at IS NULL",
         customer_id,
     )
@@ -156,11 +177,17 @@ async def _build_profile(conn: asyncpg.Connection, customer_id: UUID) -> dict | 
     attrs = row["attributes"]
     if isinstance(attrs, str):
         attrs = json.loads(attrs)
+    dob = row["date_of_birth"]
     return {
         "id": row["id"],
         "member_id": row["member_id"],
         "external_member_id": row["external_member_id"],
         "full_name": row["full_name"],
+        "gender": row["gender"],
+        "date_of_birth": dob.isoformat() if dob is not None else None,
+        "age_years": row["age_years"],
+        "district": row["district"],
+        "address_line": row["address_line"],
         "group_id": row["group_id"],
         "linked_customer_id": row["linked_customer_id"],
         "attributes": attrs or {},
@@ -191,6 +218,14 @@ async def update_customer(
     contacts: list[dict] | None = None,
     external_member_id: str | None = None,
     external_member_id_set: bool = False,
+    gender: str | None = None,
+    gender_set: bool = False,
+    date_of_birth=None,
+    date_of_birth_set: bool = False,
+    district: str | None = None,
+    district_set: bool = False,
+    address_line: str | None = None,
+    address_line_set: bool = False,
 ) -> dict | None:
     async with pool.acquire() as conn:
         async with conn.transaction():
@@ -224,6 +259,34 @@ async def update_customer(
                     )
                 except asyncpg.UniqueViolationError as exc:
                     raise DuplicateExternalIdError(str(exc))
+            if gender_set:
+                await conn.execute(
+                    "UPDATE customers SET gender = $2, updated_at = now()"
+                    " WHERE id = $1 AND deleted_at IS NULL",
+                    customer_id,
+                    normalize_gender(gender),
+                )
+            if date_of_birth_set:
+                await conn.execute(
+                    "UPDATE customers SET date_of_birth = $2, updated_at = now()"
+                    " WHERE id = $1 AND deleted_at IS NULL",
+                    customer_id,
+                    normalize_date_of_birth(date_of_birth),
+                )
+            if district_set:
+                await conn.execute(
+                    "UPDATE customers SET district = $2, updated_at = now()"
+                    " WHERE id = $1 AND deleted_at IS NULL",
+                    customer_id,
+                    normalize_district(district),
+                )
+            if address_line_set:
+                await conn.execute(
+                    "UPDATE customers SET address_line = $2, updated_at = now()"
+                    " WHERE id = $1 AND deleted_at IS NULL",
+                    customer_id,
+                    normalize_address_line(address_line),
+                )
             if contacts is not None:
                 normalized = _contacts_in(contacts)
                 await conn.execute(
@@ -260,7 +323,8 @@ async def soft_delete_customer(pool: asyncpg.Pool, customer_id: UUID) -> bool:
 # --- Global masked list (mirrors db/queries/customers.sql: list_customers + page_*) ---
 
 LIST_CUSTOMERS_SQL = """
-SELECT id, member_id, external_member_id, full_name, tier_code, created_at
+SELECT id, member_id, external_member_id, full_name, tier_code, created_at,
+  gender, date_part('year', age(date_of_birth))::int AS age_years
 FROM customers
 WHERE deleted_at IS NULL
   AND ($4::text IS NULL OR tier_code = $4)
@@ -304,7 +368,8 @@ WHERE deleted_at IS NULL
 """
 
 OFFSET_CUSTOMERS_SQL = """
-SELECT id, member_id, external_member_id, full_name, tier_code, created_at
+SELECT id, member_id, external_member_id, full_name, tier_code, created_at,
+  gender, date_part('year', age(date_of_birth))::int AS age_years
 FROM customers
 WHERE deleted_at IS NULL
   AND ($3::text IS NULL OR tier_code = $3)
@@ -415,6 +480,8 @@ async def enrich_customer_page(
                 "external_member_id": r["external_member_id"],
                 "full_name": r["full_name"],
                 "tier_code": r["tier_code"],
+                "gender": r.get("gender"),
+                "age_years": r.get("age_years"),
                 "masked_contact": primary["value_display"] if primary else None,
                 "contacts": full,
                 "order_count": by_count.get(cid, 0),

@@ -8,7 +8,7 @@ Normalization rules (mirror docs/conventions.md):
 from __future__ import annotations
 
 import re
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Literal
 from uuid import UUID
 
@@ -16,6 +16,60 @@ import phonenumbers
 from pydantic import BaseModel, Field, field_validator
 
 ContactKind = Literal["phone", "email"]
+
+Gender = Literal["female", "male", "other", "undisclosed"]
+GENDERS = ("female", "male", "other", "undisclosed")
+
+
+def normalize_gender(raw: str | None) -> str | None:
+    """Trim gender vocabulary; blank/None stays NULL (unknown)."""
+    if raw is None:
+        return None
+    text = raw.strip().lower()
+    if not text:
+        return None
+    if text not in GENDERS:
+        raise ValueError("gender must be female|male|other|undisclosed")
+    return text
+
+
+def normalize_date_of_birth(raw: date | str | None) -> date | None:
+    """Accept a date or ISO string; reject future dates. Blank stays NULL."""
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        raw = raw.strip()
+        if not raw:
+            return None
+        try:
+            raw = date.fromisoformat(raw)
+        except ValueError:
+            raise ValueError("date_of_birth must be YYYY-MM-DD")
+    if raw > date.today():
+        raise ValueError("date_of_birth must not be in the future")
+    return raw
+
+
+def normalize_district(raw: str | None) -> str | None:
+    if raw is None:
+        return None
+    text = raw.strip()
+    if not text:
+        return None
+    if len(text) > 120:
+        raise ValueError("district must be 120 chars or fewer")
+    return text
+
+
+def normalize_address_line(raw: str | None) -> str | None:
+    if raw is None:
+        return None
+    text = raw.strip()
+    if not text:
+        return None
+    if len(text) > 500:
+        raise ValueError("address_line must be 500 chars or fewer")
+    return text
 
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
@@ -91,6 +145,30 @@ class CustomerCreate(BaseModel):
     contacts: list[ContactIn] = Field(min_length=1)
     attributes: dict[str, Any] = Field(default_factory=dict)
     external_member_id: str | None = Field(default=None, max_length=64)
+    gender: str | None = None
+    date_of_birth: date | str | None = None
+    district: str | None = Field(default=None, max_length=120)
+    address_line: str | None = Field(default=None, max_length=500)
+
+    @field_validator("gender")
+    @classmethod
+    def _clean_gender(cls, v: str | None) -> str | None:
+        return normalize_gender(v)
+
+    @field_validator("date_of_birth")
+    @classmethod
+    def _clean_dob(cls, v: date | str | None) -> date | None:
+        return normalize_date_of_birth(v)
+
+    @field_validator("district")
+    @classmethod
+    def _clean_district(cls, v: str | None) -> str | None:
+        return normalize_district(v)
+
+    @field_validator("address_line")
+    @classmethod
+    def _clean_address(cls, v: str | None) -> str | None:
+        return normalize_address_line(v)
 
     @field_validator("full_name")
     @classmethod
@@ -113,6 +191,30 @@ class CustomerUpdate(BaseModel):
     # Present (even blank) -> update/clear; absent (None + not provided) -> untouched.
     # NOTE: None also means "not provided" here, so clearing uses "".
     external_member_id: str | None = Field(default=None, max_length=64)
+    gender: str | None = None
+    date_of_birth: date | str | None = None
+    district: str | None = Field(default=None, max_length=120)
+    address_line: str | None = Field(default=None, max_length=500)
+
+    @field_validator("gender")
+    @classmethod
+    def _clean_gender(cls, v: str | None) -> str | None:
+        return normalize_gender(v)
+
+    @field_validator("date_of_birth")
+    @classmethod
+    def _clean_dob(cls, v: date | str | None) -> date | None:
+        return normalize_date_of_birth(v)
+
+    @field_validator("district")
+    @classmethod
+    def _clean_district(cls, v: str | None) -> str | None:
+        return normalize_district(v)
+
+    @field_validator("address_line")
+    @classmethod
+    def _clean_address(cls, v: str | None) -> str | None:
+        return normalize_address_line(v)
 
     @field_validator("full_name")
     @classmethod
@@ -136,6 +238,11 @@ class CustomerProfile(BaseModel):
     member_id: str
     external_member_id: str | None = None
     full_name: str
+    gender: str | None = None
+    date_of_birth: date | None = None
+    age_years: int | None = None
+    district: str | None = None
+    address_line: str | None = None
     attributes: dict[str, Any] = Field(default_factory=dict)
     contacts: list[ContactOut] = Field(default_factory=list)
     subscription_status: dict[str, str | None] = Field(default_factory=dict)
@@ -161,6 +268,8 @@ class CustomerListItem(BaseModel):
     member_id: str
     external_member_id: str | None = None
     full_name: str
+    gender: str | None = None
+    age_years: int | None = None
     masked_contact: str | None = None
     contacts: list[CustomerListContact] = Field(default_factory=list)
     order_count: int = 0

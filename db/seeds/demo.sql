@@ -57,15 +57,24 @@ JOIN products p ON p.sku = v.sku JOIN stores s ON s.code = v.code
 ON CONFLICT (product_id, store_id) DO NOTHING;
 
 -- Customers (8)
-INSERT INTO customers (id, member_id, full_name, attributes) VALUES
-  ('c0000000-0000-0000-0000-000000000001', 'M-000101', 'Chan Tai Man', '{"locale": "zh-HK", "eye": {"od_sph": "-2.50", "os_sph": "-2.25", "pd": "62"}}'),
-  ('c0000000-0000-0000-0000-000000000002', 'M-000102', 'Wong Mei Ling', '{"locale": "zh-HK"}'),
-  ('c0000000-0000-0000-0000-000000000003', 'M-000103', 'Lee Kwok Wai', '{}'),
-  ('c0000000-0000-0000-0000-000000000004', 'M-000104', 'Chan Tai Ming', '{"locale": "zh-HK"}'),
-  ('c0000000-0000-0000-0000-000000000005', 'M-000105', 'Sarah Chen', '{"locale": "en"}'),
-  ('c0000000-0000-0000-0000-000000000006', 'M-000106', 'David Lau', '{}'),
-  ('c0000000-0000-0000-0000-000000000007', 'M-000107', 'Emily Ng', '{}'),
-  ('c0000000-0000-0000-0000-000000000008', 'M-000108', 'Peter Ho', '{}')
+INSERT INTO customers (id, member_id, full_name, attributes,
+  gender, date_of_birth, district, address_line) VALUES
+  ('c0000000-0000-0000-0000-000000000001', 'M-000101', 'Chan Tai Man', '{"locale": "zh-HK", "eye": {"od_sph": "-2.50", "os_sph": "-2.25", "pd": "62"}}',
+    'male', '1985-03-14', 'Sham Shui Po', 'Flat 12B, 88 Cheung Sha Wan Road'),
+  ('c0000000-0000-0000-0000-000000000002', 'M-000102', 'Wong Mei Ling', '{"locale": "zh-HK"}',
+    'female', '1990-07-22', 'Kwun Tong', 'Room 1503, 23 Hoi Yuen Road'),
+  ('c0000000-0000-0000-0000-000000000003', 'M-000103', 'Lee Kwok Wai', '{}',
+    'male', '1978-11-05', 'Yuen Long', 'House 7, 45 Castle Peak Road'),
+  ('c0000000-0000-0000-0000-000000000004', 'M-000104', 'Chan Tai Ming', '{"locale": "zh-HK"}',
+    'male', '1998-01-30', 'Sha Tin', 'Flat 8A, 12 Tai Chung Kiu Road'),
+  ('c0000000-0000-0000-0000-000000000005', 'M-000105', 'Sarah Chen', '{"locale": "en"}',
+    'female', '1992-05-17', 'Central & Western', 'Flat 30C, 9 Queen''s Road Central'),
+  ('c0000000-0000-0000-0000-000000000006', 'M-000106', 'David Lau', '{}',
+    'male', '1988-09-09', 'Kowloon City', 'Flat 5D, 77 Prince Edward Road West'),
+  ('c0000000-0000-0000-0000-000000000007', 'M-000107', 'Emily Ng', '{}',
+    'female', '1995-12-03', 'Wan Chai', 'Flat 21F, 6 Stewart Road'),
+  ('c0000000-0000-0000-0000-000000000008', 'M-000108', 'Peter Ho', '{}',
+    'male', '1975-06-25', 'Eastern', 'Flat 3G, 100 Shau Kei Wan Road')
 ON CONFLICT (id) DO NOTHING;
 
 -- Contacts (normalized: E.164 phones, lowercase emails)
@@ -193,10 +202,10 @@ ON CONFLICT DO NOTHING;
 -- M-000101 (Chan Tai Man) x3, M-000105 (Sarah Chen) x2.
 INSERT INTO customer_events (id, customer_id, occurred_at, kind, source, summary, payload, created_by) VALUES
   ('b0000000-0000-0000-0000-000000000001', 'c0000000-0000-0000-0000-000000000001', now() - INTERVAL '9 days', 'visit', 'pos',
-   'Store visit — frame fitting at Central flagship',
+   'Store visit - frame fitting at Central flagship',
    '{"store_code": "CEN-01", "staff": "S-014"}', 'S-014'),
   ('b0000000-0000-0000-0000-000000000002', 'c0000000-0000-0000-0000-000000000001', now() - INTERVAL '6 days', 'complaint', 'manual',
-   'Complaint: loose temple arm on new frames — resolved with free repair',
+   'Complaint: loose temple arm on new frames - resolved with free repair',
    '{"resolution": "free_repair", "status": "resolved"}', 'S-014'),
   ('b0000000-0000-0000-0000-000000000003', 'c0000000-0000-0000-0000-000000000001', now() - INTERVAL '2 days', 'note', 'manual',
    'Manual note: prefers contact via WhatsApp after 6pm',

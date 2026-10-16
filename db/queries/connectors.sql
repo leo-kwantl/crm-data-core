@@ -11,14 +11,16 @@
 -- is no longer used as the bit.
 -- name: connector_list
 SELECT id, source_type, name, config, secret_ref,
-       enabled, created_by, created_at, updated_at
+       enabled, created_by, created_at, updated_at,
+       schedule_cron, last_sync_at, last_sync_status
 FROM connectors
 ORDER BY source_type, name;
 
 -- name: connector_by_id
 -- params: id uuid
 SELECT id, source_type, name, config, secret_ref,
-       enabled, created_by, created_at, updated_at
+       enabled, created_by, created_at, updated_at,
+       schedule_cron, last_sync_at, last_sync_status
 FROM connectors
 WHERE id = $1;
 

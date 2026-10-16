@@ -1,6 +1,9 @@
 -- Customer-search queries (canonical SQL; loaded by services/api/repos/search.py).
--- Phone/email match EXACT normalized values only (value_normalized, B-tree unique).
--- Names use ILIKE (pg_trgm GIN where available); never fuzzy-match PII contacts.
+-- Email matches exact normalized (lowercase) first, then a case-insensitive
+-- substring fallback for staff keyword search (see customers_by_email_partial).
+-- Phone matches exact normalized first, then a digit-substring
+-- fallback for staff keyword search (see customers_by_phone_partial).
+-- Names use ILIKE (pg_trgm GIN where available).
 
 -- name: customers_by_phone
 -- params: value_normalized text
@@ -10,6 +13,22 @@ JOIN customer_contacts cc ON cc.customer_id = c.id
 WHERE cc.kind = 'phone' AND cc.value_normalized = $1
   AND c.deleted_at IS NULL;
 
+-- name: customers_by_phone_partial
+-- params: needle text, limit int
+-- Digit-substring fallback for the phone criterion (staff keyword search
+-- from the topbar / search page, e.g. last-4 "9021" matching
+-- "+85291902134"). Exact normalized match is always tried first (see
+-- repos/search.py); this runs only when exact finds nothing. Callers pass
+-- digits only (LIKE wildcards impossible) with ESCAPE '\'. Email stays
+-- exact-only. POST-body + auth + rate-limit + audit are unchanged.
+SELECT c.id, c.member_id, c.external_member_id, c.full_name, c.attributes, c.created_at, c.updated_at
+FROM customers c
+JOIN customer_contacts cc ON cc.customer_id = c.id
+WHERE cc.kind = 'phone' AND cc.value_normalized LIKE '%' || $1 || '%' ESCAPE '\'
+  AND c.deleted_at IS NULL
+ORDER BY c.full_name ASC
+LIMIT $2;
+
 -- name: customers_by_email
 -- params: value_normalized text
 SELECT c.id, c.member_id, c.external_member_id, c.full_name, c.attributes, c.created_at, c.updated_at
@@ -17,6 +36,21 @@ FROM customers c
 JOIN customer_contacts cc ON cc.customer_id = c.id
 WHERE cc.kind = 'email' AND cc.value_normalized = $1
   AND c.deleted_at IS NULL;
+
+-- name: customers_by_email_partial
+-- params: needle text, limit int
+-- Substring fallback for the email criterion (staff keyword search, e.g.
+-- "taiman@" or "@example.com"). Exact normalized match is always tried
+-- first (see repos/search.py); this runs only when exact finds nothing.
+-- Callers lowercase the needle and escape LIKE wildcards (\\, %, _) with
+-- ESCAPE '\'. POST-body + auth + rate-limit + audit are unchanged.
+SELECT c.id, c.member_id, c.external_member_id, c.full_name, c.attributes, c.created_at, c.updated_at
+FROM customers c
+JOIN customer_contacts cc ON cc.customer_id = c.id
+WHERE cc.kind = 'email' AND cc.value_normalized LIKE '%' || $1 || '%' ESCAPE '\'
+  AND c.deleted_at IS NULL
+ORDER BY c.full_name ASC
+LIMIT $2;
 
 -- name: customers_by_member_id
 -- params: member_id text

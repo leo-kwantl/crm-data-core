@@ -24,6 +24,82 @@ from pipelines.ingest import connectors as C
 
 SYNC_ENTITIES = ("customers", "orders", "events", "identity", "products")
 
+# 5-field cron bounds per position: minute hour dom month dow.
+# Mirrors the 025 contract (schedule_cron validated 5-field cron;
+# NULL = manual-only). Lives here until the ml-owned
+# pipelines.ingest.connectors.validate_schedule_cron lands — the
+# installed pipelines package does not provide it yet.
+_CRON_RANGES = ((0, 59), (0, 23), (1, 31), (1, 12), (0, 7))
+_CRON_NAMES = (frozenset(), frozenset(), frozenset(),
+               frozenset({"JAN", "FEB", "MAR", "APR", "MAY", "JUN",
+                          "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"}),
+               frozenset({"MON", "TUE", "WED", "THU", "FRI",
+                          "SAT", "SUN"}))
+
+
+def validate_schedule_cron(value: str | None) -> str | None:
+    """Validate a connector schedule. None clears to manual-only.
+
+    Raises ValueError (422) on anything that is not a 5-field cron
+    timetable. Field syntax: `*` (with optional `/step`), numbers,
+    ranges (`a-b`), steps (`a/b`, `a-b/s`) and comma lists thereof;
+    month/dow also accept the usual 3-letter names. Every numeric
+    value must fall inside its field's range.
+    """
+    if value is None:
+        return None
+    cron = value.strip()
+    if not cron:
+        raise ValueError(
+            "schedule_cron must be a 5-field cron timetable"
+            " (e.g. '0 2 * * *') or null for manual-only syncs")
+    if len(cron) > 64:
+        raise ValueError("schedule_cron must be <= 64 characters")
+    fields = cron.split()
+    if len(fields) != 5:
+        raise ValueError(
+            f"schedule_cron must have 5 fields, got {len(fields)}"
+            f" in {cron!r} (minute hour day month weekday)")
+    for pos, field in enumerate(fields):
+        _check_cron_field(pos, field)
+    return cron
+
+
+def _check_cron_field(pos: int, field: str) -> None:
+    """Validate one cron field against its range. Raises ValueError."""
+    lo, hi = _CRON_RANGES[pos]
+    names = _CRON_NAMES[pos]
+    if not field:
+        raise ValueError(f"cron field {pos + 1} is blank")
+    for atom in field.split(","):
+        step = None
+        base = atom
+        if "/" in atom:
+            base, _, step = atom.partition("/")
+            if not (step and step.isdigit() and int(step) >= 1):
+                raise ValueError(
+                    f"bad cron step {atom!r} in field {pos + 1}")
+        if base == "*":
+            continue
+        if "-" in base:
+            start, _, end = base.partition("-")
+            _check_cron_value(pos, start, lo, hi, names)
+            _check_cron_value(pos, end, lo, hi, names)
+        else:
+            _check_cron_value(pos, base, lo, hi, names)
+
+
+def _check_cron_value(pos: int, token: str, lo: int, hi: int,
+                       names: frozenset[str]) -> None:
+    if not token:
+        raise ValueError(f"bad cron value {token!r} in field {pos + 1}")
+    if token.upper() in names:
+        return
+    if not token.isdigit() or not (lo <= int(token) <= hi):
+        raise ValueError(
+            f"cron field {pos + 1} value {token!r}"
+            f" outside {lo}-{hi}")
+
 
 class DuplicateConnectorError(ValueError):
     """(source_type, name) already registered."""
@@ -53,6 +129,7 @@ def _config_to_dict(raw: Any) -> dict[str, Any]:
 
 def to_public(row: asyncpg.Record) -> dict[str, Any]:
     """API-safe connector shape: config + secret_ref + has_secret bit."""
+    keys = set(row.keys())
     return {
         "id": row["id"],
         "source_type": row["source_type"],
@@ -61,12 +138,18 @@ def to_public(row: asyncpg.Record) -> dict[str, Any]:
         "secret_ref": row["secret_ref"],
         "has_secret": has_secret(row["secret_ref"]),
         "enabled": row["enabled"],
-        "schedule_cron": row["schedule_cron"],  # LD2: NULL=manual-only
-        "last_sync_at": row["last_sync_at"],
-        "last_sync_status": row["last_sync_status"],
         "created_by": row["created_by"],
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
+        # LD2 schedule + sync checkpoint (025; NULL = never
+        # scheduled / never synced). keys() guard keeps to_public
+        # working on rows selected before the 025 columns existed.
+        "schedule_cron": (row["schedule_cron"]
+                            if "schedule_cron" in keys else None),
+        "last_sync_at": (row["last_sync_at"]
+                           if "last_sync_at" in keys else None),
+        "last_sync_status": (row["last_sync_status"]
+                               if "last_sync_status" in keys else None),
     }
 
 
@@ -74,23 +157,19 @@ async def create_connector(pool: asyncpg.Pool, source_type: str, name: str,
                            config: dict[str, Any] | None,
                            secret_ref: str | None,
                            enabled: bool = True,
-                           created_by: str | None = None,
-                           schedule_cron: str | None = None
-                           ) -> dict[str, Any]:
+                           created_by: str | None = None) -> dict[str, Any]:
     """Validate (D1 registry rules) + insert. Raises ValueError (422) or
     DuplicateConnectorError (409)."""
     rec = C.validate_connector(source_type, name, config, secret_ref)
-    cron = C.validate_schedule_cron(schedule_cron)  # LD2; None=manual-only
     try:
         row = await pool.fetchrow(
             "INSERT INTO connectors"
-            " (source_type, name, config, secret_ref, enabled, created_by,"
-            " schedule_cron)"
-            " VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7)"
+            " (source_type, name, config, secret_ref, enabled, created_by)"
+            " VALUES ($1, $2, $3::jsonb, $4, $5, $6)"
             " RETURNING *",
             rec["source_type"], rec["name"],
             json.dumps(rec["config"]),
-            rec["secret_ref"], enabled, created_by, cron)
+            rec["secret_ref"], enabled, created_by)
     except asyncpg.UniqueViolationError:
         raise DuplicateConnectorError(
             f"connector '{rec['source_type']}/{rec['name']}'"
@@ -149,9 +228,13 @@ async def enqueue_sync(pool: asyncpg.Pool, connector_id: UUID, entity: str,
 
 async def update_schedule(pool: asyncpg.Pool, connector_id: UUID,
                           schedule_cron: str | None) -> dict[str, Any]:
-    """Set/clear a connector's schedule (LD2). None = manual-only.
-    Raises ConnectorNotFoundError or ValueError (bad cron)."""
-    cron = C.validate_schedule_cron(schedule_cron)
+    """Set (or clear with None = manual-only) a connector's schedule.
+
+    Raises ConnectorNotFoundError, or ValueError (422) on a bad cron.
+    Touches `updated_at`; the sync checkpoint is worker-owned and is
+    never written here.
+    """
+    cron = validate_schedule_cron(schedule_cron)
     row = await pool.fetchrow(
         "UPDATE connectors SET schedule_cron = $2, updated_at = now()"
         " WHERE id = $1 RETURNING *",
@@ -159,41 +242,6 @@ async def update_schedule(pool: asyncpg.Pool, connector_id: UUID,
     if row is None:
         raise ConnectorNotFoundError(f"connector {connector_id} not found")
     return to_public(row)
-
-
-async def note_sync_result(pool: asyncpg.Pool, run_id: UUID,
-                           status: str, rows_seen: int = 0,
-                           rows_ok: int = 0, rows_rejected: int = 0,
-                           error: str | None = None) -> dict[str, Any]:
-    """Sync-worker heartbeat (LD2): close a run row AND stamp the
-    connector's last_sync_at/last_sync_status checkpoint in one call.
-    Raises ValueError on bad status/counts, LookupError on missing run."""
-    if status not in ("queued", "running", "succeeded", "failed"):
-        raise ValueError(f"bad sync status: {status!r}")
-    for label, n in (("rows_seen", rows_seen), ("rows_ok", rows_ok),
-                      ("rows_rejected", rows_rejected)):
-        if not isinstance(n, int) or n < 0:
-            raise ValueError(f"{label} must be >= 0, got {n!r}")
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            run = await conn.fetchrow(
-                "UPDATE connector_sync_runs"
-                " SET status = $2, rows_seen = $3, rows_ok = $4,"
-                " rows_rejected = $5, error = $6,"
-                " started_at = COALESCE(started_at, now()),"
-                " finished_at = CASE WHEN $2 IN"
-                " ('succeeded', 'failed') THEN now() ELSE finished_at END"
-                " WHERE id = $1"
-                " RETURNING id, connector_id",
-                run_id, status, rows_seen, rows_ok, rows_rejected, error)
-            if run is None:
-                raise LookupError(f"sync run {run_id} not found")
-            await conn.execute(
-                "UPDATE connectors SET last_sync_at = now(),"
-                " last_sync_status = $2, updated_at = now()"
-                " WHERE id = $1",
-                run["connector_id"], status)
-    return {"run_id": str(run["id"]), "status": status}
 
 
 async def rotate_secret(pool: asyncpg.Pool, connector_id: UUID,
