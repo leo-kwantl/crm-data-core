@@ -1571,7 +1571,20 @@ scope-carrying tables yields **25 edges whose two ends both carry a stamp, and
 must be excluded — and not only because equality is unexpressible there: it is
 **wrong by design**, since a brand-scoped row carries `group_id = NULL` while
 its `brands` row carries the owning group, so equality fails on correct data.
-Only artifact→artifact edges (the 2 above) are candidates.
+Only **both-stamped** artifact→artifact edges (the 2 above) are candidates.
+
+**A third artifact→artifact edge exists, and its invariant is not a stamp:**
+`explain_batches.fit_id → seg_surrogate_fits.id`
+(`030_surrogate_fits.sql:29-30`, `uuid NULL … ON DELETE SET NULL`). Its ends are
+not both stamped — `seg_surrogate_fits` (`:15-24`) carries `segment_run_id` and
+no scope column — so the assertable property is **run identity**, not stamp
+equality: a batch must not reference a fit trained on a different run
+(`explain_batches.segment_run_id IS DISTINCT FROM seg_surrogate_fits.segment_run_id`
+must be empty). Both app readers join it and take only `f.accuracy`
+(`../crm-cdp-app/db/queries/analytics_explain.sql:11-12`, `:33-34`) with the
+scope predicate on the stamped child, so this edge cannot leak scope — it can
+only mismatch a fit to the wrong run, which is the writer disagreeing with
+itself in the same transaction that inserts the batch.
 
 **Unscoped outputs — 3**, a real category rather than a leftover bucket, and
 listed so absence cannot read as coverage. It has **two shapes, split by what
