@@ -252,7 +252,8 @@ exists**, and on the tick it is always explicit (`_build_ld8` →
 `_with_common`, `pipelines/schedule.py:340`/`:286-293`; the ml CLI's own
 `business_today()` default is therefore a *hand-run* code path only).
 `ld8_snapshot` find-or-creates on `(mode, window_from, window_to, v2,
-window_key, scope)` (`ml_engine/store_ld8.py:60-66`), so an `--as-of`
+window_key, scope)` (`ml_engine/store_ld8.py:63-66`, the `SNAPSHOT_FIND_V2_SQL`
+find predicate), so an `--as-of`
 whose `current` window is already stored — e.g. `--as-of 2026-10-16`
 while the v2 row for `2025-10-16 → 2026-10-16` exists — exits 0 having
 written nothing. The tick is green, no row is wrong, and a consumer that
@@ -359,7 +360,7 @@ action calls the POST**, while a scoped POST itself works (app
 for a brand-scoped capture). Because pairing takes the newest `rules_version`
 **present** in scope, a scope whose only rows are v1 would pair v1-vs-v1 across
 two dates, so a *scoped* capture path is viable where an hq one is not (at hq
-a v1 capture loses to the v2 rows under that same rule). Find-or-create is scope-aware (`ml_engine/store_ld8.py:64-66`, the
+a v1 capture loses to the v2 rows under that same rule). Find-or-create is scope-aware (`ml_engine/store_ld8.py:65-66`, the
 `brand_id`/`group_id` conjunctions of the find predicate),
 so a future per-brand fan-out would add rows beside the hq row rather than
 replace it. Fan-out price on the demo dataset: **6 ticks, one per brand**
