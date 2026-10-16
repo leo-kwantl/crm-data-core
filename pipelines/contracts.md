@@ -32,8 +32,8 @@ are taken per file and anchors re-derived per cite, never offset (app,
 2026-10-17). The "As read here" list below is that rule's demonstration: every
 ml entry but one still re-derives exact after ml's HEAD moved through `ef4c759`
 and `c61fa0d`, and the exception is `store_ld8.py` precisely because ml
-committed to **that file** twice (`4a54edb`, then `c61fa0d`) — a repo-HEAD pin
-would have moved all ten entries at once.
+committed to **that file** three times (`9f9093f`, then `4a54edb`, then
+`c61fa0d`) — a repo-HEAD pin would have moved all ten entries at once.
 
 Where a paragraph's argument is about *behaviour* rather than
 location, the **grep-unique statement name is the primary cite** and the line
@@ -73,7 +73,12 @@ them (app, 2026-10-17, times +0800 from the commit clock):
   writer and the readers. **Closed, not live** — app re-anchored the cite by
   constant name at `0d8ed83`, added the read revision (`beaf4e7`), then made
   the pin per file (`d3cf89d`), where the header names the two readers and
-  pins `pipelines/snapshot.py` at `f889386` (app, 2026-10-17). **A correction to this file's own earlier verdict**
+  pins `pipelines/snapshot.py` at `f889386` (app, 2026-10-17). The one
+  bare peer number data kept raising as a non-defect there is closed too: app
+  `6f80430` (`2 2 db/queries/rfm_windows.sql`) pins
+  `db/migrations/031_rfm_time_aware.sql:19-20` at `412f9d7` — that file's
+  **only** revision, so `git log --` is the check — in the header at `:9`,
+  verified in app's tree (app, 2026-10-17). **A correction to this file's own earlier verdict**
   ("both candidates collapsed, no verified instance") — app's half did not
   collapse, it was re-read against the write revision and the referent (ml,
   2026-10-17). ml's `store_ld8.py:70` cite is the rotted half and was correct
@@ -124,6 +129,12 @@ both revisions, blank every leading string constant (`ast.Constant` at
 `body[0]`) and compare `ast.dump` — equal means no code moved, which is what
 "comments only" asserts (app/data, 2026-10-17, on app's `bc9cb59` and
 `9f5a67b`: both AST-identical, while `--stat` read `+15/-0` and `+6/-5`). The
+check's scope is **constant values, not call shape**: ml's `65ddcab` adds a
+`help=` keyword to a declaration and the blanked ASTs are *not* equal, because
+an added `ast.keyword` is structure that blanking cannot remove — so
+AST-equality licenses "no code moved" only where the diff is inside existing
+constants, and a changed call signature needs the hunk read (data,
+2026-10-17, found by running it here rather than asserting it). The
 check is only meaningful when the diff touches string constants — the case
 where `--stat` looks alarming — and it is cheaper than reading the docstring
 to decide whether to believe its own commit message.
@@ -423,14 +434,35 @@ the 12, and quoting one for the other is how this sentence was wrong once
 already: 10 files declare the flag; the 2 that declare nothing
 (`run_alive_path.py`, `run_matrix_batch.py`) reference no `created_by` column
 either; and of the 10 declarers only 9 reference the column — the tenth is
-**inert**, `run_churn_predict.py:50` accepts `--created-by` and never passes it
-(`:26` calls `store_churn.predict_one`, `:52` prints JSON), so through that job
-the flag does nothing (ml, 2026-10-17, re-derived here per file). It is also
+**inert**, `run_churn_predict.py:50-52` accepts `--created-by` and never passes
+it (`:26` calls `store_churn.predict_one`, `:54` prints JSON), so through that
+job the flag does nothing (ml, 2026-10-17, re-derived here per file). ml
+resolved it as **annotate, not remove** (`65ddcab`, 2026-10-17 03:53:06, 3+/1-:
+the flag still parses and `help=` now says it is ignored, since this job
+writes no row), which moved this file's own cite from a one-line declaration
+at `:50` to the three-line call site — the same copy-lag rule applied to a
+line *span*. That commit leaves the ledger unchanged, and the declaration
+count is a **call-site** count: `grep -rn 'add_argument("--created-by"'
+ml_jobs/*.py` returns 10, where a bare `grep --created-by` returns **11**
+source hits because `ml_jobs/manifest.py:86` names the flag in a comment (and
+`.pyc` files match under `__pycache__` unless excluded) — the number is only
+as good as the predicate, exactly like the count above (ml, 2026-10-17). It is also
 unreachable from a tick for a second reason: `churn_predict` is not an
 `ENGINE_BUILDERS` key (`pipelines/schedule.py:464-477` — ten engines) and
 dispatch raises `UnknownEngineError` (`:179`) for anything else (`:683-686`), so no
 scheduler argv can carry the flag to that job at all; only a direct ml-CLI
-hand-run reaches it, and that path writes no row either. A NULL in the
+hand-run reaches it, and that path writes no row either. app settled the
+*other* half independently, because "no tick can reach it" and "nothing serves
+it" are different claims: `churn_customer_scores` **is** read by app
+(`db/queries/analytics_customer.sql:26-33`, `analytics_snapshots.sql:31`), but
+those rows come from `store_churn.create_snapshot` (`:478`; `SNAPSHOT_INSERT_SQL`
+`:538`, `SCORES_INSERT_SQL` via `executemany` `:548`) driven by
+`ml_jobs/run_churn_snapshot.py:23` — the `churn_snapshot` key that **is** in
+`ENGINE_BUILDERS` — while `predict_one` (`:411`) writes nothing (`return out`
+at `:428`/`:475`, no INSERT in its body; re-derived here). So the unreachable
+job's output is served by nobody, and removing the dead flag would be
+**app-safe as well as scheduler-safe**; it stays ml's call either way (app,
+2026-10-17). A NULL in the
 column therefore dates the row to a **direct ml-CLI hand-run** of one of the 9
 writers rather than to a caller who forgot the flag (`rfm_snapshots.e234dc57` is one). Pass a staff code wherever a job writes,
 or the row is indistinguishable from "written by an unset caller" (this
@@ -808,19 +840,22 @@ is which operator a query that does not exist yet should use (ml/app,
 
 The same split has a second, independent statement on the app side, and it is
 the reference *decision* rather than an implementation detail:
-`../crm-cdp-app/services/api/analytics/scope.py:1-41` — the docstring, pinned
-at app `9f5a67b` (that file's last commit; it was `:1-40` one commit earlier,
-`bc9cb59`) — a stamped row is visible iff `row.brand == session.brand AND row.group == session.group`,
+`../crm-cdp-app/services/api/analytics/scope.py:1-51` — the docstring, pinned
+at app `509c56e` (that file's last commit; it was `:1-41` one commit earlier
+at `9f5a67b` and `:1-40` one before that at `bc9cb59`, so the same
+docstring-only move shows up in three successive states, each shifting every
+symbol below it) — a stamped row is visible iff `row.brand == session.brand AND row.group == session.group`,
 NULL-safe on both sides — with the deliberate consequence named there,
 **quarantine-by-default**: legacy pre-scope rows and admin-created global
 batches are `NULL/NULL` and therefore **HQ-only**, so no group session can
 list or open a row computed over all brands. That consequence is the one data's
 writers live under: an unstamped write is not an error in this system, it is a
 row only HQ can see. The docstring's own invariant is "keep the two in sync —
-`row_visible` is the reference implementation" (`scope.py:62-66` at app
-`9f5a67b`; the same function was `:61-65` one commit earlier — a docstring-only
-commit moves the pin of every symbol below it, including the one it merely
-precedes). The failure
+`row_visible` is the reference implementation" (`scope.py:72-76` at app
+`509c56e` — the function re-derived here; it was `:62-66` at `9f5a67b` and
+`:61-65` one commit earlier — app's docstring has now moved that pin twice, so
+a docstring-only commit moves the pin of every symbol below it, including the
+one it merely precedes, and the shift is +10 for +10 lines). The failure
 direction that matters, verified 2026-10-17 by app's sweep and re-derived here:
 a **stamped** surface using the population form would leak `NULL/NULL` rows
 into a brand session — a visibility bug, not a semantics curiosity; none in
