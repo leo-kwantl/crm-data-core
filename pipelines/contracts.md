@@ -330,18 +330,28 @@ Note `SNAPSHOTS_LIST_SQL` (`store_rfm.py:52-65`; SELECT list `:53-54`,
 ordering `:63`) projects no `window_key`
 (and orders `window_to DESC, scored_at DESC, id DESC` — period, not
 compute time), so a list client cannot see which window a row belongs to.
-Pairing on `window_key` must be **NULL-safe** (`IS NOT DISTINCT FROM`
-semantics) and never "a non-null key is required": the v1 INSERT writes no
-`window_key` at all (`store_rfm.py:36-42` — nine columns, and it is not one
-of them; the v2 INSERT at `store_ld8.py:52-59` is the only statement that
-sets it, as `$9`), so every v1 row carries NULL and a non-null requirement
-would strand each v1-only scope and the `year_to_date` pair (app/ml,
-2026-10-17). App-visible consequence of that projection gap: the app
-consumes this list query **directly** (`../crm-cdp-app/services/api/routers/analytics_rfm.py:37`
-`from ml_engine import store_rfm as repo`), and its `custom` tab pairs the
-two newest `custom` rows whatever window they hold, so until the key is
-projected that tab can compare two `lifetime` rows while the rest of the
-page describes the requested dates — the v1/v2 mispairing one axis over.
+Pairing is **version-inclusive** — same `mode` + same `rules_version` +
+same `window_key` — and the version filter is what does the work, because
+`window_key` **cannot** separate v1 from v2: it is `NOT NULL DEFAULT
+'current'` (`db/migrations/031_rfm_time_aware.sql:19-20`), so the v1 INSERT
+omitting the column (`store_rfm.py:36-42` — nine columns, and it is not one
+of them; the v2 INSERT at `store_ld8.py:52-59` sets it as `$9`) means the
+**DDL default fills it**, and a v1 `rolling_365` row carries `'current'`
+exactly like a v2 one. Verified live 2026-10-17: `information_schema` says
+`is_nullable=NO, default='current'::text`, 7 of 7 rows non-null, and the lone
+v1 row (`57414845`) reads `'current'`. That kills the nullability reading of
+this rule that data recorded in `443ba03` (withdrawn: *the statement not
+writing a column is not the row being NULL*). App-visible consequence of the
+projection gap that `SNAPSHOTS_LIST_SQL` had: the app consumes this list
+query **directly** (`../crm-cdp-app/services/api/routers/analytics_rfm.py:37`
+`from ml_engine import store_rfm as repo`), and its `custom` tab paired the
+two newest `custom` rows whatever window they held — which live means the two
+`lifetime` rows (`807d4f38`, `2895ba93`) while the rest of the page describes
+the requested dates — the v1/v2 mispairing one axis over. With the key
+projected (ml `e234563`, both snapshot reads) the correct rule is visible to
+the caller: mode `custom` currently holds **no `current` row at all** (only
+`mom`/`yoy`/`lifetime`), so the honest state for that tab is the
+empty-state copy, not a pair of two-year windows (app/ml, 2026-10-17).
 
 Those two INSERTs are the only production writes of `rules_version`
 (`store_rfm.py:36`, `store_ld8.py:53`; the app's POST reuses the former,
