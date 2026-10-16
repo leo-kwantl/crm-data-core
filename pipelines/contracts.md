@@ -250,7 +250,14 @@ malformed) together with the runner's own URL.
 `--as-of` is also a **silent no-op knob on a window that already
 exists**, and on the tick it is always explicit (`_build_ld8` →
 `_with_common`, `pipelines/schedule.py:340`/`:286-293`; the ml CLI's own
-`business_today()` default is therefore a *hand-run* code path only).
+`business_today()` default is therefore never the tick's — and it is not
+hand-run-only either: the app's own
+`POST /analytics/{churn,clv,segments}/snapshots` calls `store_*.create_snapshot`
+**in-process with `as_of` omitted** (app `services/api/analytics/snapshots_serve.py:48-54`,
+imported at request time), so an `ml_engine/` change is live for `ml_jobs/`
+immediately (fresh process per run) but **live in the API only after that process
+restarts** — "landed" and "live" differ by one process lifetime on the serving
+side).
 `ld8_snapshot` find-or-creates on `(mode, window_from, window_to, v2,
 window_key, scope)` (`ml_engine/store_ld8.py:63-66`, the `SNAPSHOT_FIND_V2_SQL`
 find predicate), so an `--as-of`
