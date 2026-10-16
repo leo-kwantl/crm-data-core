@@ -574,3 +574,43 @@ async def test_runner_records_sync_lineage(database_url: str, monkeypatch):
                 "SELECT sync_run_id FROM pipeline_runs"
                 " WHERE pipeline = 'test_pipe_ld3' AND job = 'j1'")
             assert str(got2) == str(sid)
+
+
+@pytest.mark.asyncio
+async def test_sync_lineage_stamps_agree(database_url: str, monkeypatch):
+    """The one stamped->stamped edge data owns: pipeline_runs vs its feeding
+    connector_sync_runs row. The runner takes both stamps straight from the
+    caller's flags (scripts/run_pipeline.py:113-116) and never reads the sync
+    row, so nothing structural holds them equal -- this test is what does,
+    and it is the only harness the edge can have (its writer is data's)."""
+    monkeypatch.setitem(sched.ENGINE_BUILDERS, "fake_ok", _fake_ok)
+    jobs = {"j1": {"engine": "fake_ok", "depends_on": [], "params": {}}}
+    async with _pool(database_url) as pool:
+        async with pool.acquire() as conn:
+            brand = await conn.fetchval("SELECT id FROM brands LIMIT 1")
+            group = await conn.fetchval("SELECT id FROM groups LIMIT 1")
+            if brand is None or group is None:
+                pytest.skip("seeded brands/groups required for a stamped run")
+            cid = await conn.fetchval(
+                "INSERT INTO connectors (source_type, name)"
+                " VALUES ('csv', 'ld3-stamps-probe') RETURNING id")
+            sid = await conn.fetchval(
+                "INSERT INTO connector_sync_runs"
+                " (connector_id, entity, status, brand_id, group_id)"
+                " VALUES ($1, 'orders', 'succeeded', $2, $3) RETURNING id",
+                cid, brand, group)
+            ctx = _ctx(pipeline="test_pipe_ld3_stamps",
+                       as_of=date(2026, 10, 5), brand_id=brand,
+                       group_id=group, sync_run_id=str(sid))
+            out = await sched.run_pipeline(
+                conn, "test_pipe_ld3_stamps", jobs, ctx)
+            assert out["outcomes"]["j1"]["status"] == "succeeded"
+            run = await conn.fetchrow(
+                "SELECT brand_id, group_id, sync_run_id FROM pipeline_runs"
+                " WHERE pipeline = 'test_pipe_ld3_stamps' AND job = 'j1'")
+            sync = await conn.fetchrow(
+                "SELECT brand_id, group_id FROM connector_sync_runs"
+                " WHERE id = $1", sid)
+            assert (run["brand_id"], run["group_id"]) == (
+                sync["brand_id"], sync["group_id"])
+            assert str(run["sync_run_id"]) == str(sid)
