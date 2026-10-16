@@ -327,11 +327,16 @@ two different keys (this sentence read "two different `window_key` values for
 the same `mode`" until ml corrected it, 2026-10-17 — the error was data's
 prose, never the schema).
 Note `SNAPSHOTS_LIST_SQL` (`store_rfm.py:52-65`; SELECT list `:53-54`,
-ordering `:63`) projects no `window_key`
-(and orders `window_to DESC, scored_at DESC, id DESC` — period, not
-compute time), so a list client cannot see which window a row belongs to.
+ordering `:63`) **did not project `window_key` until ml `e234563`**
+(2026-10-17, both snapshot reads — this one at `:53` and the by-id read), so
+before that a list client could not see which window a row belonged to; it
+orders `window_to DESC, scored_at DESC, id DESC` (period, not compute time).
 Pairing is **version-inclusive** — same `mode` + same `rules_version` +
-same `window_key` — and the version filter is what does the work, because
+same `window_key` — and **which term is load-bearing depends on the mode**:
+the version term carries `rolling_365`, where a v1 `current` row sits beside
+v2 `current` rows, while in `custom` it is vacuous (that mode holds no v1 row
+at all) and a cross-*window* pair is what the key term prevents. The version
+term has to carry `rolling_365` because
 `window_key` **cannot** separate v1 from v2: it is `NOT NULL DEFAULT
 'current'` (`db/migrations/031_rfm_time_aware.sql:19-20`), so the v1 INSERT
 omitting the column (`store_rfm.py:36-42` — nine columns, and it is not one
@@ -341,17 +346,65 @@ exactly like a v2 one. Verified live 2026-10-17: `information_schema` says
 `is_nullable=NO, default='current'::text`, 7 of 7 rows non-null, and the lone
 v1 row (`57414845`) reads `'current'`. That kills the nullability reading of
 this rule that data recorded in `443ba03` (withdrawn: *the statement not
-writing a column is not the row being NULL*). App-visible consequence of the
-projection gap that `SNAPSHOTS_LIST_SQL` had: the app consumes this list
+writing a column is not the row being NULL*). App-visible consequence of that
+projection gap: the app consumes this list
 query **directly** (`../crm-cdp-app/services/api/routers/analytics_rfm.py:37`
-`from ml_engine import store_rfm as repo`), and its `custom` tab paired the
-two newest `custom` rows whatever window they held — which live means the two
-`lifetime` rows (`807d4f38`, `2895ba93`) while the rest of the page describes
-the requested dates — the v1/v2 mispairing one axis over. With the key
-projected (ml `e234563`, both snapshot reads) the correct rule is visible to
-the caller: mode `custom` currently holds **no `current` row at all** (only
-`mom`/`yoy`/`lifetime`), so the honest state for that tab is the
-empty-state copy, not a pair of two-year windows (app/ml, 2026-10-17).
+`from ml_engine import store_rfm as repo`), and its `custom` tab pairs the two
+newest `custom` rows whatever window they held. Data's first reading of that
+was wrong and app corrected it with a live inventory (2026-10-17): mode
+`custom` holds **four v2 rows and no v1 row at all** — `lifetime` `807d4f38`
+(`…→2026-10-17`) and `2895ba93` (`…→2026-10-16`), `mom` `880c0cbe`, `yoy`
+`8950aaec` — so the pair the page actually takes is **same version and same
+`window_key`**, differing only in `window_to`, which the predicate above
+accepts correctly; it is not a version or key mispairing. What is wrong there
+is **label vs window**: the band prints run dates,
+`formatDate(movement.from.scored_at) → formatDate(movement.to.scored_at)`
+(`apps/web/app/rfm/page.tsx:501`), while the rows compared are all-time
+cumulative windows. Root cause worth keeping: `mode='custom'` in
+`rfm_snapshots` is **LD8's named-window bucket** (`mom`/`yoy`/`lifetime`), not
+the user's custom date range — the tab's *scores* come from a live computation
+over the requested dates, its *band* from that bucket, and `rolling_365` reads
+correctly only because there the stored `current` window is what the mode
+means. So the missing projection is an identification gap, not a pairing bug;
+the tab's fix is the period rule below, and under either shape today's visible
+outcome there is the empty state (app/ml, 2026-10-17).
+
+**Successive-period rule, branched by what the page displays** (app/ml,
+2026-10-17, both branches verified live against the pairs above). Where the
+page shows a *mode-defined* window (`rolling_365`, `year_to_date`), successive
+periods are equal-span windows shifted by the run cadence, so the test is
+**translation** — equal deltas at both ends, equal to the cadence: the
+`rolling_365` pair gives 1d/1d and is accepted, while the `custom` `lifetime`
+pair (`window_from` pinned to the 2023-11-12 floor) gives 0d/1d and is
+rejected, correctly, because that window *grows* rather than shifts. Where the
+page shows an *explicit range* (the custom tab's `date_from`/`date_to`),
+successive periods are two runs of **that same range** — identical bounds,
+different `scored_at` — so the test is **equality with the request**, not
+translation; translation alone accepts any two same-length ranges in different
+months (`2026-09-01→09-30` vs `2026-08-01→08-30` → 30d/30d → accept, and vs
+`2026-10-01→10-30` → accept), which is what a date-range tab produces on its
+second use. The `window_key='current'` pin stays in both branches as the cheap
+sanity check: `custom` holds no `current` row at all — LD8's reachable space is
+`rolling_365×current`, `custom×lifetime`, `custom×mom`, `custom×yoy`, with
+`custom×current` unreachable from the writer (`ml_engine/store_ld8.py:130-153`
+mapping, `:152` stamp) — so the pin yields the empty state structurally rather
+than by accident.
+
+The POST path is why the explicit-range branch exists rather than being
+deferred: `SNAPSHOT_INSERT_SQL` (`store_rfm.py:35-43`) omits `window_key` from
+its column list (`:36-38`, nine columns), so the DDL default stamps `'current'`
+on every app-POSTed row **regardless of mode or user dates**; the `RETURNING`
+(`:40-42`) does carry the key, so a POST response does expose it. Two
+app-POSTed `custom` snapshots for different user ranges would therefore both be
+`current` and pair under a `current` pin alone (app/ml, 2026-10-17).
+`window_key` does have a job in this area — in the **guard**, not in the
+predicate: the movement guard checks `mode` + `rules_version` only
+(`analytics_rfm.py:265-270`), so a cross-key pair is accepted with 200, proven
+live `from=880c0cbe` (`mom`) → `to=807d4f38` (`lifetime`) → `customers_both
+252, entered 688, exited 0`, which is the window widening, not movement. Scope
+that fix to this endpoint: LD8's own `segment_movement` pairs different keys
+**by design** (`mom`→`current`; `:938-943`), so same-key is a property of the
+app's run-to-run diff, not of the concept (app, 2026-10-17).
 
 Those two INSERTs are the only production writes of `rules_version`
 (`store_rfm.py:36`, `store_ld8.py:53`; the app's POST reuses the former,
