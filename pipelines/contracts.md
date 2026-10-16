@@ -487,13 +487,18 @@ is **artifact vs population**, not selection vs filtering (ml, 2026-10-17):
 about to find/create is invisible), while the `IS NULL OR` guard **scopes a
 live population**, where a NULL group means unassigned and must drop. All 11
 `IS NOT DISTINCT FROM` predicate pairs in `ml_engine/` are the former
-(`store_churn.py:196-197`, `:301-302`, `:311-312`, `:323-324`,
-`store_clv.py:168-169`, `store_forecast.py:31-32`, `store_ld8.py:65-66`,
-`store_recs.py:88-89`, `:103-104`, `store_rfm.py:57-58`,
-`store_segments.py:388-389`); the guard's *reads* are the latter —
-`CUSTOMER_TX_ORDERS_SQL` / `CUSTOMER_TX_ACTIVITY_SQL` (`store_churn.py:253-261`,
-`:263-281`) scope per-customer transaction history for the BG/NBD fit rather
-than locating a stored row
+(`SNAPSHOT_FIND_SQL` `store_churn.py:193-198`, guarding `:196-197`, then
+`:301-302`, `:311-312`, `:323-324`, `store_clv.py:168-169`,
+`store_forecast.py:31-32`, `store_ld8.py:65-66`, `store_recs.py:88-89`,
+`:103-104`, `store_rfm.py:57-58`, `store_segments.py:388-389`); the guard's
+*reads* are the latter — `CUSTOMER_TX_ORDERS_SQL` / `CUSTOMER_TX_ACTIVITY_SQL`
+(`store_churn.py:253-261`, guarding `:258-259`, `:263-281`) scope per-customer
+transaction history for the BG/NBD fit rather than locating a stored row. One
+file carries both sides over the same two scope columns with opposite
+operators (`store_churn.py:193-198` vs `:253-261`), so artifact-vs-population
+is the only variable in that comparison — the form to cite when the question
+is which operator a query that does not exist yet should use (ml/app,
+2026-10-17).
 — **declined on purpose, not missed**: 011's design is exclusion, and a group
 run means the group's pool, not "the pool plus unassigned rows". Recorded so
 the choice is visible rather than rediscovered.
