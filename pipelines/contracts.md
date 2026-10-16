@@ -329,6 +329,18 @@ prose, never the schema).
 Note `SNAPSHOTS_LIST_SQL` (`store_rfm.py:52-60`) projects no `window_key`
 (and orders `window_to DESC, scored_at DESC, id DESC` — period, not
 compute time), so a list client cannot see which window a row belongs to.
+Pairing on `window_key` must be **NULL-safe** (`IS NOT DISTINCT FROM`
+semantics) and never "a non-null key is required": the v1 INSERT writes no
+`window_key` at all (`store_rfm.py:36-42` — nine columns, and it is not one
+of them; the v2 INSERT at `store_ld8.py:52-59` is the only statement that
+sets it, as `$9`), so every v1 row carries NULL and a non-null requirement
+would strand each v1-only scope and the `year_to_date` pair (app/ml,
+2026-10-17). App-visible consequence of that projection gap: the app
+consumes this list query **directly** (`../crm-cdp-app/services/api/routers/analytics_rfm.py:37`
+`from ml_engine import store_rfm as repo`), and its `custom` tab pairs the
+two newest `custom` rows whatever window they hold, so until the key is
+projected that tab can compare two `lifetime` rows while the rest of the
+page describes the requested dates — the v1/v2 mispairing one axis over.
 
 Those two INSERTs are the only production writes of `rules_version`
 (`store_rfm.py:36`, `store_ld8.py:53`; the app's POST reuses the former,
