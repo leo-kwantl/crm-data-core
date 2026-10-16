@@ -685,10 +685,14 @@ def _encloses(lines: list[str], def_line: int, span_start: int) -> bool:
 def span_defines(roots: list[Path], cited: str, start: int, end: int) -> bool:
     """Does the cited span *define* any name, in whichever tree holds it?
 
-    The detector only fires when the span defines something, so a cite to a
-    **call site** cannot be decided by naming anything: `ap.add_argument(...)`
-    inside a function body defines nothing, and the verdict is "hand-read at
-    the current revision". The distinction is not cosmetic -- it is the
+    The detector only fires when the span defines something, so a cite whose
+    span defines **no name at all** cannot be decided by naming anything: a call
+    site (`ap.add_argument(...)` inside a function body), a prose line, and
+    another repo's markdown checklist pointer are the same case, and the verdict
+    for all three is "hand-read at the current revision". The category is the
+    predicate, not the example -- calling it "a call-site cite" is narrower than
+    what the code tests, and a name narrower than its predicate is the same bug
+    as a pattern narrower than its predicate (app, 2026-10-17). The distinction is not cosmetic -- it is the
     difference between a hint that names an edit the author can make and one
     that sends them to make an edit that only *silences*: adding a name to the
     line takes the site off this list without deciding anything (`symbol_moved`
@@ -960,8 +964,10 @@ def audit(root: Path, peers: list[Path], strict: bool,
                                     " together, so this is a site to read by hand)"
                                     % (rel_doc, lineno, span, near))
                             else:
-                                # A call site: naming the neighbour is not just a
-                                # no-op, it is *silencing* -- `symbol_moved`
+                                # A span that defines no name (call site, prose
+                                # line, checklist pointer): naming the neighbour
+                                # is not just a no-op, it is *silencing* --
+                                # `symbol_moved`
                                 # returning `None` is not a bucket, so a name on
                                 # the line takes the site off this list while
                                 # changing nothing else, and the site may be
