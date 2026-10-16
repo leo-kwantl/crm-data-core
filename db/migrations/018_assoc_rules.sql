@@ -6,6 +6,11 @@
 -- category_count, rule_count mirror ml Jobs output. FK brand/group via scope.
 -- assoc_rules: child rows per (batch_id, antecedents, consequents) with
 -- support/confidence/lift. Cascade-delete when a batch is removed.
+-- Direction is PER ROW: ml_engine/association.py emits BOTH directions as
+-- separate rows, so a category pair yields two rules with IDENTICAL support
+-- and lift and RECIPROCAL confidence (care->sunglasses 336/492=0.682927 vs
+-- sunglasses->care 336/516=0.651163). Lift can never disambiguate a pair -
+-- always quote antecedent -> consequent, or the number is ambiguous.
 --
 -- SQL shape is owned by ml_engine/store_assoc.py — keep column names/types
 -- in sync; any signature/schema change must be announced [BREAKING ingest].
