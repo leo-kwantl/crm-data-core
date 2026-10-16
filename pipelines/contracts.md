@@ -121,6 +121,51 @@ works in SQL here — `AT TIME ZONE 'Asia/Hong_Kong'` raises
 offset form (Hong Kong has no DST, so it is semantically identical
 forever).
 
+**Which `as_of` default do you get? (inventory, 2026-10-17, after ml
+`56f01f4`).** Three different clocks are reachable for the same field, so
+read the call site, not the column:
+
+| source (default when `as_of` is omitted) | resolves to | business-day? |
+|---|---|---|
+| data `pipelines/snapshot.py:245 business_today()` (`+08` fixed offset), used as the default `--as-of` by `scripts/run_daily_snapshot.py:70` and `scripts/run_pipeline.py:144` | +08 business date | yes |
+| data scheduler — `pipelines/schedule.py:293` in `_with_common` | passes `--as-of ctx.as_of` for every engine whose CLI declares it; `explain_batch` / `assoc_batch` / `matrix_batch` / `recs_batch` take no `--as-of` at all (argparse rejects it — `pipelines/schedule.py:441`), so their args are always explicit or absent, never guessed | n/a (explicit) |
+| ml `ml_engine/rfm.py:79 business_today()` (`ZoneInfo("Asia/Hong_Kong")`) — the default for `ml_engine/rfm.py:118 resolve_window(...)` (`ml_engine/rfm.py:96` def) and `ml_engine/store_ld8.py:222 run_ld8(...)` | +08 business date | yes |
+| ml `_coerce_as_of` — `ml_engine/store_churn.py:216`, `store_clv.py:188`, `store_forecast.py:49`, `store_segments.py:411` | **UTC** date (`datetime.now(timezone.utc).date()`) | **no — lags by 8h/day** |
+
+Consequence of the last row: a churn / clv / forecast / segments run
+invoked without `as_of` between 00:00 and 08:00 HKT stamps **yesterday**
+on the run while the window it fits ends on the **business day** (that
+window default is +08), so `as_of` and `window_to` disagree *inside the
+same row*. Every grain UNIQUE includes `as_of`, so this never overwrites
+a correct run — it adds a mislabeled one. The scheduler cannot trigger
+it (all four of those engines declare `--as-of` and `_with_common` always
+supplies it); a manual or backfill invocation is the reachable path. Not
+a data-side defect and no contract change: recorded here because the
+served `as_of` is compared across jobs.
+
+**Name collision — `resolve_window` is two different functions.** data
+`pipelines/schedule.py:130 resolve_window(mode, n, unit, ...)` resolves a
+**cohort/period** window; ml `ml_engine/rfm.py:96 resolve_window(mode,
+as_of, date_from, date_to, *, max_span_days=731)` resolves the **RFM
+snapshot** window (tz-aware `+08` day boundaries; `max_span_days=None` is
+the caller asserting a deliberate full-history span, not a clamp). A bare
+grep returns both — check the repo before reading either as the other's
+contract.
+
+**Server-zone evaluation in data-owned SQL: one CHECK, nothing else.**
+Every stored date in the pipeline is passed as an explicit `$1::date`
+parameter, so the postmaster's zone never decides a stored value. The
+single exception is `db/migrations/017_customers_demographics.sql:11`
+`CHECK (date_of_birth IS NULL OR date_of_birth <= CURRENT_DATE)`, which
+PG evaluates in the **server** zone (GMT on this stack). During the same
+00:00-08:00 HKT band that makes `date_of_birth` = today a constraint
+violation (server `2026-10-16` while the business day is `2026-10-17`).
+Low impact — DOB = today is implausible outside fixtures — and
+deliberately not "fixed": the honest repair is a *looser* bound or
+read-time validation, never a stricter one, because a false rejection of
+a real newborn's DOB is worse than accepting a one-day-future value.
+Tracked in SCRATCHPAD.
+
 ## Daily RFM writer: `ld8_snapshot` (v2) vs `rfm_snapshot` (v1)
 
 `rfm_snapshots` has TWO writers with different rulesets, and the engine
