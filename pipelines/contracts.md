@@ -451,7 +451,9 @@ scope"), so it would be truthful yet contradict the surface it sits on; an
 all-time or standalone movement view is where that shape belongs. All three
 parts are app-side only — no ML edit, no migration, no extra request, since
 `_snapshot_row` (`store_rfm.py:86-97`, isoformatting the bounds at `:92-94`
-and `scored_at` at `:95-96`) is already in the payload the page holds via
+and `scored_at` at `:95-96` — every anchor in this paragraph re-derived
+line-for-line at ml `4a54edb`, 2026-10-17) is already in the payload the page
+holds via
 `movement()`'s `"from"`/`"to"` dicts (`:297-299`) — and the guard term alone
 changes nothing visible, because the pair it currently compares shares a key.
 Two things are still the owner's call rather than either team's (app,
@@ -483,8 +485,10 @@ second use. The `window_key='current'` pin stays in both branches as the cheap
 sanity check: `custom` holds no `current` row at all — LD8's reachable space is
 `rolling_365×current`, `custom×lifetime`, `custom×mom`, `custom×yoy`, with
 `custom×current` unreachable from the writer (`ml_engine/store_ld8.py:154-155` four-combination statement,
-mapping applied at `:174`) — so the pin yields the empty state structurally rather
-than by accident.
+mapping applied at `:174` — both unchanged at ml `4a54edb`, which re-scoped the
+same docstring to "reachable by a POSTed snapshot, not by LD8" by a
+line-count-neutral edit, 2026-10-17) — so the pin yields the empty state structurally
+rather than by accident.
 
 The POST path is why the explicit-range branch exists rather than being
 deferred: `SNAPSHOT_INSERT_SQL` (`store_rfm.py:35-43`) omits `window_key` from
