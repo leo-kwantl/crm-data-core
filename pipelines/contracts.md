@@ -82,7 +82,7 @@ ancestry, and with a path, that the path was there at that sha. A label proves
 the words at them, so a quotation at a revision is a label and only a human can
 re-verify it. A sha with neither a path nor a repo name is unjudgeable and the
 guard reports it rather than guessing, so `unclassified=0` reads "every sha here
-declared its genre". `--comments` runs the same two genres over comment lines and
+declared its genre" (two genres diverging on one commit: `## Pin half-life, worked`). `--comments` runs the same two genres over comment lines and
 triple-quoted string bodies in `.py`/`.sql`, which is where most cites actually
 live (`citations ok=169` there against `164` over markdown alone); a default run
 is a pass over **markdown only**, and the tool prints that boundary beside its
@@ -1877,3 +1877,29 @@ argument, never a module-level constant resolved at import.
   in-flight edit had rewritten into the pin form; one cite moving from
   `ok`+`repo-ok` to `pin-ok` is a text change, not a disagreement, so compare
   the two trees' *states* before calling a number difference a defect.
+
+## Pin half-life, worked (2026-10-17)
+
+One commit, two genres, and only one of them had to do anything. ml's f132233 is
+comment-only (`1 1`), so it moved the last-changed revision of
+`ml_engine/store_ld8.py` while touching nothing anyone had quoted. **Shas here
+are left unbackticked on purpose**: they are historical values being described,
+not citations being made, and a backticked one is read by the guard as a live
+claim — which is the illustrative-citation genre this doc still lacks.
+
+- data's **pin** of that file (the sibling-read entry above) went pin-stale=1 on
+  the guard's next run: the value it held, 3b20797, was no longer that file's last
+  change (now f132233). It was repinned **without re-reading the file**, because
+  the same line printed `[cited lines untouched (7 cite(s) of this path)]` — that
+  tag is what decides repin (mechanical) versus re-read (a human).
+- app's two ml **labels** (`read at ml <sha>`) were unmoved and needed nothing:
+  a label never claimed to be the file's last-changed revision, so a later commit
+  to that file cannot falsify it. Same file, same edit, one side staled and one
+  did not.
+
+**A label survives any later edit; a pin's half-life is the next commit to that
+file** — which is why a pin's only promise is that the delta gets printed, never
+that the value is fresh. Corollary for the repo that owns a pinned file: its own
+edits stale a peer's pin, so the movement belongs in the same message as the
+change (app pins data's `pipelines/snapshot.py` and `pipelines/model_fits.py`;
+data pins ml's `ml_engine/*.py`).
