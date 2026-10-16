@@ -575,6 +575,23 @@ revision each was taken from, so what the freeze adds there is a **version
 marker** rather than a new artifact — and the guard stays a developer-time
 detector on that side too (app, 2026-10-17).
 
+**Data's side of that mirror, verified 2026-10-17.** The four constants sit at
+`pipelines/snapshot.py:373` (`SEGMENT_SIZE_UPSERT_SQL`), `:380`
+(`MOVEMENT_UPSERT_SQL`), `:387` (`SIZES_FOR_WINDOW_SQL`), `:394`
+(`MOVEMENT_FOR_PAIR_SQL`) — the lines are illustration, the **names are the
+pin** — and `services/api/tests/test_rfm_movement.py:78-81` imports all four
+and executes them against a migrated `031` (`:123`/`:146`/`:149`/`:157`), so a
+**grain** change fails data's own suite at the change site. The residual gap is
+narrower than "ML agrees with ML": it is a *text*-only change seen from a
+checkout with no sibling `crm-cdp-data`, where ml's guard — keyed on
+`SEGMENT_SIZE_UPSERT_SQL` alone — **skips** (`tests/test_ld8.py:98` now names
+the path it looked in; ml `0839d7f`). So a change to these four statements'
+text or grain is an in-room `[BREAKING]` notice to crm-ml, not a repo-only
+edit. ml `0b834f9` re-anchored its copy of this citation by name with both
+revisions pinned (data `f889386` for `pipelines/snapshot.py`,
+`031_rfm_time_aware.sql` at `412f9d7`), which is the form that survives the
+next edit here.
+
 **`m_cap_pct` is a live-request knob, never a stored property.** The cap
 is an engine kwarg (`ml_engine/rfm.py:278` → `store_rfm.py:115/140`,
 `store_ld8.py:157-174`) reachable from the app's two live GETs only
