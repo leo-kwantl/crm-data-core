@@ -132,7 +132,14 @@ same class from the other end — the listing it pasted had 12 files and the
 flag is on 10 (ml, 2026-10-17, corrected in `f00c564`). Both were written from
 intent rather than from the command, which is why **the numbers inside prose
 are the fourth checkable class** — and the one that survives longest, because
-nothing downstream recomputes it.
+nothing downstream recomputes it. The class splits in two and only one half is
+mechanical: a figure is checkable when the same sentence binds it to a sha
+(`git show --numstat <sha> -- <path>`, tab-separated, no graph wrapping,
+per-file) — a number written *in the same act as the commit*, before the sha
+exists, can only be re-derived afterwards, never checked at birth (ml,
+2026-10-17). `--numstat` over `--stat` for exactly that reason: it exposes the
+multi-file commit, whose per-file pair cannot be summarized as one `+N/-M`
+without being wrong by construction.
 
 ## customers
 
