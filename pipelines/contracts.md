@@ -308,6 +308,23 @@ cap can be inspected before it is proposed as an engine default. The refusals
 are covered by app tests since `0fb9fba` (mutation-checked: disable the branch
 and the refusal answers 201).
 
+**Two edges of that claim** (ml, re-checked in `ml_engine/rfm.py` at HEAD
+rather than transcribed). (1) The cap is consulted **only on the quintile
+path**: `score_rfm` validates and applies it in the `else` branch alone
+(`:292-295`, reported `:317`), so a population below
+`QUINTILE_MIN_POPULATION` (`:25`, 25 rows) takes `_fallback_scores`
+(`:289`) and is stamped `method="threshold_fallback"` (`:290`) — the cap is
+never read, and the `m` boundaries that path returns are median-relative
+thresholds with no `m_cap_pct` key. Self-attribution therefore holds for
+every response, but *about the cap* only on the quintile path; irrelevant at
+920 customers, yet it is the honest scope of the sentence above, including
+for the app refusals, which guard a parameter the engine may not consult.
+(2) `DEFAULT_M_CAP_PCT` (`:26`) is covered by **no version string**:
+`RULES_VERSION = "v1"` (`:24`) and `RULES_V2 = "v2"` (`store_ld8.py:36`)
+version the segmentation ruleset, not the cap. Changing that constant is
+therefore a **contract event (@both)**, not a refactor — every stored row's
+M cuts would lose their stated derivation and no column records it.
+
 **Third writer, non-scheduled:** `POST /analytics/rfm/snapshots` writes
 **v1** through the same `store_rfm.create_snapshot`, stamped
 `created_by=user.staff_code` (`analytics_rfm.py:132-142`). It is an
