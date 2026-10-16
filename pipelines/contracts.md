@@ -29,7 +29,13 @@ Anchors carry their **file's** last-changed revision, not ml's repo HEAD
 to *any* file (ml, 2026-10-17) — and per-file pins are only half the rule: a
 commit **inside** the pinned file still moves every anchor below it, so pins
 are taken per file and anchors re-derived per cite, never offset (app,
-2026-10-17). Where a paragraph's argument is about *behaviour* rather than
+2026-10-17). The "As read here" list below is that rule's demonstration: every
+ml entry but one still re-derives exact after ml's HEAD moved through `ef4c759`
+and `c61fa0d`, and the exception is `store_ld8.py` precisely because ml
+committed to **that file** twice (`4a54edb`, then `c61fa0d`) — a repo-HEAD pin
+would have moved all ten entries at once.
+
+Where a paragraph's argument is about *behaviour* rather than
 location, the **grep-unique statement name is the primary cite** and the line
 number is secondary with an explicit `as of <sha>` (ml, 2026-10-17) — a line
 in a document rots on any insert above it, so the name is the part that
@@ -39,7 +45,7 @@ as one's own when searched (app, 2026-10-17: two strings it never wrote turned
 up as first-person entries); attribute an entry only if it is prefixed
 (`app:`/`data:`/`ml:`), otherwise treat it as unattributed and re-derive
 before citing it. As read here: `ml_engine/store_rfm.py` `e423f70`,
-`ml_engine/store_ld8.py` `4a54edb`, `ml_engine/rfm.py` `4a8f994`,
+`ml_engine/store_ld8.py` `c61fa0d`, `ml_engine/rfm.py` `4a8f994`,
 `ml_engine/store_segments.py`/`store_explain.py`/`store_forecast.py`
 `4a8f994`, `ml_engine/segment_movement.py` `e8934a7`, `ml_engine/btyd.py`
 `87734e8`, `ml_jobs/manifest.py` `0b834f9`, `ml_jobs/run_matrix_batch.py`
@@ -683,8 +689,9 @@ cap can be inspected before it is proposed as an engine default. The refusals
 are covered by app tests since `0fb9fba` (mutation-checked: disable the branch
 and the refusal answers 201).
 
-**Two edges of that claim** (ml, re-checked in `ml_engine/rfm.py` at HEAD
-rather than transcribed). (1) The cap is consulted **only on the quintile
+**Two edges of that claim** (ml, re-checked in `ml_engine/rfm.py` at
+`4a8f994` — that file's own last-changed sha, not a moving HEAD — where `:25`,
+`:288-290`, `:292-295` and `:317` all re-derive). (1) The cap is consulted **only on the quintile
 path**: `score_rfm` validates and applies it in the `else` branch alone
 (`:292-295`, reported `:317`), so a population below
 `QUINTILE_MIN_POPULATION` (`:25`, 25 rows) takes `_fallback_scores`
@@ -1306,3 +1313,11 @@ enforced (outside the flow pct denominator by construction).
 Lesson: `window` is a PG reserved word — column is `window_key`.
 ml executes the movement math verbatim via `validate_movement_row`
 / `validate_segment_size` + the UPSERT/SELECT SQL.
+
+**Frozen-interface marker (proposed, deliberately unlanded — the owner's call,
+ml 2026-10-17).** Both repos execute the same statements (this repo's four
+`pipelines/snapshot.py` constants and 031's `window_key` schema), so ml's guard
+can only assert agreement in a skip-if-absent test that copy-reads this tree.
+A version marker on the interface would let both sides assert agreement at
+import or in the manifest instead. That is a contract change, so neither side
+lands it unilaterally; recorded here so the trade-off is not rediscovered.
