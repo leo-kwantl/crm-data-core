@@ -1510,3 +1510,29 @@ writer moved to `pipelines/ingest/connector_sync.py` and the app-owned
 file was left exactly as app has it. Editing an app-owned file to hold
 data's logic is a fork; putting that logic in a data-owned module is
 the fix, and it keeps the documented contract (§019 LD2) true.
+- **Compare blobs, not worktrees** (both repos run `core.autocrlf=true`,
+and a checkout rewrites line endings whenever Git touches a file). Right
+after the 2026-10-17 sync the shared paths read **20 worktree
+mismatches — 16 of them CRLF-only (identical once `\r\n` is normalised)
+and 4 the harness files this scope already excludes** — while the
+**blobs** matched: 25 of 25 synced files are byte-identical at data
+`d9045a4` / app `4cbf297` (`git cat-file blob <rev>:<path>` in each
+tree, or `git -C ../crm-cdp-app show <rev>:<path> | git hash-object
+--stdin`). `services/api/repos/stats.py` was 13921 bytes here against
+13598 in app: a +323 delta, exactly its line count, one extra CR per
+line. A worktree diff on a clean mirror therefore manufactures a false
+alarm of the same family as the cite guard's mirror-drift flag — both
+are a real measurement of the wrong object.
+- **The rule both sides converged on (app, ml, 2026-10-17):** *the unit of
+copying — and of distribution — is the **import closure**, not the
+module.* Same sentence from the other direction: app's
+`services/api/analytics/snapshots_serve.py:48-54` pulls `ml_engine` in at
+module level in seven import statements (`btyd`, `clv`, `segmentation`,
+`store_churn`, `store_clv`, `store_segments`, then `rfm.resolve_window`
+and `store_rfm.compute_current`), so an import-time file read anywhere in
+those would fail the whole API's boot rather than raise a missing-file
+error at a call site — the shape of the 40-fixture
+incident one layer over. It is safe today because ml's default is **no
+read** (`ml_engine/features.py:286-287` returns built-in `DEFAULT_ENABLED`
+when `path is None`): keep any spec-file read opt-in through an explicit
+argument, never a module-level constant resolved at import.
