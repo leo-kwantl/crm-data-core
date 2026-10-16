@@ -240,14 +240,32 @@ ordering only bites **hand-runs**: the tick always passes
 `ctx.as_of.isoformat()` (`pipelines/schedule.py:293`, a `date`, so never
 malformed) together with the runner's own URL.
 
+`--as-of` is also a **silent no-op knob on a window that already
+exists**, and on the tick it is always explicit (`_build_ld8` →
+`_with_common`, `pipelines/schedule.py:340`/`:286-293`; the ml CLI's own
+`business_today()` default is therefore a *hand-run* code path only).
+`ld8_snapshot` find-or-creates on `(mode, window_from, window_to, v2,
+window_key, scope)` (`ml_engine/store_ld8.py:60-66`), so an `--as-of`
+whose `current` window is already stored — e.g. `--as-of 2026-10-16`
+while the v2 row for `2025-10-16 → 2026-10-16` exists — exits 0 having
+written nothing. The tick is green, no row is wrong, and a consumer that
+needs a *newer* period (movement needs two periods of one version) stays
+on its `need_two_snapshots` 404 with nothing anywhere to point at. Rule
+for a catch-up or `--force` tick: omit `--as-of` unless you intend a new
+period, and never reuse a date whose window is on disk.
+
 `created_by` is passed through (`--created-by`;
 `scripts/run_pipeline.py:132` default `scheduler`), so a NULL in that
 column means nobody set it — pass a staff code wherever a job writes, or
 the row is indistinguishable from "written by an unset caller" (this cost
 a manual row dump to diagnose).
 
-Never pair v1 with v2 for movement: different rulesets decide the
-windows, so cross-version movement is meaningless. The serving-side fix is
+Never pair v1 with v2 for movement: different writers decide the windows
+(same maths both ways — `store_ld8.compute_window` calls
+`store_rfm.compute_current` verbatim, `ml_engine/store_ld8.py:130-153`;
+v1 is an append-only single-window write, v2 is a four-window
+find-or-create, and only the SQL literal stamps `rules_version`), so
+cross-version movement is meaningless. The serving-side fix is
 to take the newest snapshot's `rules_version` and then the two newest **of
 that version** — returning the existing `need_two_snapshots` 404 when only
 one exists — not to relax the mismatch check.
