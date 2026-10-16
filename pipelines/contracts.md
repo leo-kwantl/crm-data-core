@@ -470,7 +470,20 @@ guard sits on the **parameter**, so a supplied scope leaves plain equality
 against a NULLable column and drops those rows — whereas the *listing* query
 already uses `brand_id IS NOT DISTINCT FROM $3::uuid` / `group_id IS NOT
 DISTINCT FROM $4::uuid` at `store_rfm.py:57-58`, where unfiltered selection is
-the goal; the two must not be confused for each other
+the goal; the two must not be confused for each other — and the discriminator
+is **artifact vs population**, not selection vs filtering (ml, 2026-10-17):
+`IS NOT DISTINCT FROM` **locates a stored artifact by its recorded scope**
+(a NULL stamp means "unscoped artifact" and must match, or the row you are
+about to find/create is invisible), while the `IS NULL OR` guard **scopes a
+live population**, where a NULL group means unassigned and must drop. All 11
+`IS NOT DISTINCT FROM` predicate pairs in `ml_engine/` are the former
+(`store_churn.py:196-197`, `:301-302`, `:311-312`, `:323-324`,
+`store_clv.py:168-169`, `store_forecast.py:31-32`, `store_ld8.py:65-66`,
+`store_recs.py:88-89`, `:103-104`, `store_rfm.py:57-58`,
+`store_segments.py:388-389`); the guard's *reads* are the latter —
+`CUSTOMER_TX_ORDERS_SQL` / `CUSTOMER_TX_ACTIVITY_SQL` (`store_churn.py:253-261`,
+`:263-281`) scope per-customer transaction history for the BG/NBD fit rather
+than locating a stored row
 — **declined on purpose, not missed**: 011's design is exclusion, and a group
 run means the group's pool, not "the pool plus unassigned rows". Recorded so
 the choice is visible rather than rediscovered.
