@@ -54,9 +54,13 @@ history so movement / pct-change / training lineage work across days:
 
 Math lives in `pipelines/snapshot.py` (`pct_change`, `kpi_movement`,
 `clv_movement` + `KPI_DAILY_UPSERT_SQL` / `KPI_TREND_SQL`).
-Daily job: `python scripts/run_daily_snapshot.py --as-of YYYY-MM-DD`
-(+ ML `run_snapshot` / `run_recs_batch`, then log to
-`model_training_runs`). Queries in `db/queries/kpi_daily.sql`.
+Daily KPI job: `python scripts/run_daily_snapshot.py --as-of YYYY-MM-DD`
+— it writes **one `kpi_daily_snapshots` row and nothing else**. The ML
+`run_snapshot` / `run_recs_batch` lines in its docstring are sibling
+invocations to run separately (then log to `model_training_runs`); the
+script never writes `rfm_snapshots`. Model runs are scheduler manifest
+jobs — see **Daily RFM writer** below. Queries in
+`db/queries/kpi_daily.sql`.
 Scope columns (`brand_id`, `group_id`, NULL = group-wide) match 012.
 
 **Day boundary is business time (Asia/Hong_Kong, +08) — rule added
@@ -116,6 +120,55 @@ works in SQL here — `AT TIME ZONE 'Asia/Hong_Kong'` raises
 (`AT TIME ZONE interval '8 hours'`) works. Any SQL-side pin must use the
 offset form (Hong Kong has no DST, so it is semantically identical
 forever).
+
+## Daily RFM writer: `ld8_snapshot` (v2) vs `rfm_snapshot` (v1)
+
+`rfm_snapshots` has TWO writers with different rulesets, and the engine
+name in the manifest decides which one a tick uses:
+
+| engine | ml job -> module | rules | windows | conflict behaviour |
+|---|---|---|---|---|
+| `rfm_snapshot` | `ml_jobs.run_snapshot` -> `ml_engine/store_rfm.py` | **v1** (`ml_engine/rfm.py:24 RULES_VERSION = "v1"`) | one, from `params.mode` | **APPEND-only**: `SNAPSHOT_INSERT_SQL` has no `ON CONFLICT` and no find |
+| `ld8_snapshot` | `ml_jobs.run_ld8_snapshot` -> `ml_engine/store_ld8.py` | **v2** (`store_ld8.py:36 RULES_V2`) | FOUR: `current` (rolling 365d ending as-of) \| `mom` \| `yoy` \| `lifetime` | find-or-create on (mode, window_from, window_to, window_key, scope), filtered `rules_version='v2'` |
+
+031 declares v2 for time-aware rows, so **v2 is canonical for
+`window_key='current'`** and `ld8_snapshot` is the engine the daily
+capture belongs on. `rfm_snapshot` stays available for v1 history /
+backfill only.
+
+**The trap this closes (proved on live, 2026-10-17):** with the daily job
+on `rfm_snapshot`, the v1 insert is append-only and the v2 find is
+v2-scoped, so one v1 and one v2 row land for the same
+`window_key='current'` window **every day** — the newest two are
+cross-version by construction, not by accident.
+`GET /analytics/rfm/movement?mode=rolling_365` auto-selects the two most
+recent rows by `window_to` and only then rejects a version mismatch, so
+the default path answers **422 `snapshot_mode_mismatch`**.
+
+Switching the job is a manifest edit, and **`pipeline_manifests` rows are
+edited through the app config API, never by migration** (015 seed
+comment):
+
+    rfm:
+      engine: ld8_snapshot
+      depends_on: [apply]
+      params: {}          # drop `mode: rolling_365`: the LD8 CLI has no --mode
+
+The builder rejects the legacy param with a named `ManifestError` rather
+than letting the CLI exit 2 on every tick (`pipelines/schedule.py`
+`_build_ld8`).
+
+`created_by` is passed through (`--created-by`;
+`scripts/run_pipeline.py:132` default `scheduler`), so a NULL in that
+column means nobody set it — pass a staff code wherever a job writes, or
+the row is indistinguishable from "written by an unset caller" (this cost
+a manual row dump to diagnose).
+
+Never pair v1 with v2 for movement: different rulesets decide the
+windows, so cross-version movement is meaningless. The serving-side fix is
+to take the newest snapshot's `rules_version` and then the two newest **of
+that version** — returning the existing `need_two_snapshots` 404 when only
+one exists — not to relax the mismatch check.
 
 ## Batch upload ETL (frontend files land here)
 

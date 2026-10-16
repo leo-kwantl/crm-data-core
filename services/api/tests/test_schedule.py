@@ -271,9 +271,30 @@ async def test_runner_data_engines(database_url: str):
 def test_data_engines_registry():
     assert {"upload_apply", "kpi_daily", "cohort_snapshot"} <= set(
         sched.DATA_ENGINES)
-    for e in ("rfm_snapshot", "forecast_snapshot", "assoc_batch",
-              "explain_batch", "matrix_batch"):
+    for e in ("rfm_snapshot", "ld8_snapshot", "forecast_snapshot",
+              "assoc_batch", "explain_batch", "matrix_batch"):
         assert e in sched.ENGINE_BUILDERS
+
+
+def test_build_ld8_snapshot_argv():
+    # ml CLI (run_ld8_snapshot.py) declares DB_URL, --as-of, scope and
+    # --created-by; the four windows are fixed, so there is no --mode.
+    ctx = _ctx(as_of=date(2026, 10, 17))
+    out = sched.ENGINE_BUILDERS["ld8_snapshot"]({}, ctx)
+    assert out == [sys.executable, "-m", "ml_jobs.run_ld8_snapshot",
+                   "postgresql://fake/db",
+                   "--as-of", "2026-10-17", "--created-by", "test"], out
+
+
+def test_build_ld8_snapshot_rejects_legacy_window_params():
+    # A nightly job left on the legacy single-window params must fail with
+    # the fix named: passing --mode to that CLI is an argparse exit 2 on
+    # every tick, and an append-only v1 row lands until it is corrected.
+    for legacy in ({"mode": "rolling_365"},
+                   {"date_from": "2026-08-01"},
+                   {"date_to": "2026-10-17"}):
+        with pytest.raises(sched.ManifestError, match="ld8_snapshot"):
+            sched.ENGINE_BUILDERS["ld8_snapshot"](legacy, _ctx())
 
 
 def test_build_forecast_assoc_explain_argv():

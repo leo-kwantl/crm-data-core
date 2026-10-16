@@ -60,6 +60,10 @@ CDC/outbox from source systems → staging tables → validated upsert. See
 - **`db/queries/kpi_daily.sql` + `services/api/tests/test_snapshots.py`**.
 - ML `run_snapshot` / `run_recs_batch` stay the compute side; their
   outputs now have history tables here + `model_training_runs` lineage.
+- Scheduler engines (`pipelines/schedule.py`): `rfm_snapshot` = legacy v1
+  writer (append-only, one window); **`ld8_snapshot` = v2 four-window
+  writer and the canonical daily RFM capture** (see contracts.md
+  "Daily RFM writer").
 
 ## Status — SHIPPED 2026-10-09: batch upload ETL
 

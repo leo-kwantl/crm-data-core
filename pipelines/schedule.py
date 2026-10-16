@@ -15,6 +15,13 @@ Execution model (zero import coupling to the ml repo):
   argv are locked; `rfm_snapshot` / `segments` / `recs_batch` builders
   land once ml supplies their CLI argv (unknown engine -> job `failed`
   with an actionable error; downstream jobs `skipped`).
+- RFM has TWO writers with different rulesets, so the engine name decides
+  the stored rows: `rfm_snapshot` = ml `run_snapshot` -> `store_rfm`,
+  rules_version 'v1', single window, APPEND-only (no ON CONFLICT).
+  `ld8_snapshot` = ml `run_ld8_snapshot` -> `store_ld8`, rules_version
+  'v2', four fixed windows (current|mom|yoy|lifetime), find-or-create.
+  v2 is canonical for time-aware rows (031): the daily capture belongs on
+  `ld8_snapshot` — see contracts.md 'Daily RFM writer'.
 - `explain_batch` / `matrix_batch` take a RESOLVED `segment_run_id`
   (newest segment run for the scope) instead of scope flags: their
   CLIs reject --brand-id/--group-id and scope rides the segment run.
@@ -299,12 +306,37 @@ def _p(params: dict, *names: str, default: Any = None) -> Any:
 
 
 def _build_rfm(params: dict, ctx: JobCtx) -> list[str]:
+    # LEGACY v1 writer (rules_version 'v1', single window, append-only):
+    # every tick appends a NEW row for the same window_key, so a daily job
+    # on this engine makes the two newest 'current' rows cross-version by
+    # construction (the v2 find is v2-scoped and cannot supersede them).
+    # The daily capture belongs on `ld8_snapshot`; this stays for v1
+    # history/backfill only. See contracts.md 'Daily RFM writer'.
     argv = _ml_module("ml_jobs.run_snapshot")(params, ctx)
     argv += ["--mode", str(_p(params, "mode", default="rolling_365"))]
     if _p(params, "date_from", "date-from"):
         argv += ["--date-from", str(_p(params, "date_from", "date-from"))]
     if _p(params, "date_to", "date-to"):
         argv += ["--date-to", str(_p(params, "date_to", "date-to"))]
+    return _with_common(argv, params, ctx)
+
+
+def _build_ld8(params: dict, ctx: JobCtx) -> list[str]:
+    # CONFIRMED verbatim (ml): run_ld8_snapshot DB_URL [--as-of]
+    # --brand-id/--group-id --created-by. One run writes FOUR window
+    # snapshots (current = rolling 365d ending as-of | mom | yoy |
+    # lifetime), all rules_version 'v2', plus the sizes/movement rows.
+    # The CLI declares no --mode/--date-from/--date-to: a manifest still
+    # carrying the legacy single-window params would be an argparse exit 2
+    # on every tick, so reject it HERE with the fix named instead of
+    # letting the subprocess fail opaquely.
+    for legacy in ("mode", "date_from", "date-from", "date_to", "date-to"):
+        if params.get(legacy) is not None:
+            raise ManifestError(
+                f"ld8_snapshot computes all four fixed windows "
+                f"(current|mom|yoy|lifetime) in one run; drop "
+                f"params.{legacy} (its CLI takes only --as-of + scope)")
+    argv = _ml_module("ml_jobs.run_ld8_snapshot")(params, ctx)
     return _with_common(argv, params, ctx)
 
 
@@ -430,7 +462,10 @@ def _build_matrix(params: dict, ctx: JobCtx) -> list[str]:
 
 
 ENGINE_BUILDERS: dict[str, Callable[[dict, JobCtx], list[str]]] = {
+    # rfm_snapshot = legacy v1 writer; ld8_snapshot = canonical v2 writer
+    # (four time-aware windows). Pick by ruleset, not by habit.
     "rfm_snapshot": _build_rfm,
+    "ld8_snapshot": _build_ld8,
     "churn_snapshot": _build_churn,
     "clv_snapshot": _build_clv,
     "recs_batch": _build_recs,
