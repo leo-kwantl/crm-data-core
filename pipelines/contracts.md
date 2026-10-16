@@ -503,7 +503,7 @@ count is a **call-site** count: `grep -rn 'add_argument("--created-by"'
 ml_jobs/*.py` returns 10, where a bare `grep --created-by` returns **11**
 source hits because `ml_jobs/manifest.py:86` names the flag in a comment (and
 `.pyc` files match under `__pycache__` unless excluded) — the number is only
-as good as the predicate, exactly like the count above (ml, 2026-10-17). It is also
+as good as the predicate, exactly like the count above (ml, 2026-10-17); re-derived per construct in ml's tree on 2026-10-17: 12 job entry points (`ml_jobs/run_*.py`), 10 `add_argument("--created-by"` call sites, 9 `created_by` column referencers, 1 inert declarer (`run_churn_predict.py:50`), the 13th `.py` (`ml_jobs/manifest.py`) being a helper module rather than a job whose only hit is prose. It is also
 unreachable from a tick for a second reason: `churn_predict` is not an
 `ENGINE_BUILDERS` key (`pipelines/schedule.py:464-477` — ten engines) and
 dispatch raises `UnknownEngineError` (`:179`) for anything else (`:683-686`), so no
@@ -521,7 +521,7 @@ job's output is served by nobody, and removing the dead flag would be
 **app-safe as well as scheduler-safe**; it stays ml's call either way (app,
 2026-10-17). A NULL in the
 column therefore dates the row to a **direct ml-CLI hand-run** of one of the 9
-writers rather than to a caller who forgot the flag (`rfm_snapshots.e234dc57` is one). Pass a staff code wherever a job writes,
+writers, or to a tick handed an explicitly falsy stamp — `--created-by ""` is dropped by the truthiness guard at `pipelines/schedule.py:261-262` (again at `:296-297`) before `scripts/run_pipeline.py:132`'s non-empty `default="scheduler"` can apply, so a NULL does not by itself prove a hand-run; ml found that residual and it is re-derived here, including that `JobCtx` is constructed only at `scripts/run_pipeline.py:113`, so no config path can inject an empty stamp (`rfm_snapshots.e234dc57` is one). Pass a staff code wherever a job writes,
 or the row is indistinguishable from "written by an unset caller" (this
 cost a manual row dump to diagnose).
 
