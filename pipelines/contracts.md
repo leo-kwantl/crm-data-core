@@ -487,7 +487,10 @@ sanity check: `custom` holds no `current` row at all — LD8's reachable space i
 `custom×current` unreachable from the writer (`ml_engine/store_ld8.py:154-155` four-combination statement,
 mapping applied at `:174` — both unchanged at ml `4a54edb`, which re-scoped the
 same docstring to "reachable by a POSTed snapshot, not by LD8" by a
-line-count-neutral edit, 2026-10-17) — so the pin yields the empty state structurally
+line-count-neutral edit, 2026-10-17; the write-site invariant ml landed at
+`6fcfc00` is that same docstring, `:145-156` at this HEAD — ml's own
+`:130-144` for it is stale pre-`6fcfc00` numbering, kept here only so the two
+numbers are not silently interchanged) — so the pin yields the empty state structurally
 rather than by accident.
 
 The POST path is why the explicit-range branch exists rather than being
