@@ -369,6 +369,20 @@ means. So the missing projection is an identification gap, not a pairing bug;
 the tab's fix is the period rule below, and under either shape today's visible
 outcome there is the empty state (app/ml, 2026-10-17).
 
+Chosen shape for that tab (app, 2026-10-17): the page's period rule goes
+window-shaped — pin `current` where the mode defines the window, requested
+bounds on the custom tab — **plus** the guard's key term and a bounds label on
+the band. Showing the stored `lifetime` pair labelled with its real bounds was
+rejected, because the page's own empty-state copy already promises the band is
+about *this window* ("appears once two snapshots of this window exist for this
+scope"), so it would be truthful yet contradict the surface it sits on; an
+all-time or standalone movement view is where that shape belongs. All three
+parts are app-side only — no ML edit, no migration, no extra request, since
+`_snapshot_row` (`store_rfm.py:86-97`, isoformatting the bounds at `:92-94`
+and `scored_at` at `:95-96`) is already in the payload the page holds via
+`movement()`'s `"from"`/`"to"` dicts (`:297-299`) — and the guard term alone
+changes nothing visible, because the pair it currently compares shares a key.
+
 **Successive-period rule, branched by what the page displays** (app/ml,
 2026-10-17, both branches verified live against the pairs above). Where the
 page shows a *mode-defined* window (`rolling_365`, `year_to_date`), successive
