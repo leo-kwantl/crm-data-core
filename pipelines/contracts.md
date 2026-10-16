@@ -302,10 +302,11 @@ Never pair v1 with v2 for movement: different writers decide the windows
 (same maths both ways — `store_ld8.compute_window` calls
 `store_rfm.compute_current` verbatim, `ml_engine/store_ld8.py:130-153`;
 v1 is an append-only single-window write, v2 is a four-window
-find-or-create, and the *writer* decides the version, not the caller: the
-v1 INSERT takes it as a parameter (`store_rfm.py:36`, `:174` passing
-`computed["rules_version"]`, set by `RULES_VERSION = "v1"`, `rfm.py:24` —
-`create_snapshot` itself is version-agnostic), while the v2 INSERT
+find-or-create, and the *engine dict* decides the version, not the caller
+(and not the writer): the v1 INSERT takes it as a parameter
+(`store_rfm.py:36`, `:178` passing `computed["rules_version"]`, which
+`compute_current` set from `engine.RULES_VERSION` at `:152` — `"v1"` at
+`rfm.py:24` — so `create_snapshot` never reads the constant), while the v2 INSERT
 interpolates the literal `'{RULES_V2}'` (`store_ld8.py:53`, `:56`,
 `RULES_V2 = "v2"` at `:36`)), so cross-version movement is meaningless. The serving-side fix is
 to take the newest snapshot's `rules_version` and then the two newest **of
