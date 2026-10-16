@@ -59,6 +59,39 @@ Daily job: `python scripts/run_daily_snapshot.py --as-of YYYY-MM-DD`
 `model_training_runs`). Queries in `db/queries/kpi_daily.sql`.
 Scope columns (`brand_id`, `group_id`, NULL = group-wide) match 012.
 
+**Day boundary is business time (Asia/Hong_Kong, +08) — rule added
+2026-10-17.** `as_of` / `window_from` / `window_to` are business-day
+dates, not server- or host-timezone days: the effective instant of a
+bound named `2026-10-16` is `2026-10-16T00:00+08` = `2026-10-15T16:00Z`.
+`rfm_snapshots.window_from` is a `date` column, so **no stored row
+reveals the offset** — a reader who assumes `SHOW TimeZone` (GMT on this
+stack) or the host clock silently disagrees by up to 8h. ML now pins the
+naive->aware conversion explicitly (`ml_engine/rfm.py:_day_start`,
+`ZoneInfo("Asia/Hong_Kong")`); zero stored values change on a +08 host,
+so no `RULES_VERSION` bump was needed.
+
+Two **OPEN** data-side gaps in the same class (found 2026-10-17, held
+pending GO because unlike the ML pin they WOULD move stored cohort
+numbers):
+
+1. `pipelines/snapshot.py` cohort SQL truncates with
+   `date_trunc($1::text, ordered_at)`, which PG evaluates in the
+   **session** zone (GMT) — so week/month cohort buckets are UTC
+   boundaries while the snapshot dates are +08. Blast radius over 8,685
+   orders: 137 shift month bucket, 628 shift week bucket, 3,698 shift
+   day bucket.
+2. The `current` cutoff is server `CURRENT_DATE - 1`, while
+   `scripts/run_daily_snapshot.py` defaults `--as-of` to host
+   `date.today()`; during 00:00-08:00 local those disagree (observed
+   server `2026-10-16` vs +08 `2026-10-17`).
+
+Environment note: this pgembed install ships **no tzdata**
+(`pgembed/pginstall/share/postgresql/timezone` missing), so no named zone
+works in SQL here — `AT TIME ZONE 'Asia/Hong_Kong'` raises
+`time zone "Asia/Hong_Kong" not recognized`, while an explicit offset
+(`AT TIME ZONE interval '8 hours'`) works. Any SQL-side pin must use the
+offset form (Hong Kong has no DST).
+
 ## Batch upload ETL (frontend files land here)
 
 App posts the file edge (`upload_jobs` row); data owns stage → validate
