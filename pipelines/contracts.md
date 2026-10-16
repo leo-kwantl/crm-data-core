@@ -257,10 +257,13 @@ for a catch-up or `--force` tick: omit `--as-of` unless you intend a new
 period, and never reuse a date whose window is on disk.
 
 `created_by` is passed through (`--created-by`;
-`scripts/run_pipeline.py:132` default `scheduler`), so a NULL in that
-column means nobody set it — pass a staff code wherever a job writes, or
-the row is indistinguishable from "written by an unset caller" (this cost
-a manual row dump to diagnose).
+`scripts/run_pipeline.py:132` default `scheduler`), so through the runner a
+NULL is **unreachable**. Every `ml_jobs/run_*.py` declares `--created-by`
+with `default=None`, so a NULL in the column dates the row to a **direct
+ml-CLI hand-run** rather than to a caller who forgot the flag
+(`rfm_snapshots.e234dc57` is one). Pass a staff code wherever a job writes,
+or the row is indistinguishable from "written by an unset caller" (this
+cost a manual row dump to diagnose).
 
 Never pair v1 with v2 for movement: different writers decide the windows
 (same maths both ways — `store_ld8.compute_window` calls
