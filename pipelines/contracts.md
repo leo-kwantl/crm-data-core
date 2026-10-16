@@ -813,9 +813,9 @@ M cuts would lose their stated derivation and no column records it.
 
 **Scope is a run-level dimension, so no brand-scoped snapshot row exists.**
 `--brand-id`/`--group-id` (`scripts/run_pipeline.py:130-131` → `JobCtx`,
-`:113-114`) reach **every** job of a tick through `_scope_args(ctx)`
-(`pipelines/schedule.py:255-263`), appended by `_with_common` (`:284-299`,
-`with_scope` default True); a job's `params` cannot carry a scope, so
+`:113-114`) reach **every** job of a tick, since the helper
+`_scope_args(ctx)` (`pipelines/schedule.py:255-263`) builds the flags and
+`_with_common` (`:284-299`, `with_scope` default True) appends them; a job's
 per-brand rows require **one runner invocation per brand** and that
 invocation scopes the *whole* pipeline, not one job. The nightly cron passes
 neither flag, so every stored row is hq-scoped (`brand_id IS NULL`) —

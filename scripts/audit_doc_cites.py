@@ -630,7 +630,18 @@ def audit_pins(root: Path, roots: list[Path], idx: dict[str, list[Path]],
 # `createRfmSnapshot`). The shape matters -- `python`, `git`, `snapshot` are
 # words that happen to be backticked, and treating them as code names would
 # report a moved cite on every sentence that mentions a tool.
-SYMBOL = re.compile(r"`([A-Za-z][A-Za-z0-9]*_[A-Za-z0-9_]+|[a-z]+[A-Z][A-Za-z0-9]*)`")
+#
+# The underscore branch is a **lookahead for "contains an underscore"**, not a
+# two-part word shape, and that is a measured correction (app, 2026-10-17): the
+# first version required a leading letter *and* an internal underscore, so
+# `_run`, `_fit_overall` and `__init__` were not candidates at all -- every
+# private name was permanently unnameable, and `_run` is the single most common
+# subject in a cite about a pipeline entrypoint. Candidates are still
+# intersected with the cited file's defined names, so a wider shape cannot
+# invent a subject: an unnameable token was silent, and a token the cited file
+# does not define is silent in the same way it was before.
+SYMBOL = re.compile(r"`((?=[A-Za-z0-9_]*_)[A-Za-z_][A-Za-z0-9_]*"
+                    r"|_?[a-z][A-Za-z0-9]*[A-Z][A-Za-z0-9]*)`")
 
 
 def _defines(line: str, name: str) -> bool:
@@ -724,9 +735,17 @@ def symbol_moved(roots: list[Path], cited: str, text: str, start: int,
     2026-10-17: their `:656-657` names the enclosing `compute_current`).
 
     `window` is accepted but not used as a candidate source: candidates are
-    line-scoped because the window-scoped version fired on two correct cites in
+    line-scoped because the window-scoped version fired on correct cites in
     `pipelines/contracts.md` (measured 2026-10-17), and the caller counts those
-    sites as `cite-symbol-unchecked` instead.
+    sites as `cite-symbol-unchecked` instead. Line scope has the same sharp
+    edge in the other direction, and it is deliberately left to the author: a
+    line naming **two** subjects reports the first cite against the second
+    name (`pipelines/contracts.md:817` did, naming `_scope_args` for one cite
+    and the helper for the next), and the fix there was the wrap, not a radius
+    -- narrowing candidates to the names *before* each cite was tried and
+    discarded in the same pass, because it silently drops the trailing form
+    ("cited `:NNN-NNN` for `X`") that the detector was built on: it cost 10
+    sites their check and 3 theirs, to remove one false positive.
     """
     names = sorted(_symbols(text))
     if not names:
