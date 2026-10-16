@@ -84,7 +84,14 @@ CITE = re.compile(r"[\w./-]+\.(?:" + "|".join(EXTS) + r"):(\d+)(?:\s*-\s*(\d+))?
 # A chain `a.py`/`b.py` `sha` is still a PIN, verified per path, so a shared sha
 # cannot hide behind a continuation.
 SHA = r"[0-9a-f]{7,40}"
-PATH_TOK = r"`[\w./-]+\.(?:" + "|".join(EXTS) + r")`"
+# A path token may be backticked or bare: `db/migrations/031_x.sql `412d9d7`` is a
+# pin and so is the same pair with backticks on both -- the parents are
+# adjacency and one line, not punctuation (app, 2026-10-17: reading "bare" as
+# "no backticks between" left a real pin unparsed, so its sha fell through to
+# `repo-ok`, a success bucket, and the under-check had no tell in the counts or
+# in the exit code).
+PATH_BARE = r"[\w./-]+\.(?:" + "|".join(EXTS) + r")(?![A-Za-z0-9])"
+PATH_TOK = r"(?:`[\w./-]+\.(?:" + "|".join(EXTS) + r")`|" + PATH_BARE + r")"
 # The cue sits between the **last** path token and the sha; a repo name in front
 # of the path attributes the path's owner, not the revision, so a cross-repo
 # anchor keeps the genre its own form declares -- `ml `x.py` `sha`` is a pin,
@@ -133,6 +140,21 @@ def iter_md(root: Path, comments: bool = False):
             yield p
 
 
+def _unmark(raw: str, prefixes: tuple[str, ...]) -> str:
+    """Drop one leading comment marker, so a wrapped anchor reads as one span.
+
+    A pin may straddle a wrap (``path`` on one line, its ``sha`` on the next).
+    In markdown the join is a plain newline, but a comment unit keeps its
+    ``-- ``/``# `` marker, which sits *inside* the window the pin scan builds --
+    so ``\\s*`` cannot span it and the sha fell silently through to ``repo-ok``,
+    a success bucket (app, 2026-10-17). Stripping at the source keeps
+    ``base = len(ctx) - len(text)`` exact, because both sides are stripped.
+    """
+    m = re.match(r"\s*(?:" + "|".join(re.escape(p) for p in prefixes) + r")\s?",
+                 raw)
+    return raw[m.end():] if m else raw
+
+
 def text_units(doc: Path, comments: bool) -> list[tuple[int, str]]:
     """The ``(lineno, text)`` units the guard reads for one file.
 
@@ -149,19 +171,20 @@ actually are -- with real line numbers, so a finding is still ``path:LINE``.
     quote: str | None = None
     for lineno, raw in lines:
         stripped = raw.strip()
+        body = _unmark(raw, prefixes)
         if quote is not None:
-            units.append((lineno, raw))
+            units.append((lineno, body))
             if stripped.count(quote) % 2 == 1:
                 quote = None
             continue
         opener = next((q for q in ('"""', "'''") if stripped.startswith(q)), None)
         if opener is not None:
-            units.append((lineno, raw))
+            units.append((lineno, body))
             if stripped.count(opener) % 2 == 1:
                 quote = opener
             continue
         if any(stripped.startswith(pre) for pre in prefixes):
-            units.append((lineno, raw))
+            units.append((lineno, body))
     return units
 
 
@@ -276,6 +299,31 @@ def changed_spans(tree: Path, old: str, new: str, path: str) -> list[tuple[int, 
 LABEL_CUE = re.compile(r"\b(read|measured|as)\s+(?:at|of)\b", re.I)
 
 
+def _peers(roots: list[Path]) -> str:
+    """The searched universe, printed beside the numbers it decides.
+
+    ``unresolved``, ``pin-unresolved`` and ``unclassified`` are all decided
+    against the peer set, so a pasted finding has to carry it (app, 2026-10-17:
+    the note was printed only when such a bucket was non-zero, so a clean run
+    never showed it and a quoted line never did either).
+    """
+    return ", ".join(r.name for r in roots[1:]) or "(none)"
+
+
+def _unparsed_cues(text: str) -> list[str]:
+    """Cue words whose sha is not a token the guard can check.
+
+    ml's four labels sat in prose (``read at data f889386``) and so were checked
+    by nothing while the run reported green (ml, 2026-10-17): an unchecked claim
+    that reads exactly like a checked one is the failure mode this whole guard is
+    about, so it gets a bucket instead of silence.
+    """
+    if not LABEL_CUE.search(text):
+        return []
+    stripped = SHA_TOK.sub(" ", text)
+    return re.findall(r"(?<![`\w])([0-9a-f]{7,40})(?![`\w])", stripped)
+
+
 def owner_trees(path: str, roots: list[Path],
                 idx: dict[str, list[Path]]) -> list[tuple[Path, str]]:
     """Trees holding ``path``, with its repo-relative form in each.
@@ -301,14 +349,29 @@ def owner_trees(path: str, roots: list[Path],
 def _check_pin(counts, hard, info, seen, rel_doc, lineno, path, pinned, roots, idx,
                cites):
     """A pin asserts the file's *current* last-changed revision."""
+    counts["pin-sites"] += 1  # sites, not verdicts: `seen` keys on (path, rev)
     if (path, pinned) in seen:
         return
     seen.add((path, pinned))
     found = [(r, rel, last_changed(r, rel)) for r, rel in owner_trees(path, roots, idx)]
     found = [(r, rel, got) for r, rel, got in found if got]
+    if len({got for _, _, got in found}) > 1:
+        # A path held by more than one tree makes "the file's last change"
+        # tree-relative -- app's tree mirrors data's migrations byte-identically,
+        # so the same bare pair reads `pin-ok` with data present and `stale-pin`
+        # with only app present. The pair must stay bare (the genre is the bare
+        # pair), so the owning tree belongs in the surrounding prose; this line
+        # says the pin is ambiguous instead of picking an owner silently.
+        counts["pin-ambiguous"] += 1
+        info.append(
+            "pin-ambiguous %s:%d -> %s exists in %s; a pin's authority is the"
+            " tree its sha belongs to, so name the owning tree in the prose"
+            % (rel_doc, lineno, path,
+               ", ".join("%s=%s" % (r.name, got) for r, _, got in found)))
     if not found:
         counts["pin-unresolved"] += 1
-        info.append(f"pin-unknown {rel_doc}:{lineno} -> {path} (path in no tree)")
+        info.append(f"pin-unresolved {rel_doc}:{lineno} -> {path} (path in no tree;"
+                    f" peers checked: {_peers(roots)})")
     elif any(got.startswith(pinned) or pinned.startswith(got) for _, _, got in found):
         counts["pin-ok"] += 1
     else:
@@ -342,7 +405,8 @@ def audit_pins(root: Path, roots: list[Path], idx: dict[str, list[Path]],
               "label-unknown": 0, "label-cross": 0, "repo-ok": 0,
               "repo-unreferenced": 0,
               "repo-elsewhere": 0, "no-commit": 0, "unclassified": 0,
-              "sentinel-skipped": 0, "rowid-skipped": 0}
+              "sentinel-skipped": 0, "rowid-skipped": 0, "cue-unparsed": 0,
+              "pin-ambiguous": 0, "pin-sites": 0}
     hard: list[str] = []
     info: list[str] = []
     seen: set[tuple[str, str]] = set()
@@ -362,6 +426,12 @@ def audit_pins(root: Path, roots: list[Path], idx: dict[str, list[Path]],
                 # lookback spans a few lines and the offset keeps indices exact.
                 ctx = "\n".join(t for _, t in lines[max(0, i - 5):i + 1])
                 base = len(ctx) - len(text)
+                for bare in _unparsed_cues(text):
+                    counts["cue-unparsed"] += 1
+                    info.append(
+                        "cue-unparsed %s:%d -> `%s` sits in a cue phrase but is not"
+                        " a backticked token, so NO revision was checked (backtick"
+                        " it: the guard reads tokens)" % (rel_doc, lineno, bare))
                 # Prose is wrapped, so an anchor can straddle the wrap
                 # (`<path>` on one line, its `sha` on the next). Analysis runs on
                 # the window and reports only what resolves on this line, which
@@ -439,9 +509,9 @@ def audit_pins(root: Path, roots: list[Path], idx: dict[str, list[Path]],
                         info.append(
                             "unclassified %s:%d -> %s %s `%s` (declare the genre: add"
                             " a cue -- read at / as of / measured at -- or make it a"
-                            " pin by removing the words between)"
+                            " pin by removing the words between; peers checked: %s)"
                             % (rel_doc, lineno, paths[-1].group(1), cue.strip() or
-                               "<adjacent?>", sha))
+                               "<adjacent?>", sha, _peers(roots)))
                     else:
                         # Text *before* the sha, not after it: the doc's own word
                         # for a row id ("row `<id>`", "snapshot `<id>`") precedes
@@ -449,6 +519,18 @@ def audit_pins(root: Path, roots: list[Path], idx: dict[str, list[Path]],
                         # is not seen -- the window is named for the side it reads
                         # (app's find, 2026-10-17).
                         before = ctx[max(0, m.start() - 240):m.start()]
+                        # Repo attribution is a local, explicit signal; a generic
+                        # row-ish word 200 characters back is neither -- and
+                        # `rowid-skipped` is the one bucket that can swallow a
+                        # checkable sha without printing anything, which reads as
+                        # a pass. So the explicit signal is tried first and the
+                        # row-ish branch reports any token that is a commit
+                        # somewhere (app, 2026-10-17).
+                        hits = list(REPO_TOK.finditer(before))
+                        repo = hits[-1] if hits else None
+                        named = next((r for r in roots if r.name == "crm-cdp-" +
+                                      (repo.group(1) or repo.group(2)).lower()),
+                                     None) if repo else None
                         if commit_exists(root, sha):
                             # A sha with no qualifier in this repo's own doc is
                             # this repo's by default; nothing to attribute.
@@ -460,17 +542,22 @@ def audit_pins(root: Path, roots: list[Path], idx: dict[str, list[Path]],
                                     " origin ref or tag in this repo"
                                     % (rel_doc, lineno, sha))
                             continue
-                        if ROWISH.search(before):
+                        if ROWISH.search(before) and not (
+                                named is not None and commit_exists(named, sha)):
                             # A snapshot/window row id reads exactly like a short
                             # sha; the doc's own words are what say it is not a
-                            # revision, so the guard takes them.
+                            # revision, so the guard takes them -- unless a named
+                            # repo actually holds it, which settles the question.
                             counts["rowid-skipped"] += 1
+                            owners = [r.name for r in roots if commit_exists(r, sha)]
+                            if owners:
+                                info.append(
+                                    "rowid-checkable %s:%d -> `%s` read as a row id,"
+                                    " yet it is a commit in %s (a named repo would"
+                                    " have checked it)" % (rel_doc, lineno, sha,
+                                                            ", ".join(owners)))
                             continue
-                        hits = list(REPO_TOK.finditer(before))
-                        repo = hits[-1] if hits else None
-                        tree = next((r for r in roots if r.name == "crm-cdp-" +
-                                     (repo.group(1) or repo.group(2)).lower()),
-                                    None) if repo else None
+                        tree = named
                         if tree is not None and commit_exists(tree, sha):
                             counts["repo-ok"] += 1
                             if not reachable_refs(tree, sha):
@@ -509,9 +596,118 @@ def audit_pins(root: Path, roots: list[Path], idx: dict[str, list[Path]],
                             info.append(
                                 "unclassified %s:%d -> `%s` with neither a path nor a"
                                 " repo name (name one: repo+sha is checkable for"
-                                " existence, path+sha for equality)"
-                                % (rel_doc, lineno, sha))
+                                " existence, path+sha for equality; peers checked:"
+                                " %s)" % (rel_doc, lineno, sha, _peers(roots)))
     return counts, hard, info
+
+
+# A backticked name that reads as a *symbol* rather than a word: it carries an
+# underscore or an internal capital (`resolve_ld8_window`, `RULES_V2`,
+# `createRfmSnapshot`). The shape matters -- `python`, `git`, `snapshot` are
+# words that happen to be backticked, and treating them as code names would
+# report a moved cite on every sentence that mentions a tool.
+SYMBOL = re.compile(r"`([A-Za-z][A-Za-z0-9]*_[A-Za-z0-9_]+|[a-z]+[A-Z][A-Za-z0-9]*)`")
+
+
+def _defines(line: str, name: str) -> bool:
+    """Is `name` *defined* on this line, rather than merely mentioned?
+
+    The first cut of the detector fired on prose that named a field
+    (`as_of`) which the file uses everywhere and defines nowhere: mentioning a
+    name is not citing an object. Requiring a defining line (`def`/`class`,
+    or `NAME =`) is what makes the hit mean "the object is here, not there".
+    """
+    n = re.escape(name)
+    return bool(re.match(r"\s*(?:async\s+)?(?:def|class)\s+" + n + r"\b", line)
+                or re.match(r"\s*" + n + r"\s*[:=]", line))
+
+
+# A line that *defines* something: the second half of the detector, because
+# "the sentence names X" only matters when the cited span is about Y.
+DEF_RE = re.compile(r"^\s*(?:async\s+)?(?:def|class)\s+([A-Za-z_]\w*)"
+                    r"|^\s*([A-Za-z_]\w*)\s*[:=]")
+
+
+def symbol_moved(roots: list[Path], cited: str, text: str, start: int,
+                 end: int, rel_doc: str, lineno: int) -> str | None:
+    """A range cite proving the range exists, never that it bounds the subject.
+
+    app cited `ml_engine/store_ld8.py:101-107` for `resolve_ld8_window` while
+    those lines are `SIZES_FOR_WINDOW_SQL` and the delegation is at `:122-123`
+    (app, 2026-10-17): in range, so `ok` and `out-of-range=0` were both true
+    while the sentence pointed at a different object. Two filters keep the hit
+    honest: the sentence must name a symbol-shaped token, and the cited span
+    must *define* some other name -- otherwise a sentence that names a
+    statement while deliberately citing part of it (contracts.md:475 cites the
+    scope conjuncts `:63-66` of `SNAPSHOT_FIND_V2_SQL`) would be reported as a
+    defect, and a bucket that fires on correct cites is as useless as one that
+    hides bad ones.
+    """
+    names = [n for n in SYMBOL.findall(text) if n not in ("",)]
+    if not names:
+        return None
+    for tree in roots:
+        f = tree / cited
+        if not f.is_file():
+            continue
+        try:
+            lines = f.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            return None
+        span_lines = lines[start - 1:end]
+        if any(n in "\n".join(span_lines) for n in names):
+            return None
+        here = []
+        for ln in span_lines:
+            d = DEF_RE.match(ln)
+            if d:
+                here.append(d.group(1) or d.group(2))
+        if not here:
+            return None  # the span defines nothing: it is part of the subject
+        at = [i + 1 for i, ln in enumerate(lines)
+              if any(_defines(ln, n) for n in names)]
+        if not at:
+            return None  # the named object is not here at all, so not this cite's
+        return ("cite-symbol %s:%d -> %s:%d-%d in %s names %s, which the span"
+                " does not contain -- it defines %s (the named object is at"
+                " :%s)"
+                % (rel_doc, lineno, cited, start, end, tree.name,
+                   " or ".join("`%s`" % n for n in names[:3]),
+                   " or ".join("`%s`" % n for n in here[:2]),
+                   ", :".join(str(i) for i in at[:4])))
+    return None
+
+
+# Which file types each pass actually reads. A count is bounded by this set,
+# and the set is what `coverage:` prints.
+PASS_EXTS = {False: {".md"}, True: {".md", ".py", ".sql"}}
+
+
+def outside_pass(root: Path, comments: bool) -> list[str]:
+    """Files this pass cannot read that still carry sha-like tokens.
+
+    `coverage: 3 file(s) -- markdown only` with every bucket at zero is honest
+    and still misleading when four `.sql` files outside the pass hold pins: the
+    identical zero means "nothing to check" in one tree and "the checks are
+    elsewhere" in another, and only the excluded surface separates them (app,
+    2026-10-17: theirs was the wrong one, not the vacuous one). One git-aware
+    grep, reported as a name-not-list because the point is that the surface
+    exists.
+    """
+    if comments:
+        return []  # this pass reads every file type the guard knows; the finer
+        # scope (comment lines only, not code) is stated in `coverage:` itself
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(root), "grep", "-lIE", r"\b[0-9a-f]{7,40}\b",
+             "--", "*.py", "*.sql"],
+            capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if out.returncode not in (0, 1):  # 1 = no match, 128 = not a repo
+        return []
+    return [n for n in out.stdout.splitlines() if n]
 
 
 def basename_index(roots: list[Path]) -> dict[str, list[Path]]:
@@ -534,7 +730,9 @@ def audit(root: Path, peers: list[Path], strict: bool,
           absent: list[str] | None = None) -> int:
     roots = [root, *peers]
     idx = basename_index(roots)
-    counts = {"ok": 0, "disagrees": 0, "out-of-range": 0, "unresolved": 0}
+    universe0 = _peers(roots)
+    counts = {"ok": 0, "disagrees": 0, "out-of-range": 0, "unresolved": 0,
+              "cite-symbol": 0}
     hard: list[str] = list(peer_hard or [])
     info: list[str] = list(peer_notes or [])
 
@@ -571,9 +769,14 @@ def audit(root: Path, peers: list[Path], strict: bool,
                         counts["unresolved"] += 1
                         (hard if strict else info).append(
                             f"unresolved  {rel_doc}:{lineno} -> {span} "
-                            f"(path in no tree)")
+                            f"(path in no tree; peers checked: {_peers(roots)})")
                     elif all(ok for _, _, ok in where):
                         counts["ok"] += 1
+                        moved = symbol_moved(roots, cited, text, start, end,
+                                             rel_doc, lineno)
+                        if moved:
+                            counts["cite-symbol"] += 1
+                            info.append(moved)
                     elif any(ok for _, _, ok in where):
                         counts["disagrees"] += 1
                         info.append(
@@ -590,18 +793,48 @@ def audit(root: Path, peers: list[Path], strict: bool,
             # end line loop
     pin_counts, pin_hard, pin_info = audit_pins(root, roots, idx, comments)
     audited = list(iter_md(root, comments))
-    universe = ", ".join(r.name for r in roots[1:]) or "(none)"
+    sites = pin_counts.pop("pin-sites", 0)
+    universe = universe0
     if absent:
         universe += " + absent: " + ", ".join(absent)
     print("trees: " + ", ".join(str(r) for r in roots if r.is_dir()))
     print("peers: " + universe)
-    print("coverage: %d file(s) -- %s" % (
+    # The unified form, stated where the numbers are read: a byte-compare
+    # measures the reader's checkout, a lint run the reader's peer set, a
+    # `--stat` the revision the reader had, and a guard run which files it
+    # looked at. Every verdict here is scoped by a state of the runner, and the
+    # scope belongs beside the number it bounds -- including when it is zero.
+    print("  (scope: every count below is decided by the peers printed above"
+          " and by the coverage mode below; a number pasted without them is a"
+          " claim about the harness, not about the docs)")
+    outside = outside_pass(root, comments)
+    print("coverage: %d file(s) -- %s%s" % (
         len(audited),
         "markdown + comment lines/docstrings in .py/.sql" if comments else
         "markdown only: cites in Python docstrings and SQL comments are outside"
-        " this pass, so green means green over one file type (add --comments)"))
-    print("citations: " + ", ".join(f"{k}={v}" for k, v in counts.items()))
-    print("pins: " + ", ".join(f"{k}={v}" for k, v in pin_counts.items()))
+        " this pass, so green means green over one file type (add --comments)",
+        "; EXCLUDED SURFACE: %d file(s) outside this pass carry sha-like tokens"
+        " (%s) -- the zeroes below are bounded by that"
+        % (len(outside), ", ".join(sorted(outside)[:3])) if outside else ""))
+    # The scope rides on the counts line as well as on `coverage:`, because the
+    # counts line is the one that gets pasted into a chat -- and a clean run is
+    # pasted alone far more often than a dirty one.
+    mode = "markdown + comments" if comments else "markdown only"
+    print("citations: " + ", ".join(f"{k}={v}" for k, v in counts.items())
+          + "  [pass: %d file(s), %s; peers: %s]" % (len(audited), mode,
+                                                      universe))
+    pins_line = ", ".join(f"{k}={v}" for k, v in pin_counts.items())
+    if sites > pin_counts["pin-ok"]:
+        # One verdict per (path, revision) pair, but several sites may pin the
+        # same pair: a reader reconciling against a grep count needs both.
+        pins_line = pins_line.replace(
+            "pin-ok=%d" % pin_counts["pin-ok"],
+            "pin-ok=%d (%d sites)" % (pin_counts["pin-ok"], sites), 1)
+    if not comments:
+        # `pin-ok=0` reads like "no pins here" while the anchors may all live in
+        # comments this pass never opened, so the scope rides on the number.
+        pins_line += "  [markdown only: .py/.sql comment anchors need --comments]"
+    print("pins: " + pins_line)
     print("  (a pin asserts equality with the file's last-changed revision; a"
           " label proves existence + ancestry, and with a path that the path was"
           " there at that sha -- never that the quoted words are)")
@@ -630,10 +863,19 @@ def audit(root: Path, peers: list[Path], strict: bool,
 def main() -> int:
     ap = argparse.ArgumentParser(description="Audit markdown code-line citations.")
     ap.add_argument("--repo", default=".", help="repo whose markdown to audit")
-    ap.add_argument("--peer", nargs="*", default=None,
+    # `action="append"` + flatten, not a bare `nargs="*"`: with the latter a
+    # repeated flag silently overwrites, so `--peer data --peer ml` registered
+    # only ml and the run manufactured findings out of a short universe (app,
+    # 2026-10-17: `unresolved` x10, `pin-unresolved` x2, `stale-pin` x1, all
+    # invocation-caused). Repetition is honoured or it is a trap.
+    ap.add_argument("--peer", action="append", nargs="*", default=None,
                     help="trees to resolve cites against (default: the sibling "
                          "crm-cdp-app / crm-cdp-data / crm-cdp-ml trees that "
-                         "exist, minus the audited root)")
+                         "exist, minus the audited root); repeatable. REPLACES "
+                         "the default set rather than adding to it, so an "
+                         "explicit list must be complete: a missing tree turns "
+                         "its cites into `unresolved`/`label-unknown` and the "
+                         "findings are the invocation's, not the docs'")
     ap.add_argument("--require-peer", action="append", default=[], metavar="PATH",
                     help="a tree that must be present (repeatable); absent -> "
                          "exit 1, for CI where a forgotten peer must not read "
@@ -650,7 +892,7 @@ def main() -> int:
         named = [root.parent / n for n in
                  ("crm-cdp-app", "crm-cdp-data", "crm-cdp-ml")]
     else:
-        named = [Path(p) for p in args.peer]
+        named = [Path(p) for group in args.peer for p in group]
     required = [Path(p) for p in args.require_peer]
 
     # The audited root is never its own peer: from app's root the old default
