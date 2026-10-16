@@ -685,6 +685,28 @@ operators (`store_churn.py:193-198` vs `:253-261`), so artifact-vs-population
 is the only variable in that comparison — the form to cite when the question
 is which operator a query that does not exist yet should use (ml/app,
 2026-10-17).
+
+The same split has a second, independent statement on the app side, and it is
+the reference *decision* rather than an implementation detail:
+`../crm-cdp-app/services/api/analytics/scope.py:1-26` (docstring) — a stamped
+row is visible iff `row.brand == session.brand AND row.group == session.group`,
+NULL-safe on both sides — with the deliberate consequence named there,
+**quarantine-by-default**: legacy pre-scope rows and admin-created global
+batches are `NULL/NULL` and therefore **HQ-only**, so no group session can
+list or open a row computed over all brands. That consequence is the one data's
+writers live under: an unstamped write is not an error in this system, it is a
+row only HQ can see. The docstring's own invariant is "keep the two in sync —
+`row_visible` is the reference implementation" (`scope.py:46-50`). The failure
+direction that matters, verified 2026-10-17 by app's sweep and re-derived here:
+a **stamped** surface using the population form would leak `NULL/NULL` rows
+into a brand session — a visibility bug, not a semantics curiosity; none in
+app's tree, whose population-form hits are all source-row filters over
+`orders`/`customers`/`brands`/`groups` (`analytics_snapshots.sql:110-111`,
+`analytics_simulate.sql:16-18`, `analytics_recs_fallback.sql`, `stats.py:23-29`
+`_ORDER_SCOPE`/`_CUST_SCOPE`). Granularity worth keeping: the choice is per
+**row role inside a predicate**, not per file — `analytics_snapshots.sql`
+carries both, artifact form on the stamped row (`:22-23`) and population form
+on the joined source rows (`:110-111`).
 — **declined on purpose, not missed**: 011's design is exclusion, and a group
 run means the group's pool, not "the pool plus unassigned rows". Recorded so
 the choice is visible rather than rediscovered.
