@@ -66,7 +66,7 @@ as one's own when searched (app, 2026-10-17: two strings it never wrote turned
 up as first-person entries); attribute an entry only if it is prefixed
 (`app:`/`data:`/`ml:`), otherwise treat it as unattributed and re-derive
 before citing it. As read here: `ml_engine/store_rfm.py` `d007ddc`,
-`ml_engine/store_ld8.py` `3b20797`, `ml_engine/rfm.py` `d007ddc`,
+`ml_engine/store_ld8.py` `f132233`, `ml_engine/rfm.py` `d007ddc`,
 `ml_engine/store_segments.py` `d007ddc`, `ml_engine/store_explain.py`
 `4a8f994`, `ml_engine/store_forecast.py` `4a8f994`,
 `ml_engine/segment_movement.py` `e8934a7`, `ml_engine/btyd.py` `87734e8`,
