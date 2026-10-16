@@ -813,7 +813,12 @@ fixture would have to be added app/data-side if it is ever challenged.
 The switch that would **include** those rows instead of dropping them is to
 swap the aggregate's guard for the `IS NOT DISTINCT FROM` form. The aggregate
 filters by `AND ($4::uuid IS NULL OR c.group_id = $4::uuid)`
-(`ml_engine/store_rfm.py:30`, with `brand_id` at `:29`) — the `IS NULL OR`
+(`ml_engine/store_rfm.py:30`; the guard form is **three** lines, `:29-31`
+— brand `s.brand_id` at `:29`, customer group `c.group_id` at `:30`,
+brand group `b.group_id` at `:31`, and note the last two guard the **same**
+`$4`, so under a supplied scope a customer whose own group differs from
+their store brand's group is dropped by the brand line, not the customer
+line — ml re-derived `:29-31` 2026-10-17) — the `IS NULL OR`
 guard sits on the **parameter**, so a supplied scope leaves plain equality
 against a NULLable column and drops those rows — whereas the *listing* query
 already uses `brand_id IS NOT DISTINCT FROM $3::uuid` / `group_id IS NOT
@@ -980,7 +985,9 @@ scope) and its own default is `k=5` (app segment/explain routers,
 read answers 404 `no_snapshot` with `available_k`. A cadence that only
 ever fits k=6 therefore leaves the product's default surface dark
 right after a wipe while every job reports succeeded -- and the
-product exposes exactly ONE k (no picker; `segments/page.tsx:561-564`),
+product exposes exactly ONE k (no picker;
+`apps/web/app/segments/page.tsx:561-564` — the file's own comment says
+"No k picker", so the claim and the cite agree),
 so one k is enough and a miss is answered with guidance built
 from `available_k`. Extending to a ladder (e.g. {5,6}) is a manifest
 edit if a second k ever gets a consumer, not a code change. Do NOT
@@ -1077,8 +1084,12 @@ scope) — NOT an extension of 015 `pipeline_runs` (different grain:
 sync run vs scheduled job; different readers: connector health vs cron
 orchestration). `pipeline_runs` stays job-grain, untouched.
 
-Write/trigger API [ADDITIVE] (`services/api/routers/connectors.py` +
-`repos/connectors.py`, all `require_admin` — secrets + execution
+Write/trigger API [ADDITIVE] (`services/api/routers/connectors.py` — all
+**six** mutations carry `Depends(require_admin)` (`Admin` at `:60`; the
+three GETs are not gated; the module docstring at `:3` still says five,
+so count the signatures, not the prose) — with its data-access module
+`services/api/repos/connectors.py` **below** the auth layer, where a gate
+would be the wrong place and is absent by design; secrets + execution
 outrank uploads): `POST /connectors` (201; 409 duplicate
 (source_type, name); 422 validation) → `DELETE /connectors/{id}`
 (204, runs cascade) → `POST /{id}/sync {entity, scope?}` (202 queued;
