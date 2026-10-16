@@ -339,7 +339,10 @@ correct, not a gap. Consequence, verified live by app 2026-10-17 on
 `need_two_snapshots`**, so the movement section cannot populate for that
 role at all. Find-or-create is scope-aware (`ml_engine/store_ld8.py:60-66`),
 so a future per-brand fan-out would add rows beside the hq row rather than
-replace it.
+replace it. Fan-out price on the demo dataset: **6 ticks, one per brand**
+(`DEMO`/`SUNHING`/`KVLN`/`VICEW`/`HARBOR`/`PEAKLENS`), because the single
+group makes a `--group-id` run customer-identical to hq — brand is the only
+dimension that partitions anything here.
 
 **Group scope is conjunctive by design, and its only silent exclusion is
 pre-group customers.** A group run requires `customers.group_id = g`
@@ -356,6 +359,11 @@ with a NULL `group_id`** — so the customer half is a no-op here and the
 predicate cannot be exercised on demo data (a `--group-id DEMO` run is
 customer-identical to hq). Treat it as a contract property, not a testable
 one: it only becomes a live edge on operator data with pre-group customers.
+The switch that would **include** those rows instead of dropping them is
+`c.group_id IS NOT DISTINCT FROM $4::uuid` (`ml_engine/store_rfm.py:29-31`)
+— **declined on purpose, not missed**: 011's design is exclusion, and a group
+run means the group's pool, not "the pool plus unassigned rows". Recorded so
+the choice is visible rather than rediscovered.
 
 **Third writer, non-scheduled:** `POST /analytics/rfm/snapshots` writes
 **v1** through the same `store_rfm.create_snapshot`, stamped
