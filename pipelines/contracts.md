@@ -4,6 +4,14 @@ Reading citations here: the **symbol** is the anchor (`store_ld8.run_ld8`,
 `_checked_body`, `PAIR_WINDOWS`) and a line number is only ever stated with
 an `as of <commit>` — a bare line number is a promise the next commit breaks
 silently. Grep the symbol; refresh the anchors when you touch the cited file.
+**Pin the revision and both ends of the span together**: cite what you
+actually read, at the revision you actually read it (`git show <sha>:path`),
+and end the citation where the *statement* ends rather than where your
+reading did. A peer's worktree is a moving target — a reviewer reading it
+while the peer lands the fix will confirm the fixed state and can call a
+correct claim wrong, which puts a false correction in this file rather than
+in a chat (both happened here on 2026-10-17: the `store_rfm` `RETURNING`
+attribution, and two half-statement spans).
 
 ## customers
 
@@ -382,6 +390,12 @@ parts are app-side only — no ML edit, no migration, no extra request, since
 and `scored_at` at `:95-96`) is already in the payload the page holds via
 `movement()`'s `"from"`/`"to"` dicts (`:297-299`) — and the guard term alone
 changes nothing visible, because the pair it currently compares shares a key.
+Two things are still the owner's call rather than either team's (app,
+2026-10-17): the shape itself, and the **empty-state copy**, which under this
+shape is mode-shaped — "appears once two snapshots of this window exist for
+this scope" implies an achievable wait that is true for `rolling_365` and
+year-to-date and false for a custom range, where option (a) makes the stored
+band *unreachable* rather than pending until the POST path is wired.
 
 **Successive-period rule, branched by what the page displays** (app/ml,
 2026-10-17, both branches verified live against the pairs above). Where the
