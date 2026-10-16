@@ -682,6 +682,34 @@ def _encloses(lines: list[str], def_line: int, span_start: int) -> bool:
     return True
 
 
+def span_defines(roots: list[Path], cited: str, start: int, end: int) -> bool:
+    """Does the cited span *define* any name, in whichever tree holds it?
+
+    The detector only fires when the span defines something, so a cite to a
+    **call site** cannot be decided by naming anything: `ap.add_argument(...)`
+    inside a function body defines nothing, and the verdict is "hand-read at
+    the current revision". The distinction is not cosmetic -- it is the
+    difference between a hint that names an edit the author can make and one
+    that sends them to make an edit that only *silences*: adding a name to the
+    line takes the site off this list without deciding anything (`symbol_moved`
+    returning `None` is not a bucket), and the site may be wrong
+    (app + ml, 2026-10-17, on `docs/reseed-runbook.md:207` ->
+    `scripts/run_pipeline.py:132`, where the neighbouring identifier belongs to
+    another module entirely, and on ml's `:713`, which named the wrong guard
+    test and was caught only by hand-reading).
+    """
+    for tree in roots:
+        f = tree / cited
+        if not f.is_file():
+            continue
+        try:
+            lines = f.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            return False
+        return any(DEF_RE.match(ln) for ln in lines[start - 1:end])
+    return False
+
+
 def _window(units: list[tuple[int, str]], i: int, start: int, end: int,
             back: int = 120, fwd: int = 120) -> str:
     """Text around a cite: its **own clause**, capped at ~120 characters a side.
@@ -923,13 +951,33 @@ def audit(root: Path, peers: list[Path], strict: bool,
                             # `store_segments.py:174-181`, `:817` on
                             # `schedule.py:255-263` -- measured 2026-10-17).
                             counts["cite-symbol-unchecked"] += 1
-                            info.append(
-                                "cite-symbol-unchecked %s:%d -> %s (no naming"
-                                " identifier on the line; the next line offers"
-                                " %s -- the span is unchecked until they sit"
-                                " together, so this is a site to read by hand)"
-                                % (rel_doc, lineno, span,
-                                   ", ".join(sorted(_symbols(win))[:2])))
+                            near = ", ".join(sorted(_symbols(win))[:2])
+                            if span_defines(roots, cited, start, end):
+                                info.append(
+                                    "cite-symbol-unchecked %s:%d -> %s (no naming"
+                                    " identifier on the line; the next line offers"
+                                    " %s -- the span is unchecked until they sit"
+                                    " together, so this is a site to read by hand)"
+                                    % (rel_doc, lineno, span, near))
+                            else:
+                                # A call site: naming the neighbour is not just a
+                                # no-op, it is *silencing* -- `symbol_moved`
+                                # returning `None` is not a bucket, so a name on
+                                # the line takes the site off this list while
+                                # changing nothing else, and the site may be
+                                # wrong (app + ml, 2026-10-17: ml's `:713` named
+                                # the other guard test and was only caught by
+                                # this hand-read). The wording is app's, and it
+                                # names the deliverable rather than the absence:
+                                # re-verify the line at the current revision.
+                                info.append(
+                                    "cite-symbol-unchecked %s:%d -> %s (no naming"
+                                    " identifier on the line and the span defines"
+                                    " no name -- hand-read at the current revision:"
+                                    " the job is re-verifying the line, not"
+                                    " finding a name to type, and typing %s would"
+                                    " only take the site off this list)"
+                                    % (rel_doc, lineno, span, near or "a neighbour"))
                     elif any(ok for _, _, ok in where):
                         counts["disagrees"] += 1
                         info.append(

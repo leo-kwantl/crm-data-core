@@ -305,8 +305,8 @@ Two data-side gaps in the same class (found 2026-10-17, owner GO
 
 **FIXED 2026-10-17 (`pipelines/snapshot.py`, no migration, no schema
 change):** every bucket-deciding trunc now carries the offset
-(`BUSINESS_TZ_SQL = f"AT TIME ZONE interval
-'{BUSINESS_TZ_OFFSET_HOURS} hours'"`), the cohort UPSERT + `/stats/overview`
+(`BUSINESS_TZ_SQL`, `pipelines/snapshot.py:144-146`: a parenthesized f-string
+`AT TIME ZONE interval '{BUSINESS_TZ_OFFSET_HOURS} hours'`, quoted condensed), the cohort UPSERT + `/stats/overview`
 month series use it, and the cutoff source is explicit:
 `business_today()` = `datetime.now(timezone(timedelta(hours=8))).date()`,
 used by both scripts as the default `--as-of`. The zone NAME is kept in
