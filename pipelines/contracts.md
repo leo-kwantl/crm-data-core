@@ -325,6 +325,22 @@ version the segmentation ruleset, not the cap. Changing that constant is
 therefore a **contract event (@both)**, not a refactor — every stored row's
 M cuts would lose their stated derivation and no column records it.
 
+**Scope is a run-level dimension, so no brand-scoped snapshot row exists.**
+`--brand-id`/`--group-id` (`scripts/run_pipeline.py:130-131` → `JobCtx`,
+`:113-114`) reach **every** job of a tick through `_scope_args(ctx)`
+(`pipelines/schedule.py:255-263`), appended by `_with_common` (`:284-299`,
+`with_scope` default True); a job's `params` cannot carry a scope, so
+per-brand rows require **one runner invocation per brand** and that
+invocation scopes the *whole* pipeline, not one job. The nightly cron passes
+neither flag, so every stored row is hq-scoped (`brand_id IS NULL`) —
+correct, not a gap. Consequence, verified live by app 2026-10-17 on
+`dac99d9`: a brand-scoped session gets live RFM at `n=435` while
+`GET /analytics/rfm/snapshots` returns **0 rows** and `movement` a **404
+`need_two_snapshots`**, so the movement section cannot populate for that
+role at all. Find-or-create is scope-aware (`ml_engine/store_ld8.py:60-66`),
+so a future per-brand fan-out would add rows beside the hq row rather than
+replace it.
+
 **Third writer, non-scheduled:** `POST /analytics/rfm/snapshots` writes
 **v1** through the same `store_rfm.create_snapshot`, stamped
 `created_by=user.staff_code` (`analytics_rfm.py:132-142`). It is an
