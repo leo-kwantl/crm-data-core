@@ -1520,7 +1520,15 @@ joining the parent — the parent→child edges, which are the whole list (write
 `assoc_batches` (`batch_id`), `explain_rows` ← `explain_batches` (`batch_id`),
 `forecast_rows` ← `forecast_batches` (`batch_id`), `rec_items` ← `rec_batches`
 (`batch_id`), and `landing_receipts` / `quarantine_rows` / `staging_rows` ←
-`upload_jobs` (`upload_job_id`). Thirteen of the fourteen edges are
+`upload_jobs` (`upload_job_id`). **A group is a property of the edge, not of
+the child**: five of the fourteen children carry a second, non-scope parent edge
+(`rec_items`, `segment_assignments`, `rfm_customer_scores`,
+`churn_customer_scores`, `clv_customer_scores` each also reference `customers`
+via `customer_id`), which is a population relation, and `landing_receipts`
+carries a second optional parent of a different kind
+(`manifest_pipeline → pipeline_manifests`,
+`027_landing_receipts.sql:26-27`). So a guard keyed on a table proves one path
+and misses the other; key it on the edge. Thirteen of the fourteen edges are
 `NOT NULL … ON DELETE CASCADE`; the exception is the fourteenth, and it is a
 boundary case rather than a detail: `landing_receipts.upload_job_id` is
 `uuid NULL UNIQUE … REFERENCES upload_jobs (id) ON DELETE RESTRICT`
@@ -1530,7 +1538,11 @@ boundary case rather than a detail: `landing_receipts.upload_job_id` is
 the **file-upload** path only: a **vendor batch import** receipt has no parent
 artifact, no scope column and no join to a stamped relation — it is unscoped by
 construction, and it is the one row shape where the parent→child coherence
-check has nothing to compare.
+check has nothing to compare. That is also why such a loop must skip on the
+**edge** rather than the table: with this table empty, the
+`CHECK ((upload_job_id IS NOT NULL)::int + (vendor_batch_id IS NOT NULL)::int
+= 1)` at `:31-33` is the only thing holding the invariant today, so an empty read
+is not evidence of safety.
 `cluster_feature_matrix` and `cluster_feature_matrix_long` are **two relations,
 not one**: `029` carries a `layout` column with
 `CHECK (layout IN ('wide','long'))`, and `032` gives the melted-stat grain its
