@@ -66,16 +66,16 @@ as one's own when searched (app, 2026-10-17: two strings it never wrote turned
 up as first-person entries); attribute an entry only if it is prefixed
 (`app:`/`data:`/`ml:`), otherwise treat it as unattributed and re-derive
 before citing it. As read here: `ml_engine/store_rfm.py` `d007ddc`,
-`ml_engine/store_ld8.py` `cd003d0`, `ml_engine/rfm.py` `d007ddc`,
+`ml_engine/store_ld8.py` `3b20797`, `ml_engine/rfm.py` `d007ddc`,
 `ml_engine/store_segments.py` `d007ddc`, `ml_engine/store_explain.py`
 `4a8f994`, `ml_engine/store_forecast.py` `4a8f994`,
 `ml_engine/segment_movement.py` `e8934a7`, `ml_engine/btyd.py` `87734e8`,
-`ml_jobs/manifest.py` `862b248`, `ml_jobs/run_matrix_batch.py` `bb6b45c` —
+`ml_jobs/manifest.py` `e1c2cf4`, `ml_jobs/run_matrix_batch.py` `bb6b45c` —
 regenerated at paste time and checked by the guard, which is the only state in
 which this list means anything. **Two genres, and the difference is what a
-sha can be checked against** (data + app + ml, 2026-10-17): a bare backticked
-`path` followed by a backticked sha is a **pin** — equality with that file's
-last-changed revision (`git log -1 --format=%h -- <path>`); a sha carrying a cue
+sha can be checked against** (data + app + ml, 2026-10-17): a path token — `x.py` or `` `x.py` ``, backticks are punctuation and not the rule — immediately
+followed by a backticked sha is a **pin** — equality with that file's last-changed revision (`git log -1 --format=%h -- <path>`), the pair on **one** line (the scan is per line, so a wrap makes a citation invisible, not weaker; a path mirrored byte-identically in two trees cannot carry a pin at all — **currency is the tree's property, content is the revision's**, so a mirrored migration goes in the label genre with the owning tree named, and `pin-ambiguous` says so rather than picking an owner silently (app, 2026-10-17);
+a comment-mode wrap is stripped of its `-- `/`# ` marker rather than tolerated); a sha carrying a cue
 word (`read at` / `measured at` / `as of`) is a **label** — existence plus
 ancestry, and with a path, that the path was there at that sha. A label proves
 **never** content: a count-neutral edit leaves every line valid while replacing
@@ -191,11 +191,7 @@ check's scope is **constant values, not call shape**: ml's `65ddcab` adds a
 an added `ast.keyword` is structure that blanking cannot remove — so
 AST-equality licenses "no code moved" only where the diff is inside existing
 constants, and a changed call signature needs the hunk read (data,
-2026-10-17, found by running it here rather than asserting it). The corollary is about **subjects**, not just diffs: a `docs(...)`
-subject licenses "no logic moved" and never "nothing user-visible changed",
-because `--help` text *is* user-visible behaviour — ml's `65ddcab` is
-`docs(ml_jobs)` whose only observable delta is argparse help (ml,
-2026-10-17). The
+2026-10-17, found by running it here rather than asserting it). The corollary is about **subjects**, not just diffs: a `docs(...)` subject licenses "no logic moved" and never "nothing user-visible changed", because `--help` text *is* user-visible behaviour — ml's `65ddcab` is `docs(ml_jobs)` whose only observable delta is argparse help (ml, 2026-10-17). The
 check is only meaningful when the diff touches string constants — the case
 where `--stat` looks alarming — and it is cheaper than reading the docstring
 to decide whether to believe its own commit message.
