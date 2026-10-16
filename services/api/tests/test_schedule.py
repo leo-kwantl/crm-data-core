@@ -309,6 +309,38 @@ async def test_runner_labels_ml_checkout_revision(database_url: str,
 
 
 @pytest.mark.asyncio
+async def test_runner_labels_a_failed_job_too(database_url: str, monkeypatch,
+                                              tmp_path: Path):
+    """A failed row still says which code ran -- that is when it matters.
+
+    The label is resolved before the engine is invoked and both finish
+    paths persist it (`pipelines/schedule.py:706`, `:734-741`), so a
+    non-zero exit cannot leave an error whose revision is unknown.
+    """
+    monkeypatch.setitem(sched.ENGINE_BUILDERS, "fake_fail", _fake_fail)
+    repo = tmp_path / "ml"
+    head = _init_repo(repo)
+    jobs = {"bad": {"engine": "fake_fail", "depends_on": [], "params": {}}}
+    ctx = _ctx(pipeline="test_pipe_faillabel", as_of=date(2026, 10, 5),
+               ml_repo=repo)
+    async with _pool(database_url) as pool:
+        async with pool.acquire() as conn:
+            out = await sched.run_pipeline(conn, "test_pipe_faillabel", jobs,
+                                           ctx)
+            assert out["outcomes"]["bad"]["status"] == "failed"
+            row = await conn.fetchrow(
+                "SELECT status, upstream, error FROM pipeline_runs"
+                " WHERE pipeline = $1 AND job = 'bad'",
+                "test_pipe_faillabel")
+            raw = row["upstream"]
+            up = json.loads(raw) if isinstance(raw, str) else raw
+            assert row["status"] == "failed"
+            assert up["ml_repo_sha"] == head   # revision survives failure
+            assert up["ml_repo_dirty"] is False
+            assert row["error"]                # and the error is recorded too
+
+
+@pytest.mark.asyncio
 async def test_runner_data_rows_carry_no_ml_revision(database_url: str):
     """A revision on an in-process data row would be a mislabel."""
     jobs = {"apply": {"engine": "upload_apply", "depends_on": [],

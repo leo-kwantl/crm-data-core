@@ -1164,7 +1164,15 @@ revision at all — the sha is a starting point for `git diff`, not a
 reproducible input. app's `/api/v1/pipelines/runs` already returns
 `upstream` untouched (`db/queries/pipelines.sql` `runs_list`, parsed at
 `services/api/routers/pipelines.py:105-122`), so a consumer needs no API
-change.
+change. The sha is the checkout's HEAD **at run time**, never the last
+commit to touch some file (`git log -1 --format=%h` over a path answers a
+different question and is not a substitute for it), and it is written on the
+**failure** path too: the label is resolved before the engine is invoked and
+both finish paths persist it (`pipelines/schedule.py:706`, `:734-741`, with
+`error` carrying the other half), because a failing run is exactly when the
+revision is worth knowing — `test_runner_labels_a_failed_job_too`
+(`services/api/tests/test_schedule.py`) pins that alongside the resolved,
+dirty and unresolvable cases.
 
 ## 016: modeling-upgrade flag mapping (ml registry / algorithms / signals)
 
