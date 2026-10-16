@@ -10,6 +10,8 @@ the session pool binds to a single event loop).
 
 from __future__ import annotations
 
+import json
+import subprocess
 import sys
 import uuid
 from contextlib import asynccontextmanager
@@ -245,6 +247,81 @@ async def test_runner_failure_skips_downstream(database_url: str,
             assert "upstream" in out["outcomes"]["down"]["error"]
             assert out["outcomes"]["mystery"]["status"] == "failed"
             assert "no argv builder" in out["outcomes"]["mystery"]["error"]
+
+
+def _init_repo(path: Path) -> str:
+    """Minimal git checkout with one commit; returns its full sha."""
+    def _git(*args: str) -> str:
+        return subprocess.run(["git", "-C", str(path), *args],
+                              capture_output=True, text=True,
+                              check=True).stdout
+
+    path.mkdir(parents=True, exist_ok=True)
+    _git("init", "-q")
+    (path / "engine.py").write_text("x = 1\n", encoding="utf-8")
+    _git("add", "-A")
+    _git("-c", "user.email=t@example.invalid", "-c", "user.name=t",
+         "commit", "-qm", "init")
+    return _git("rev-parse", "HEAD").strip()
+
+
+@pytest.mark.asyncio
+async def test_runner_labels_ml_checkout_revision(database_url: str,
+                                                  monkeypatch,
+                                                  tmp_path: Path):
+    """ml rows carry the checkout's revision; best-effort, never a gate."""
+    monkeypatch.setitem(sched.ENGINE_BUILDERS, "fake_ok", _fake_ok)
+    repo = tmp_path / "ml"
+    head = _init_repo(repo)
+    jobs = {"j1": {"engine": "fake_ok", "depends_on": [], "params": {}}}
+    ctx = _ctx(pipeline="test_pipe_mlrev", as_of=date(2026, 10, 5),
+               ml_repo=repo)
+    async with _pool(database_url) as pool:
+        async with pool.acquire() as conn:
+            async def _upstream(pipeline: str) -> dict:
+                raw = await conn.fetchval(
+                    "SELECT upstream FROM pipeline_runs"
+                    " WHERE pipeline = $1 AND job = 'j1'", pipeline)
+                return json.loads(raw) if isinstance(raw, str) else raw
+
+            out = await sched.run_pipeline(conn, "test_pipe_mlrev", jobs, ctx)
+            assert out["outcomes"]["j1"]["status"] == "succeeded"
+            up = await _upstream("test_pipe_mlrev")
+            assert up["engine"] == "fake_ok"
+            assert up["ml_repo_sha"] == head
+            assert up["ml_repo_dirty"] is False
+
+            # a dirty checkout has NO revision: the sha stays, the flag says so
+            (repo / "engine.py").write_text("x = 2\n", encoding="utf-8")
+            await sched.run_pipeline(conn, "test_pipe_mlrev", jobs, ctx,
+                                     force=True)
+            up = await _upstream("test_pipe_mlrev")
+            assert up["ml_repo_sha"] == head and up["ml_repo_dirty"] is True
+
+            # unresolvable checkout: nulls, and the tick still records the job
+            await sched.run_pipeline(
+                conn, "test_pipe_norepo", jobs,
+                _ctx(pipeline="test_pipe_norepo", as_of=date(2026, 10, 5),
+                     ml_repo=tmp_path / "not-a-repo"))
+            up = await _upstream("test_pipe_norepo")
+            assert up["ml_repo_sha"] is None
+            assert up["ml_repo_dirty"] is None
+
+
+@pytest.mark.asyncio
+async def test_runner_data_rows_carry_no_ml_revision(database_url: str):
+    """A revision on an in-process data row would be a mislabel."""
+    jobs = {"apply": {"engine": "upload_apply", "depends_on": [],
+                      "params": {"strategy": "validated_only"}}}
+    ctx = _ctx(pipeline="test_pipe_norev", as_of=date(2026, 10, 6),
+               ml_repo=REPO)
+    async with _pool(database_url) as pool:
+        async with pool.acquire() as conn:
+            await sched.run_pipeline(conn, "test_pipe_norev", jobs, ctx)
+            raw = await conn.fetchval(
+                "SELECT upstream FROM pipeline_runs"
+                " WHERE pipeline = 'test_pipe_norev' AND job = 'apply'")
+    assert json.loads(raw) == {"engine": "upload_apply"}
 
 
 @pytest.mark.asyncio

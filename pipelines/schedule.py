@@ -632,13 +632,55 @@ async def _run_data_engine(engine: str, params: dict,
     raise UnknownEngineError(f"unknown data engine {engine!r}")
 
 
+def _ml_repo_revision(ml_repo: Path) -> dict[str, Any]:
+    """Best-effort git label for the ml checkout a row's numbers came from.
+
+    Never raises: a tick must not fail because the checkout cannot be
+    labelled. Both values are None when git is unavailable, the path is
+    not a checkout, or the call itself fails -- so an unlabelled row
+    means "could not resolve", never "old row".
+    """
+    import subprocess
+
+    def _git(*args: str) -> str | None:
+        try:
+            proc = subprocess.run(["git", "-C", str(ml_repo), *args],
+                                  capture_output=True, text=True,
+                                  timeout=10)
+        except Exception:  # noqa: BLE001 - a label, never a gate
+            return None
+        return proc.stdout if proc.returncode == 0 else None
+
+    sha = _git("rev-parse", "HEAD")
+    status = _git("status", "--porcelain")
+    return {"ml_repo_sha": (sha.strip() or None) if sha is not None else None,
+            "ml_repo_dirty": (bool(status.strip())
+                              if status is not None else None)}
+
+
+def _upstream_payload(engine: str, ctx: JobCtx, cache: dict) -> str:
+    """`pipeline_runs.upstream` for one job: engine + ml checkout revision.
+
+    The revision is resolved once per run (first ml-engine job) and rides
+    only on jobs that executed as a subprocess: a sha on a row whose
+    numbers came from in-process data code would be a mislabel.
+    """
+    import json
+
+    payload: dict[str, Any] = {"engine": engine}
+    if engine not in DATA_ENGINES and ctx.ml_repo is not None:
+        if not cache:
+            cache.update(_ml_repo_revision(ctx.ml_repo))
+        payload.update(cache)
+    return json.dumps(payload)
+
+
 async def run_pipeline(conn, pipeline: str, jobs: dict[str, dict],
                        ctx: JobCtx, force: bool = False) -> dict[str, Any]:
     """Execute one pipeline's jobs in topo order, recording pipeline_runs."""
-    import json
-
     order = topo_sort(jobs)
     outcomes: dict[str, dict[str, Any]] = {}
+    ml_revision: dict[str, Any] = {}  # resolved once, first ml-engine job
     for name in order:
         job = jobs[name]
         engine = job["engine"]
@@ -661,6 +703,7 @@ async def run_pipeline(conn, pipeline: str, jobs: dict[str, dict],
             UPSERT_RUN_SQL, pipeline, name, ctx.as_of,
             ctx.brand_id, ctx.group_id, ctx.sync_run_id)
         rid = run_row["id"]
+        upstream = _upstream_payload(engine, ctx, ml_revision)
         try:
             if engine in DATA_ENGINES:
                 run_id = await _run_data_engine(engine, job["params"],
@@ -685,14 +728,14 @@ async def run_pipeline(conn, pipeline: str, jobs: dict[str, dict],
                     f"no argv builder for engine {engine!r} "
                     f"(ml CLI contract pending)")
             await conn.execute(FINISH_RUN_SQL, rid, "succeeded", run_id,
-                               json.dumps({"engine": engine}), None)
+                               upstream, None)
             outcomes[name] = {"status": "succeeded", "run_id": run_id,
                               "note": output_note[-500:]
                               if engine not in DATA_ENGINES
                               else None}
         except Exception as exc:  # noqa: BLE001 - recorded on the run row
             await conn.execute(FINISH_RUN_SQL, rid, "failed", None,
-                               json.dumps({"engine": engine}),
+                               upstream,
                                f"{type(exc).__name__}: {exc}"[:2000])
             outcomes[name] = {"status": "failed",
                               "error": f"{type(exc).__name__}: {exc}"[:500]}

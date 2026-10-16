@@ -1036,6 +1036,26 @@ the tick at all: no cron entry on any host, no in-repo loop; verified
 2026-10-17). Do not read a green `pipeline_runs` row as proof a scheduler
 exists — those rows are hand-runs.
 
+**Run provenance** (ADDITIVE, no migration): a job that ran as an ml
+subprocess carries `ml_repo_sha` (full 40-char HEAD of the `--ml-repo`
+checkout) and `ml_repo_dirty` (bool) inside `pipeline_runs.upstream`,
+resolved once per pipeline run (`git -C <repo> rev-parse HEAD` plus
+`status --porcelain`; best-effort — git absent or the path is not a
+checkout gives `null` for both and the tick continues, so an unlabelled
+row means "could not resolve", never "old row"). Data-engine rows keep
+`{"engine": ...}` alone **on purpose**: a revision on a row whose numbers
+came from in-process data code is a mislabel. This labels the *tree the
+engines were executed from*, which is a different question from ml's
+per-file `as of <sha>` pins (last commit touching the cited file, e.g.
+`ml_engine/store_ld8.py:71-72` naming `f889386` while the checkout's HEAD
+is ahead of it): the checkout is not a submodule and no revision is
+pinned anywhere, so `ml_repo_dirty = true` means that run has **no**
+revision at all — the sha is a starting point for `git diff`, not a
+reproducible input. app's `/api/v1/pipelines/runs` already returns
+`upstream` untouched (`db/queries/pipelines.sql` `runs_list`, parsed at
+`services/api/routers/pipelines.py:105-122`), so a consumer needs no API
+change.
+
 ## 016: modeling-upgrade flag mapping (ml registry / algorithms / signals)
 
 `016_segment_behavior_mode.sql` widens `segment_runs.mode` to
