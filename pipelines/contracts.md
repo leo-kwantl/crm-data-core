@@ -1,5 +1,10 @@
 # Source → table contracts
 
+Reading citations here: the **symbol** is the anchor (`store_ld8.run_ld8`,
+`_checked_body`, `PAIR_WINDOWS`) and a line number is only ever stated with
+an `as of <commit>` — a bare line number is a promise the next commit breaks
+silently. Grep the symbol; refresh the anchors when you touch the cited file.
+
 ## customers
 
 | source field | table column | rule |
