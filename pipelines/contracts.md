@@ -9,7 +9,7 @@ actually read, at the revision you actually read it (`git show <sha>:path`),
 and end the citation where the *statement* ends rather than where your
 reading did. When two readings differ by a **constant offset**, suspect two
 revisions rather than an error: one line added above a span shifts every
-number below it (`e423f70`'s third `RETURNING` line moved the INSERT's
+number below it (ml `e423f70`'s third `RETURNING` line moved the INSERT's
 parameter block from `:178` to `:179`, and `engine.RULES_VERSION` from `:152`
 to `:153`), so `git show` both revisions before publishing a correction. A
 peer's worktree is a moving target — a reviewer reading it
@@ -66,13 +66,25 @@ as one's own when searched (app, 2026-10-17: two strings it never wrote turned
 up as first-person entries); attribute an entry only if it is prefixed
 (`app:`/`data:`/`ml:`), otherwise treat it as unattributed and re-derive
 before citing it. As read here: `ml_engine/store_rfm.py` `d007ddc`,
-`ml_engine/store_ld8.py` `36e65e6`, `ml_engine/rfm.py` `d007ddc`,
+`ml_engine/store_ld8.py` `862b248`, `ml_engine/rfm.py` `d007ddc`,
 `ml_engine/store_segments.py` `d007ddc`, `ml_engine/store_explain.py`
 `4a8f994`, `ml_engine/store_forecast.py` `4a8f994`,
 `ml_engine/segment_movement.py` `e8934a7`, `ml_engine/btyd.py` `87734e8`,
-`ml_jobs/manifest.py` `36e65e6`, `ml_jobs/run_matrix_batch.py` `bb6b45c` —
+`ml_jobs/manifest.py` `862b248`, `ml_jobs/run_matrix_batch.py` `bb6b45c` —
 regenerated at paste time and checked by the guard, which is the only state in
-which this list means anything. One path per pin deliberately: a `sha` written
+which this list means anything. **Two genres, and the difference is what a
+sha can be checked against** (data + app + ml, 2026-10-17): a bare backticked
+`path` followed by a backticked sha is a **pin** — equality with that file's
+last-changed revision (`git log -1 --format=%h -- <path>`); a sha carrying a cue
+word (`read at` / `measured at` / `as of`) is a **label** — existence plus
+ancestry, and with a path, that the path was there at that sha. A label proves
+**never** content: a count-neutral edit leaves every line valid while replacing
+the words at them, so a quotation at a revision is a label and only a human can
+re-verify it. A sha with neither a path nor a repo name is unjudgeable and the
+guard reports it rather than guessing, so `unclassified=0` reads "every sha here
+declared its genre". And a snapshot/window **row id** is not a revision at all:
+the guard reads the doc's own word (`row` / `pair` / `id`) and skips it. One path
+per pin deliberately: a `sha` written
 once after a slash-continuation of paths (`a.py`/`b.py` `sha`) is invisible to
 the guard in exactly the way a bare `:NN` continuation is (above) — and the
 stale `store_segments.py` pin hid in precisely that form while its two
@@ -113,7 +125,7 @@ them (app, 2026-10-17, times +0800 from the commit clock):
   writer and the readers. **Closed, not live** — app re-anchored the cite by
   constant name at `0d8ed83`, added the read revision (`beaf4e7`), then made
   the pin per file (`d3cf89d`), where the header names the two readers and
-  pins `pipelines/snapshot.py` at `f889386` (app, 2026-10-17). The one
+  records `pipelines/snapshot.py` read at `f889386` (app, 2026-10-17). The one
   bare peer number data kept raising as a non-defect there is closed too: app
   `6f80430` (`2 2 db/queries/rfm_windows.sql`) pins
   `db/migrations/031_rfm_time_aware.sql:19-20` at `412f9d7` — that file's
@@ -452,7 +464,7 @@ immediately (fresh process per run) but **live in the API only after that proces
 restarts** — "landed" and "live" differ by one process lifetime on the serving
 side; the test is to compare the changed file's mtime against the serving
 process's start time rather than infer it from `git log` (app runbook
-`docs/reseed-runbook.md`, `9674976`: `Get-NetTCPConnection -LocalPort 8000
+`docs/reseed-runbook.md` read at `9674976`: `Get-NetTCPConnection -LocalPort 8000
 -State Listen` for the PID, then `Get-Process -Id <pid> | Select StartTime`)).
 `ld8_snapshot` find-or-creates on `(mode, window_from, window_to, v2,
 window_key, scope)` (`ml_engine/store_ld8.py:63-66`, the `SNAPSHOT_FIND_V2_SQL`
@@ -532,7 +544,7 @@ find-or-create, and the *engine dict* decides the version, not the caller
 (and not the writer): the v1 INSERT takes it as a parameter
 (`SNAPSHOT_INSERT_SQL`, `store_rfm.py:35`; `rules_version` in its column list
 at `:37` and `computed["rules_version"]` passed into it at `:179`, both as of
-`e423f70`) — it is `compute_current` that reads the constant, at `:153` —
+ml `e423f70`) — it is `compute_current` that reads the constant, at `:153` —
 `"v1"` at `rfm.py:24` — so `create_snapshot` never does; while the v2 INSERT
 interpolates the literal `'{RULES_V2}'` (`SNAPSHOT_INSERT_V2_SQL`,
 `store_ld8.py:52`, VALUES at `:56`, and its find twin `SNAPSHOT_FIND_V2_SQL`
@@ -735,7 +747,7 @@ the path it looked in; ml `0839d7f`). So a change to these four statements'
 text or grain is an in-room `[BREAKING]` notice to crm-ml, not a repo-only
 edit. ml `0b834f9` re-anchored its copy of this citation by name with both
 revisions pinned (data `f889386` for `pipelines/snapshot.py`,
-`031_rfm_time_aware.sql` at `412f9d7`), which is the form that survives the
+`031_rfm_time_aware.sql` as of `412f9d7`), which is the form that survives the
 next edit here.
 
 **`m_cap_pct` is a live-request knob, never a stored property.** The cap
