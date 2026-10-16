@@ -279,8 +279,9 @@ one exists — not to relax the mismatch check.
 **`m_cap_pct` is a live-request knob, never a stored property.** The cap
 is an engine kwarg (`ml_engine/rfm.py:278` → `store_rfm.py:114/139`,
 `store_ld8.py:132-151`) reachable from the app's two live GETs only
-(`../crm-cdp-app/services/api/routers/analytics_rfm.py:107`, `:266`,
-`Query(ge=0.01, le=1.0)`); the scheduled writer always uses
+(`../crm-cdp-app/services/api/routers/analytics_rfm.py`, the `m_cap_pct`
+query params, `:107`/`:266` as of app `6bdf2b4` — symbol names are the
+stable anchors, these line numbers move; `Query(ge=0.01, le=1.0)`); the scheduled writer always uses
 `DEFAULT_M_CAP_PCT = 0.99`, and no renderer emits a flag for it, so the
 `m_cap_pct: (False, None)` entry `rfm_snapshot` carried was a declaration
 nothing could turn into argv (removed, ml `f78d127`). Deleting it is
@@ -289,10 +290,10 @@ checks known keys only for `required`/`allowed` values, and unknown params
 pass through by design (`:64-72`, so that scheduler-only keys reach the
 pipeline), so a stored row setting it would still validate and still be
 ignored. The guards are this line, the absent renderer, and app's pin. The snapshot
-write path is **pinned by decision** (app `6bdf2b4`): a non-default cap
-is rejected by name — `422 {"code": "non_default_m_cap_pct",
-"default": 0.99}` (`analytics_rfm.py:58-66`), plus `bad_m_cap_pct`
-outside `(0, 1]` (`:56-57`) — because `rfm_snapshots` stores no cap and no
+write path is **pinned by decision** (app `6bdf2b4`): `_checked_body` rejects a
+non-default cap by name — `422 {"code": "non_default_m_cap_pct",
+"default": 0.99}` — and any cap outside `(0, 1]` with `bad_m_cap_pct`
+(roughly `analytics_rfm.py:51-62` as of `6bdf2b4`) — because `rfm_snapshots` stores no cap and no
 params (`db/migrations/010_analytics_rfm.sql:6-16`), so a caller-chosen
 cap row would be indistinguishable from a default one and its M cuts
 unattributable from storage. Do not add a `--m-cap-pct` flag: a rendered
