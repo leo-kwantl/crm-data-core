@@ -37,7 +37,10 @@ them (app, 2026-10-17, times +0800 from the commit clock):
   **no verified instance** in this thread; both candidates collapsed once the
   *write* revisions were checked. ml's `store_ld8.py:70` cite was correct when
   written (data's `snapshot.py:342` was `SEGMENT_SIZE_UPSERT_SQL` from
-  `412f9d7` 18:13:32 through `5f91e16`) and rotted only with data's `f889386`
+  `412f9d7` 18:13:32 through `5f91e16` — the four mirrored statements were a
+  contiguous run seven lines apart, `:342`/`:349`/`:356`/`:363`, so the cite
+  named the **first line of the exact block it described**, and they are
+  `:373`/`:380`/`:387`/`:394` (+31) at `f889386`) and rotted only with data's `f889386`
   window (10-17 01:09); app's `db/queries/rfm_windows.sql:2` is the same
   case — at its 22:06:05 write `:342` *was* the row-defining statement, so the
   defect was an **ambiguous referent** ("canonical row SQL", writer vs
