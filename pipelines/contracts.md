@@ -122,26 +122,46 @@ offset form (Hong Kong has no DST, so it is semantically identical
 forever).
 
 **Which `as_of` default do you get? (inventory, 2026-10-17, after ml
-`56f01f4`).** Three different clocks are reachable for the same field, so
-read the call site, not the column:
+`4a8f994`).** Read the call site, not the column — and since `4a8f994`
+there is exactly ONE default in the ml package:
 
 | source (default when `as_of` is omitted) | resolves to | business-day? |
 |---|---|---|
 | data `pipelines/snapshot.py:245 business_today()` (`+08` fixed offset), used as the default `--as-of` by `scripts/run_daily_snapshot.py:70` and `scripts/run_pipeline.py:144` | +08 business date | yes |
 | data scheduler — `pipelines/schedule.py:293` in `_with_common` | passes `--as-of ctx.as_of` for every engine whose CLI declares it; `explain_batch` / `assoc_batch` / `matrix_batch` / `recs_batch` take no `--as-of` at all (argparse rejects it — `pipelines/schedule.py:441`), so their args are always explicit or absent, never guessed | n/a (explicit) |
-| ml `ml_engine/rfm.py:79 business_today()` (`ZoneInfo("Asia/Hong_Kong")`) — the default for `ml_engine/rfm.py:118 resolve_window(...)` (`ml_engine/rfm.py:96` def) and `ml_engine/store_ld8.py:222 run_ld8(...)` | +08 business date | yes |
-| ml `_coerce_as_of` — `ml_engine/store_churn.py:216`, `store_clv.py:188`, `store_forecast.py:49`, `store_segments.py:411` | **UTC** date (`datetime.now(timezone.utc).date()`) | **no — lags by 8h/day** |
+| ml `ml_engine/rfm.py:79 business_today()` (`ZoneInfo("Asia/Hong_Kong")`) — the default for `ml_engine/rfm.py:118 resolve_window(...)` (`ml_engine/rfm.py:96` def), `ml_engine/store_ld8.py:222 run_ld8(...)`, and the `_coerce_as_of` of all four other run writers (`store_churn.py:217`, `store_clv.py:189`, `store_forecast.py:50`, `store_segments.py:419` — each imports the helper directly, so no UTC path remains) | +08 business date | yes |
 
-Consequence of the last row: a churn / clv / forecast / segments run
-invoked without `as_of` between 00:00 and 08:00 HKT stamps **yesterday**
-on the run while the window it fits ends on the **business day** (that
-window default is +08), so `as_of` and `window_to` disagree *inside the
-same row*. Every grain UNIQUE includes `as_of`, so this never overwrites
-a correct run — it adds a mislabeled one. The scheduler cannot trigger
-it (all four of those engines declare `--as-of` and `_with_common` always
-supplies it); a manual or backfill invocation is the reachable path. Not
-a data-side defect and no contract change: recorded here because the
-served `as_of` is compared across jobs.
+Closed by ml `4a8f994` (no migration, no schema, no `RULES_VERSION`, no
+argv change; guard `tests/test_engine.py:382-408` pins an in-band instant
+17:37Z = 01:37 HKT and asserts all four plus the explicit
+str/date pass-throughs).
+
+History, because the first version of this note **overstated** it: the
+four copies read the UTC clock, but only **segments** contradicted
+itself. churn/clv anchor their calibration frame at a UTC *instant*
+(`store_churn.py:147`, `store_clv.py:111`) and forecast derives its
+periods from the same `as_of_date` — and no date from that frame is
+persisted (`churn_snapshots`' insert takes only `as_of, activity,
+horizon_days, fit, customer_count, created_by, brand_id, group_id`;
+`ml_engine/btyd.py:359 summarize_fit` returns no date), so those three
+were consistently UTC: wrong convention, not self-contradicting.
+Segments was the one whose UTC *label* disagreed with the business-day
+window `resolve_window` had fitted.
+
+**`--as-of` labels a run; it does not anchor a fit (ml, 2026-10-17).**
+Now stated in the code rather than inferred: the OVERALL/current segments
+fit is **always the current rolling-365 business window** (`_fit_overall`,
+docstring at `ml_engine/store_segments.py:174-181`; same comment at
+`store_explain.py:97-98`), so a run row's `as_of` is an
+idempotency/version key, not a window key, and `compute_current` /
+`overall_segments` take no `as_of` at all. Threading one in would be a
+historical-re-fit feature (a second source of truth for the same fit),
+deliberately not done. Operationally, for a backfill: **only `forecast`
+(`as_of` → `forecast_demand`, `store_forecast.py:80-81`) and `ld8`
+(`resolve_ld8_window(key, as_of)`) derive a window from `--as-of`** —
+churn/clv fit against `datetime.now(timezone.utc)` and segments-overall
+explains fit the current window, so re-running an old `as_of` there
+*relabels* today's fit instead of reproducing an old one.
 
 **Name collision — `resolve_window` is two different functions.** data
 `pipelines/schedule.py:130 resolve_window(mode, n, unit, ...)` resolves a
