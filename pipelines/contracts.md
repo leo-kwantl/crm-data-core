@@ -516,7 +516,7 @@ rather than by accident.
 
 The POST path is why the explicit-range branch exists rather than being
 deferred: `SNAPSHOT_INSERT_SQL` (`store_rfm.py:35-43`) omits `window_key` from
-its column list (`:36-38`, nine columns), so the DDL default stamps `'current'`
+its column list (`:37-38`, nine columns), so the DDL default stamps `'current'`
 on every app-POSTed row **regardless of mode or user dates**. The `RETURNING`
 did not name the key either until ml `e423f70` (2026-10-17, *fix(store_rfm):
 name the window in the write path's RETURNING too*), which makes this the
@@ -740,7 +740,7 @@ on statement boundaries by architecture rather than luck: the serving layer
 resolves the artifact in one `-- name:` statement and aggregates live rows in
 another, so app's tightest two-form file is still 8 lines
 (`analytics_simulate.sql:16-18` live guard vs `:24-27` stamped `segment_runs`)
-and `store_rfm.py:56-59` remains the only single-*statement* instance any of us
+and `store_rfm.py:57-59` remains the only single-*statement* instance any of us
 has. The predicate is restated at the point of use too
 (`db/queries/analytics_customer.sql:5-9` names `scope.py` and the predicate),
 which is the only thing keeping a copy honest — nothing mechanically checks
@@ -748,7 +748,8 @@ that a stamped read *uses* the stamp operator. **Granularity, sharpened to its s
 **per column, read over a specific row — "is this column the row's scope
 stamp?"** — not per file, not per table, and not even per statement. The
 smallest instance carries both forms in one statement over one row:
-`SNAPSHOTS_LIST_SQL` (`store_rfm.py:56-59`) asks population-form for `mode`
+`SNAPSHOTS_LIST_SQL` (`store_rfm.py:57-59` — the WHERE clause; `:56` is only
+`FROM rfm_snapshots`) asks population-form for `mode`
 (`:57`, `$1::text IS NULL OR mode = $1`, where NULL means "every mode") and
 artifact-form for the scope stamp (`:58-59`, `brand_id`/`group_id IS NOT
 DISTINCT FROM`), so row role cannot be the variable there. The file-level
