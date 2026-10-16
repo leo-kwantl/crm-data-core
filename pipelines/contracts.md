@@ -431,7 +431,10 @@ was wrong and app corrected it with a live inventory (2026-10-17): mode
 accepts correctly; it is not a version or key mispairing. What is wrong there
 is **label vs window**: the band prints run dates,
 `formatDate(movement.from.scored_at) → formatDate(movement.to.scored_at)`
-(`apps/web/app/rfm/page.tsx:501`), while the rows compared are all-time
+(`apps/web/app/rfm/page.tsx:501`; the same run-date band renders at **three**
+sites in this section — `:501`, `:551-552` (`fromLabel`/`toLabel` fed to the
+segment chart) and `:624` (the M6 meta line) — so a bounds-based fix is a
+three-site edit, not a one-liner), while the rows compared are all-time
 cumulative windows. Root cause worth keeping: `mode='custom'` in
 `rfm_snapshots` is **LD8's named-window bucket** (`mom`/`yoy`/`lifetime`), not
 the user's custom date range — the tab's *scores* come from a live computation
@@ -465,7 +468,11 @@ band *unreachable* rather than pending until the POST path is wired. The
 trade-off in one line each, for the owner (app, 2026-10-17): **(a)** state
 plainly that the band cannot be computed for a range — a copy change in both
 locales; **(b)** show the all-time pair with its real bounds — no copy change.
-App recommends (a); nothing else differs between them.
+App recommends (a); nothing else differs between them. Cost note measured in
+app's tree (data, 2026-10-17): **(b) is three render sites** (`:501`,
+`:551-552`, `:624`), **(a) is copy-only**; the pair allow-list is `WPAIRS` at
+`apps/web/app/rfm/page.tsx:54` (not `:52-53`) and it is an allow-list, not a
+key filter.
 
 **Successive-period rule, branched by what the page displays** (app/ml,
 2026-10-17, both branches verified live against the pairs above). Where the
