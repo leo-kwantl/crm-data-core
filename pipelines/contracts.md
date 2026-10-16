@@ -345,12 +345,19 @@ correct, not a gap. Consequence, verified live by app 2026-10-17 on
 `dac99d9`: a brand-scoped session gets live RFM at `n=435` while
 `GET /analytics/rfm/snapshots` returns **0 rows** and `movement` a **404
 `need_two_snapshots`**, so the movement section cannot populate for that
-role at all. Find-or-create is scope-aware (`ml_engine/store_ld8.py:60-66`),
+role at all. Find-or-create is scope-aware (`ml_engine/store_ld8.py:64-66`, the
+`brand_id`/`group_id` conjunctions of the find predicate),
 so a future per-brand fan-out would add rows beside the hq row rather than
 replace it. Fan-out price on the demo dataset: **6 ticks, one per brand**
 (`DEMO`/`SUNHING`/`KVLN`/`VICEW`/`HARBOR`/`PEAKLENS`), because the single
 group makes a `--group-id` run customer-identical to hq — brand is the only
-dimension that partitions anything here.
+dimension that partitions anything here. No ML change is needed for it (the
+aggregate is already scope-parameterized, `ml_engine/store_rfm.py:29-31`, and
+`run_ld8` already threads `brand_id`/`group_id`), so enabling per-brand writes
+is a **runner** decision, not an ML one — and it does **not** fix the scoped
+role that night: the band pairs **two** `current` rows of the newest
+`rules_version` in scope, so each scope needs a second scoped night before it
+can populate.
 
 **Group scope is conjunctive by design, and its only silent exclusion is
 pre-group customers.** A group run requires `customers.group_id = g`
@@ -368,7 +375,9 @@ predicate cannot be exercised on demo data (a `--group-id DEMO` run is
 customer-identical to hq). Treat it as a contract property, not a testable
 one: it only becomes a live edge on operator data with pre-group customers.
 The switch that would **include** those rows instead of dropping them is
-`c.group_id IS NOT DISTINCT FROM $4::uuid` (`ml_engine/store_rfm.py:29-31`)
+`c.group_id IS NOT DISTINCT FROM $4::uuid` at the aggregate's `:30` (the
+operator the *listing* query already uses at `:57-58`, where unfiltered
+selection is the goal — the two must not be confused for each other)
 — **declined on purpose, not missed**: 011's design is exclusion, and a group
 run means the group's pool, not "the pool plus unassigned rows". Recorded so
 the choice is visible rather than rediscovered.
