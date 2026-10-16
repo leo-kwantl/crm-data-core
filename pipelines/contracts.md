@@ -828,18 +828,20 @@ is **artifact vs population**, not selection vs filtering (ml, 2026-10-17):
 `IS NOT DISTINCT FROM` **locates a stored artifact by its recorded scope**
 (a NULL stamp means "unscoped artifact" and must match, or the row you are
 about to find/create is invisible), while the `IS NULL OR` guard **scopes a
-live population**, where a NULL group means unassigned and must drop. The
-discriminator is per **column**, not per **table** (ml, 2026-10-17): a
-stamped table can legitimately carry a non-stamp predicate that wants the
-*other* operator, and `SNAPSHOTS_LIST_SQL` shows both forms one line apart —
-`:57` `WHERE ($1::text IS NULL OR mode = $1)` uses the population form on a
-**stamped** table, because `mode` is a property of the *requested computation*
-(NULL = "no mode restriction") rather than part of the row's scope stamp,
-while `:58-59` locate the artifact by that stamp, where NULL/NULL means
-"computed globally, HQ-only". So the question to ask of a predicate is "is
-this column part of the scope stamp?", not "is this table stamped?" — and
-ml's sweep for the leak direction (a scope-stamp column carrying the
-population form) found zero instances in `ml_engine/` (ml, 2026-10-17). All 11
+live population**, where a NULL group means unassigned and must drop. The test
+is **two-step, and neither shorthand alone survives** (see the granularity
+note below): locate the row whose visibility this predicate decides — a
+**stamped** row takes stamp-equality on its scope stamp, a live or joined
+source row takes the population form even when the column in hand is called
+`brand_id` — and where the located row *is* the stamped one and also carries
+non-scope attributes, the column's role inside that row decides.
+`SNAPSHOTS_LIST_SQL` is the same-statement case: `:57`
+`WHERE ($1::text IS NULL OR mode = $1)` uses the population form because `mode`
+is a property of the *requested computation* (NULL = "no mode restriction"),
+while `:58-59` locate the artifact by its recorded stamp, where NULL/NULL means
+"computed globally, HQ-only". ml's sweep for the leak direction (a stamped
+row's scope predicate carrying the population form) found zero instances in
+`ml_engine/` (ml, 2026-10-17). All 11
 `IS NOT DISTINCT FROM` predicate pairs in `ml_engine/` are the former
 (`SNAPSHOT_FIND_SQL` `store_churn.py:193-198`, guarding `:196-197`, then
 `:301-302`, `:311-312`, `:323-324`, `store_clv.py:168-169`,
@@ -882,7 +884,25 @@ app's tree, whose population-form hits are all source-row filters over
 `IS NULL OR` alias was resolved against the FROM/JOIN chain (`s` = `stores`,
 `b` = `brands`, `c` = `customers`, all joined off `orders o`), and
 `analytics_snapshots.sql:110-111` filters a **live** `brands`/`groups` row by
-id — app's analogue of `:57`'s `mode` case (app, 2026-10-17). The split falls
+id — app's analogue of `:57`'s `mode` case (app, 2026-10-17). The other
+direction of the same picture, and the one that explains why the artifact form
+is the default rather than just the convenient one: because that predicate is
+**mutual**, a brand-less HQ session `(None, None)` matches only `NULL/NULL`
+rows, so brand- and group-stamped rows are invisible to HQ **by construction**
+— deliberate, not a defect ("brand detail needs a brand-scoped session",
+`scope.py:18-19`) — and the two operators therefore fail in opposite
+directions: the population form can **disclose** (it is the leak swept above),
+while the artifact form can only **hide**. Hiding is survivable and is this
+system's quarantine default (an unstamped write is a row only HQ can see);
+disclosure is not. So "admin can't see the brand runs" is a
+**visibility-policy** question for the contract and the owner, never a
+WHERE-clause tweak in a migration — and where the intent really is "this
+session's rows *or* the global ones", the population form cannot express it
+(with a brand session `(B, None)` it reduces to `brand_id = B` and drops the
+globals it was meant to add): app writes the disjunction out explicitly at
+`scope.py:29-37`. The mutuality is app's own text at `scope.py:21-27`
+(app `bc9cb59` "state the mutuality of the stamp predicate and the per-row
+rule", cited here rather than re-derived). The split falls
 on statement boundaries by architecture rather than luck: the serving layer
 resolves the artifact in one `-- name:` statement and aggregates live rows in
 another, so app's tightest two-form file is still 8 lines
@@ -891,29 +911,38 @@ and `store_rfm.py:57-59` remains the only single-*statement* instance any of us
 has. The predicate is restated at the point of use too
 (`db/queries/analytics_customer.sql:5-9` names `scope.py` and the predicate),
 which is the only thing keeping a copy honest — nothing mechanically checks
-that a stamped read *uses* the stamp operator. **Granularity, sharpened to its smallest case:** the discriminator is
-**per column, read over a specific row — "is this column the row's scope
-stamp?"** — not per file, not per table, and not even per statement. The
-smallest instance carries both forms in one statement over one row:
+that a stamped read *uses* the stamp operator. **Granularity, sharpened to its smallest case:** the rule is stated at the
+**row** first ("which row is this predicate deciding visibility for?") and at
+the **column within that row** second, for the case the row test cannot settle
+because the located row is itself the stamped one. The smallest instance
+carries both forms in one statement over one row:
 `SNAPSHOTS_LIST_SQL` (`store_rfm.py:57-59` — the WHERE clause; `:56` is only
 `FROM rfm_snapshots`) asks population-form for `mode`
 (`:57`, `$1::text IS NULL OR mode = $1`, where NULL means "every mode") and
 artifact-form for the scope stamp (`:58-59`, `brand_id`/`group_id IS NOT
-DISTINCT FROM`), so row role cannot be the variable there. The file-level
+DISTINCT FROM`), so the row step is uniform there and it is the column's role
+that discriminates. The file-level
 counterpart is `analytics_snapshots.sql` — artifact form on the stamped row
 (`:22-23`), population form on the joined dimension rows (`:110-111`) — which
 is why a per-file label ("this query file is artifact-form") would annotate
 one of those two lines wrongly. The property that makes the rule usable by
-someone *editing* rather than auditing: **the form follows the column, so it
-is checkable without first knowing whether the table is stamped** — a
-`brand_id`/`group_id` scope-stamp column takes `IS NOT DISTINCT FROM` (NULL
-there means "computed globally" and must fail closed), every other column
-takes `IS NULL OR` (NULL there means "no restriction"). One sentence covers
+someone *editing* rather than auditing is that two-step form: **locate the row
+first** (a live or joined source row takes the population form, whatever the
+column is called), **then ask what the column is *on that row*** — a
+`brand_id`/`group_id` scope-stamp column *of the located row* takes `IS NOT
+DISTINCT FROM` (NULL there means "computed globally" and must fail closed), a
+non-scope attribute of that same row, or a dimension of a joined row, takes
+`IS NULL OR` (NULL there means "no restriction"). One sentence covers
 all three demonstrations in this section at once: `analytics_snapshots.sql`
 `:22-23` vs `:110-111` (file), `store_rfm.py:57` vs `:58-59` (statement and
 row), `store_churn.py:193-198` vs `:253-261` (same two columns, opposite
-operators). app's wording, adopted over data's row-role phrasing, which could
-not express the middle case (app/ml, 2026-10-17).
+operators). Both shorthands were
+stated and both are wrong alone: "per column" dies on
+`analytics_snapshots.sql:110-111`, where the filtered `b.id`/`g.id` are not
+stamp columns at all (ml, 2026-10-17), and "per row" dies on the middle case
+above — one row carrying both forms (data, 2026-10-17). The two-step form is
+the synthesis, and the row step is the one that generalises (app's `scope.py:43-50`
+states it in app's words; app/ml/data, 2026-10-17).
 
 Two boundary tests, because each half-solution fails one of them. **The column
 *name* is not the rule:** `brand_id` sits under both operators in one file and
