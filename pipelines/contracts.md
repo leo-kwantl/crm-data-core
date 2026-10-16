@@ -44,11 +44,17 @@ Anchors carry their **file's** last-changed revision, not ml's repo HEAD
 to *any* file (ml, 2026-10-17) — and per-file pins are only half the rule: a
 commit **inside** the pinned file still moves every anchor below it, so pins
 are taken per file and anchors re-derived per cite, never offset (app,
-2026-10-17). The "As read here" list below is that rule's demonstration: every
-ml entry but one still re-derives exact after ml's HEAD moved through `ef4c759`
-and `c61fa0d`, and the exception is `store_ld8.py` precisely because ml
-committed to **that file** three times (`9f9093f`, then `4a54edb`, then
-`c61fa0d`) — a repo-HEAD pin would have moved all ten entries at once.
+2026-10-17). The "As read here" list below was meant to be that rule's
+demonstration and turned out to disprove it: **five of its ten pins were stale
+when the check for them was added** (`scripts/audit_doc_cites.py`, the `pins:`
+line), `ml_engine/store_ld8.py` among them — ml handed the value over as
+`c61fa0d` and that file moved again three commits later (`b66f591`, `de192ab`,
+`36e65e6`), so the pin was stale **as written**. That file is not the exception
+because pins are hard, it is the extreme case: ml committed to that one path
+six times (`9f9093f`, `4a54edb`, `c61fa0d`, `b66f591`, `de192ab`, `36e65e6`)
+while other paths sat still. **A pin is regenerated, never copied** —
+`git log -1 --format=%h -- <path>`, at paste time — because the value rots in
+the gap between the message that states it and the doc that stores it.
 
 Where a paragraph's argument is about *behaviour* rather than
 location, the **grep-unique statement name is the primary cite** and the line
@@ -59,12 +65,31 @@ provenance** — all three sessions append to one file, so a peer's note reads
 as one's own when searched (app, 2026-10-17: two strings it never wrote turned
 up as first-person entries); attribute an entry only if it is prefixed
 (`app:`/`data:`/`ml:`), otherwise treat it as unattributed and re-derive
-before citing it. As read here: `ml_engine/store_rfm.py` `e423f70`,
-`ml_engine/store_ld8.py` `c61fa0d`, `ml_engine/rfm.py` `4a8f994`,
-`ml_engine/store_segments.py`/`store_explain.py`/`store_forecast.py`
-`4a8f994`, `ml_engine/segment_movement.py` `e8934a7`, `ml_engine/btyd.py`
-`87734e8`, `ml_jobs/manifest.py` `0b834f9`, `ml_jobs/run_matrix_batch.py`
-`bb6b45c`.
+before citing it. As read here: `ml_engine/store_rfm.py` `d007ddc`,
+`ml_engine/store_ld8.py` `36e65e6`, `ml_engine/rfm.py` `d007ddc`,
+`ml_engine/store_segments.py` `d007ddc`, `ml_engine/store_explain.py`
+`4a8f994`, `ml_engine/store_forecast.py` `4a8f994`,
+`ml_engine/segment_movement.py` `e8934a7`, `ml_engine/btyd.py` `87734e8`,
+`ml_jobs/manifest.py` `36e65e6`, `ml_jobs/run_matrix_batch.py` `bb6b45c` —
+regenerated at paste time and checked by the guard, which is the only state in
+which this list means anything. One path per pin deliberately: a `sha` written
+once after a slash-continuation of paths (`a.py`/`b.py` `sha`) is invisible to
+the guard in exactly the way a bare `:NN` continuation is (above) — and the
+stale `store_segments.py` pin hid in precisely that form while its two
+neighbours were fine.
+
+- **"Your file still says X" is itself a claim that needs its revision** (ml,
+  2026-10-17): quote it with `git show <sha>:<path>` and read
+  `git log --oneline -- <path>` to see whether a later commit already acted on
+  it, *before* asking for a change. Its first firing was against data's report
+  of ml's tree: in-room, data quoted `a891f08`'s text as ml's current state
+  when it belongs to ml's `c49a851` revision, and ml's own `9f9093f` had
+already dropped it — `git show c49a851:ml_engine/store_ld8.py` has 1 hit for
+  `a891f08`; ml HEAD has 0. Note which side held the date: this file's entry
+  named `c49a851` and credited `9f9093f` from the start, so the doc was right
+  and the message was wrong. The fix is not "be careful with peers' trees",
+  it is **date every quote** — the same rule as the pins above, where the
+  sentence was real and the revision it belonged to was not stated.
 
 Two further failure modes need no movement at all, and archaeology separated
 them (app, 2026-10-17, times +0800 from the commit clock):
