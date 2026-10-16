@@ -39,6 +39,23 @@ is missing prints ``peer-missing <path>`` (hard under ``--strict``).
 ``unresolved`` at least says "path in no tree", while ``unclassified`` reads as a
 *shape* defect and would send a reader to rewrite a correct citation.
 
+**A boundary, stated so a green run is never read as more than it is:** the
+checks below all need a *citation* to anchor to -- a path, a line, a revision --
+and there is one shape of drift they cannot see at all: **prose about code that
+no longer matches the code, with no citation involved.** Three instances in one
+day (2026-10-17), all found by hand: a line number whose sentence kept its
+object but moved off it; a schematic quote of a constant presented as a
+quotation while the file wraps it across three lines; and this file's own
+``span_defines`` docstring calling its category a *call-site cite* while the code
+tests *defines no name at all* -- **the example had become the definition.**
+That last one is the general form: when a category name is narrower than the
+predicate it labels, or wider, the comment rots with nothing to fire, and it
+rots fastest in the file that computes the verdict, because nobody guards the
+guard's own vocabulary. This is inherent rather than a gap to close: with no
+citation there is no anchor to resolve, so the remedy is the one already in the
+room's convention -- name the predicate, not its most vivid example, and quote
+live code as a checkable *range* rather than as a paraphrase in quotation marks.
+
 Read-only, stdlib only. Exit 1 on a hard failure (a cite out of range in every
 tree holding it, a stale pin; under ``--strict``, a path in no tree or a declared
 peer that is absent; always, a ``--require-peer`` that is absent).
