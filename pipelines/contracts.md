@@ -347,7 +347,8 @@ at all) and a cross-*window* pair is what the key term prevents. The version
 term has to carry `rolling_365` because
 `window_key` **cannot** separate v1 from v2: it is `NOT NULL DEFAULT
 'current'` (`db/migrations/031_rfm_time_aware.sql:19-20`), so the v1 INSERT
-omitting the column (`store_rfm.py:36-42` — nine columns, and it is not one
+omitting the column (`store_rfm.py:35-42` — nine columns at `:37-38`, and
+it is not one
 of them; the v2 INSERT at `store_ld8.py:52-59` sets it as `$9`) means the
 **DDL default fills it**, and a v1 `rolling_365` row carries `'current'`
 exactly like a v2 one. Verified live 2026-10-17: `information_schema` says
@@ -572,7 +573,7 @@ filters by `AND ($4::uuid IS NULL OR c.group_id = $4::uuid)`
 guard sits on the **parameter**, so a supplied scope leaves plain equality
 against a NULLable column and drops those rows — whereas the *listing* query
 already uses `brand_id IS NOT DISTINCT FROM $3::uuid` / `group_id IS NOT
-DISTINCT FROM $4::uuid` at `store_rfm.py:57-58`, where unfiltered selection is
+DISTINCT FROM $4::uuid` at `store_rfm.py:58-59`, where unfiltered selection is
 the goal; the two must not be confused for each other — and the discriminator
 is **artifact vs population**, not selection vs filtering (ml, 2026-10-17):
 `IS NOT DISTINCT FROM` **locates a stored artifact by its recorded scope**
