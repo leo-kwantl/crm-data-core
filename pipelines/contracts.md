@@ -341,6 +341,22 @@ role at all. Find-or-create is scope-aware (`ml_engine/store_ld8.py:60-66`),
 so a future per-brand fan-out would add rows beside the hq row rather than
 replace it.
 
+**Group scope is conjunctive by design, and its only silent exclusion is
+pre-group customers.** A group run requires `customers.group_id = g`
+**and** `brands.group_id = g` (scope is the group's shared pool *and* the
+brands inside it), matching `db/migrations/011_groups.sql:6` —
+"Customers are shared within a group (customers.group_id) with NO linkage"
+across clients (hard silo at the group level). `brands.group_id` is NOT NULL
+(`:23`), so the brand half can never be NULL-matched away;
+`customers.group_id` is NULLABLE on purpose (`:86`), the same legacy pattern
+as `consents.brand_id` / `NULL = pre-brand` (`:95-99`), and a group-scoped
+run **excludes** those rows silently. Checked against the live demo dataset
+2026-10-17: 1 group (`DEMO`), 6 brands, all in it, and **0 of 1208 customers
+with a NULL `group_id`** — so the customer half is a no-op here and the
+predicate cannot be exercised on demo data (a `--group-id DEMO` run is
+customer-identical to hq). Treat it as a contract property, not a testable
+one: it only becomes a live edge on operator data with pre-group customers.
+
 **Third writer, non-scheduled:** `POST /analytics/rfm/snapshots` writes
 **v1** through the same `store_rfm.create_snapshot`, stamped
 `created_by=user.staff_code` (`analytics_rfm.py:132-142`). It is an
