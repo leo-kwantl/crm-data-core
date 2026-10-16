@@ -66,7 +66,7 @@ as one's own when searched (app, 2026-10-17: two strings it never wrote turned
 up as first-person entries); attribute an entry only if it is prefixed
 (`app:`/`data:`/`ml:`), otherwise treat it as unattributed and re-derive
 before citing it. As read here: `ml_engine/store_rfm.py` `d007ddc`,
-`ml_engine/store_ld8.py` `862b248`, `ml_engine/rfm.py` `d007ddc`,
+`ml_engine/store_ld8.py` `cd003d0`, `ml_engine/rfm.py` `d007ddc`,
 `ml_engine/store_segments.py` `d007ddc`, `ml_engine/store_explain.py`
 `4a8f994`, `ml_engine/store_forecast.py` `4a8f994`,
 `ml_engine/segment_movement.py` `e8934a7`, `ml_engine/btyd.py` `87734e8`,
@@ -82,7 +82,12 @@ ancestry, and with a path, that the path was there at that sha. A label proves
 the words at them, so a quotation at a revision is a label and only a human can
 re-verify it. A sha with neither a path nor a repo name is unjudgeable and the
 guard reports it rather than guessing, so `unclassified=0` reads "every sha here
-declared its genre". And a snapshot/window **row id** is not a revision at all:
+declared its genre". `--comments` runs the same two genres over comment lines and
+triple-quoted string bodies in `.py`/`.sql`, which is where most cites actually
+live (`citations ok=169` there against `164` over markdown alone); a default run
+is a pass over **markdown only**, and the tool prints that boundary beside its
+counts so a green run is never read as a green tree. And a snapshot/window **row
+id** is not a revision at all:
 the guard reads the doc's own word (`row` / `pair` / `id`) and skips it. One path
 per pin deliberately: a `sha` written
 once after a slash-continuation of paths (`a.py`/`b.py` `sha`) is invisible to
@@ -708,7 +713,10 @@ The copies are now guarded on the **copying** side: ml `ef4c759` adds
 `tests/test_ld8.py::test_031_statements_still_match_data_runner`, which reads
 this repo's `pipelines/snapshot.py` (via `DATA_REPO_PATH`, default
 `../crm-cdp-data`), extracts the four statements by name and asserts
-byte-equality (modulo `_norm`), skipping when the repo is absent — the same
+**token**-equality — `_norm` collapses every run of whitespace, so reformatting
+either side passes and only a token change fails (`tests/test_ld8.py:43`, ml,
+applied to both sides); "byte-equal" was the wrong level and ml corrected it in
+`cd003d0` — skipping when the repo is absent, the same
 convention app has offered the owner for its `db/queries/*.sql` copies.
 (`test_031_sql_verbatim` in the same file is the inline-literal guard, which
 catches an edit on ml's side and cannot see one here.) One **data-side
