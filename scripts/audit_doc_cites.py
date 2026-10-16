@@ -862,7 +862,12 @@ def audit(root: Path, peers: list[Path], strict: bool,
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Audit markdown code-line citations.")
-    ap.add_argument("--repo", default=".", help="repo whose markdown to audit")
+    ap.add_argument("--repo", default=".",
+                    help="repo whose markdown to audit; harness state like "
+                         "--peer, so it is printed as the first `trees:` entry "
+                         "and the audited root is never its own peer -- every "
+                         "count below is about this tree and the peers it was "
+                         "resolved against")
     # `action="append"` + flatten, not a bare `nargs="*"`: with the latter a
     # repeated flag silently overwrites, so `--peer data --peer ml` registered
     # only ml and the run manufactured findings out of a short universe (app,
