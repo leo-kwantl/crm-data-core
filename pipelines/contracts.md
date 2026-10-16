@@ -16,7 +16,14 @@ peer's worktree is a moving target — a reviewer reading it
 while the peer lands the fix will confirm the fixed state and can call a
 correct claim wrong, which puts a false correction in this file rather than
 in a chat (both happened here on 2026-10-17: the `store_rfm` `RETURNING`
-attribution, and two half-statement spans).
+attribution, and two half-statement spans). Pin line numbers **once per cited file, per
+revision** (one `as of ml <sha>` line for a whole section) instead of per
+claim, and cite the revision **you read**, not HEAD — a witness number stays
+true forever, while "as of HEAD" rots on the next unrelated commit to that
+file. In a **code comment** (which carries no revision context at all) cite
+the content plus that pinned sha, because its reader is the person least
+likely to know the thread existed (app, 2026-10-17). The `ml_engine` anchors
+in this file are **as of ml `6fcfc00`**.
 
 ## customers
 
@@ -147,7 +154,7 @@ there is exactly ONE default in the ml package:
 |---|---|---|
 | data `pipelines/snapshot.py:245 business_today()` (`+08` fixed offset), used as the default `--as-of` by `scripts/run_daily_snapshot.py:70` and `scripts/run_pipeline.py:144` | +08 business date | yes |
 | data scheduler — `pipelines/schedule.py:293` in `_with_common` | passes `--as-of ctx.as_of` for every engine whose CLI declares it; `explain_batch` / `assoc_batch` / `matrix_batch` / `recs_batch` take no `--as-of` at all (argparse rejects it — `pipelines/schedule.py:441`), so their args are always explicit or absent, never guessed | n/a (explicit) |
-| ml `ml_engine/rfm.py:79 business_today()` (`ZoneInfo("Asia/Hong_Kong")`) — the default for `ml_engine/rfm.py:118 resolve_window(...)` (`ml_engine/rfm.py:96` def), `ml_engine/store_ld8.py:222 run_ld8(...)`, and the `_coerce_as_of` of all four other run writers (`store_churn.py:217`, `store_clv.py:189`, `store_forecast.py:50`, `store_segments.py:419` — each imports the helper directly, so no UTC path remains) | +08 business date | yes |
+| ml `ml_engine/rfm.py:79 business_today()` (`ZoneInfo("Asia/Hong_Kong")`) — the default applied by `ml_engine/rfm.py:123` inside `resolve_window(...)` (`:101` def), `ml_engine/store_ld8.py:229 run_ld8(...)`, and the `_coerce_as_of` of all four other run writers (`store_churn.py:217`, `store_clv.py:189`, `store_forecast.py:50`, `store_segments.py:419` — each imports the helper directly, so no UTC path remains) | +08 business date | yes |
 
 Closed by ml `4a8f994` (no migration, no schema, no `RULES_VERSION`, no
 argv change; guard `tests/test_engine.py:382-408` pins an in-band instant
@@ -313,15 +320,15 @@ operationally instead.
 
 Never pair v1 with v2 for movement: different writers decide the windows
 (same maths both ways — `store_ld8.compute_window` calls
-`store_rfm.compute_current` verbatim, `ml_engine/store_ld8.py:130-153`;
+`store_rfm.compute_current` verbatim, `ml_engine/store_ld8.py:130-164`;
 v1 is an append-only single-window write, v2 is a four-window
 find-or-create, and the *engine dict* decides the version, not the caller
 (and not the writer): the v1 INSERT takes it as a parameter
 (`store_rfm.py:36`, `:179` passing `computed["rules_version"]`, which
 `compute_current` set from `engine.RULES_VERSION` at `:153` — `"v1"` at
 `rfm.py:24` — so `create_snapshot` never reads the constant), while the v2 INSERT
-interpolates the literal `'{RULES_V2}'` (`store_ld8.py:53`, `:56`,
-`RULES_V2 = "v2"` at `:36`)), so cross-version movement is meaningless. The serving-side fix is
+interpolates the literal `'{RULES_V2}'` (`store_ld8.py:56` in the
+INSERT's VALUES, `:64` in the find's WHERE, `RULES_V2 = "v2"` at `:36`)), so cross-version movement is meaningless. The serving-side fix is
 to take the newest snapshot's `rules_version` and then the two newest **of
 that version** for that `mode`/`window_key` in scope — returning the existing
 `need_two_snapshots` 404 when only one exists — not to relax the mismatch
@@ -339,9 +346,9 @@ two-row requirement is always **two nights of the same window**, never
 two different keys (this sentence read "two different `window_key` values for
 the same `mode`" until ml corrected it, 2026-10-17 — the error was data's
 prose, never the schema).
-Note `SNAPSHOTS_LIST_SQL` (`store_rfm.py:52-65`; SELECT list `:53-54`,
-ordering `:63`) **did not project `window_key` until ml `e234563`**
-(2026-10-17, both snapshot reads — this one at `:53` and the by-id read), so
+Note `SNAPSHOTS_LIST_SQL` (`store_rfm.py:53-66`; SELECT list `:54-55`,
+ordering `:64`) **did not project `window_key` until ml `e234563`**
+(2026-10-17, both snapshot reads — this one at `:54` and the by-id read), so
 before that a list client could not see which window a row belonged to; it
 orders `window_to DESC, scored_at DESC, id DESC` (period, not compute time).
 Pairing is **version-inclusive** — same `mode` + same `rules_version` +
@@ -352,7 +359,7 @@ at all) and a cross-*window* pair is what the key term prevents. The version
 term has to carry `rolling_365` because
 `window_key` **cannot** separate v1 from v2: it is `NOT NULL DEFAULT
 'current'` (`db/migrations/031_rfm_time_aware.sql:19-20`), so the v1 INSERT
-omitting the column (`store_rfm.py:35-42` — nine columns at `:37-38`, and
+omitting the column (`store_rfm.py:35-43` — nine columns at `:37-38`, and
 it is not one
 of them; the v2 INSERT at `store_ld8.py:52-59` sets it as `$9`) means the
 **DDL default fills it**, and a v1 `rolling_365` row carries `'current'`
@@ -424,8 +431,8 @@ months (`2026-09-01→09-30` vs `2026-08-01→08-30` → 30d/30d → accept, and
 second use. The `window_key='current'` pin stays in both branches as the cheap
 sanity check: `custom` holds no `current` row at all — LD8's reachable space is
 `rolling_365×current`, `custom×lifetime`, `custom×mom`, `custom×yoy`, with
-`custom×current` unreachable from the writer (`ml_engine/store_ld8.py:130-153`
-mapping, `:152` stamp) — so the pin yields the empty state structurally rather
+`custom×current` unreachable from the writer (`ml_engine/store_ld8.py:143-144` four-combination statement,
+mapping applied at `:163`) — so the pin yields the empty state structurally rather
 than by accident.
 
 The POST path is why the explicit-range branch exists rather than being
@@ -461,8 +468,8 @@ in** — the check is `SELECT DISTINCT rules_version` for that scope, and
 the remedy is a scoped LD8 run, not an empty-state fix (ml, 2026-10-17).
 
 **`m_cap_pct` is a live-request knob, never a stored property.** The cap
-is an engine kwarg (`ml_engine/rfm.py:278` → `store_rfm.py:114/139`,
-`store_ld8.py:132-151`) reachable from the app's two live GETs only
+is an engine kwarg (`ml_engine/rfm.py:278` → `store_rfm.py:115/140`,
+`store_ld8.py:146-163`) reachable from the app's two live GETs only
 (`../crm-cdp-app/services/api/routers/analytics_rfm.py`, the `m_cap_pct`
 query params `:115`/`:279`, `Query(ge=0.01, le=1.0)`, passed straight to the
 engine at `:125`/`:290` — as of app `2285bfd`; symbol names are the stable
@@ -589,7 +596,7 @@ live population**, where a NULL group means unassigned and must drop. All 11
 (`SNAPSHOT_FIND_SQL` `store_churn.py:193-198`, guarding `:196-197`, then
 `:301-302`, `:311-312`, `:323-324`, `store_clv.py:168-169`,
 `store_forecast.py:31-32`, `store_ld8.py:65-66`, `store_recs.py:88-89`,
-`:103-104`, `store_rfm.py:57-58`, `store_segments.py:388-389`); the guard's
+`:103-104`, `store_rfm.py:58-59`, `store_segments.py:388-389`); the guard's
 *reads* are the latter — `CUSTOMER_TX_ORDERS_SQL` / `CUSTOMER_TX_ACTIVITY_SQL`
 (`store_churn.py:253-261`, guarding `:258-259`, `:263-281`) scope per-customer
 transaction history for the BG/NBD fit rather than locating a stored row. One
@@ -1037,7 +1044,7 @@ query) and `rfm_segment_movement` (as_of x pair x from x to:
 `current_x_mom`|`current_x_yoy`, n + pct_of_from). Both pairs are written by
 the **same run** from its own window assignments (`ml_engine/segment_movement.py:22`
 `PAIRS`, `:23-26` `PAIR_WINDOWS` = `("mom", "current")` / `("yoy", "current")`,
-`store_ld8.py:236-240`), each row stamped with that run's `as_of`: one night
+`store_ld8.py:244-252`), each row stamped with that run's `as_of`: one night
 populates movement, and a second *date* is needed only for a second
 `current` (and `lifetime`) **snapshot** — what the app's same-window diff
 pairs — never for the cross-window pairs. There is no `lifetime` pair;
