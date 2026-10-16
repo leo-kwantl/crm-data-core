@@ -764,7 +764,14 @@ time-aware rows (column pre-existed, default 'v1' — v1 history
 untouched). New: `rfm_segment_sizes` (as_of x window_key x
 segment: n + median_r/f/m; diff/pct vs comparator served by
 query) and `rfm_segment_movement` (as_of x pair x from x to:
-`current_x_mom`|`current_x_yoy`, n + pct_of_from). ENTERED (only
+`current_x_mom`|`current_x_yoy`, n + pct_of_from). Both pairs are written by
+the **same run** from its own window assignments (`ml_engine/segment_movement.py:22`
+`PAIRS`, `:23-26` `PAIR_WINDOWS` = `("mom", "current")` / `("yoy", "current")`,
+`store_ld8.py:236-240`), each row stamped with that run's `as_of`: one night
+populates movement, and a second *date* is needed only for a second
+`current` (and `lifetime`) **snapshot** — what the app's same-window diff
+pairs — never for the cross-window pairs. There is no `lifetime` pair;
+`lifetime` is a window, not a comparison. ENTERED (only
 as from) / EXITED (only as to) sentinels for newcomers/exited —
 uppercase, never collide with lowercase segments; pct_of_from NULL
 enforced (outside the flow pct denominator by construction).
