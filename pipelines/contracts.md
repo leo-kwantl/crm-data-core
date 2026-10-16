@@ -828,7 +828,18 @@ is **artifact vs population**, not selection vs filtering (ml, 2026-10-17):
 `IS NOT DISTINCT FROM` **locates a stored artifact by its recorded scope**
 (a NULL stamp means "unscoped artifact" and must match, or the row you are
 about to find/create is invisible), while the `IS NULL OR` guard **scopes a
-live population**, where a NULL group means unassigned and must drop. All 11
+live population**, where a NULL group means unassigned and must drop. The
+discriminator is per **column**, not per **table** (ml, 2026-10-17): a
+stamped table can legitimately carry a non-stamp predicate that wants the
+*other* operator, and `SNAPSHOTS_LIST_SQL` shows both forms one line apart —
+`:57` `WHERE ($1::text IS NULL OR mode = $1)` uses the population form on a
+**stamped** table, because `mode` is a property of the *requested computation*
+(NULL = "no mode restriction") rather than part of the row's scope stamp,
+while `:58-59` locate the artifact by that stamp, where NULL/NULL means
+"computed globally, HQ-only". So the question to ask of a predicate is "is
+this column part of the scope stamp?", not "is this table stamped?" — and
+ml's sweep for the leak direction (a scope-stamp column carrying the
+population form) found zero instances in `ml_engine/` (ml, 2026-10-17). All 11
 `IS NOT DISTINCT FROM` predicate pairs in `ml_engine/` are the former
 (`SNAPSHOT_FIND_SQL` `store_churn.py:193-198`, guarding `:196-197`, then
 `:301-302`, `:311-312`, `:323-324`, `store_clv.py:168-169`,
