@@ -425,7 +425,12 @@ already: 10 files declare the flag; the 2 that declare nothing
 either; and of the 10 declarers only 9 reference the column — the tenth is
 **inert**, `run_churn_predict.py:50` accepts `--created-by` and never passes it
 (`:26` calls `store_churn.predict_one`, `:52` prints JSON), so through that job
-the flag does nothing (ml, 2026-10-17, re-derived here per file). A NULL in the
+the flag does nothing (ml, 2026-10-17, re-derived here per file). It is also
+unreachable from a tick for a second reason: `churn_predict` is not an
+`ENGINE_BUILDERS` key (`pipelines/schedule.py:464-477` — ten engines) and
+dispatch raises `UnknownEngineError` for anything else (`:678-686`), so no
+scheduler argv can carry the flag to that job at all; only a direct ml-CLI
+hand-run reaches it, and that path writes no row either. A NULL in the
 column therefore dates the row to a **direct ml-CLI hand-run** of one of the 9
 writers rather than to a caller who forgot the flag (`rfm_snapshots.e234dc57` is one). Pass a staff code wherever a job writes,
 or the row is indistinguishable from "written by an unset caller" (this
