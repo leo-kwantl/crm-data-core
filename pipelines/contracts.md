@@ -278,8 +278,16 @@ v1 is an append-only single-window write, v2 is a four-window
 find-or-create, and only the SQL literal stamps `rules_version`), so
 cross-version movement is meaningless. The serving-side fix is
 to take the newest snapshot's `rules_version` and then the two newest **of
-that version** — returning the existing `need_two_snapshots` 404 when only
-one exists — not to relax the mismatch check.
+that version** for that `mode`/`window_key` in scope — returning the existing
+`need_two_snapshots` 404 when only one exists — not to relax the mismatch
+check. Note the pair is keyed by `mode`/`window_key`, **not by matching window
+bounds**: the live pair today is `92537b23` (`2025-10-17 → 2026-10-17`,
+`created_by=scheduler`) with `e234dc57` (`2025-10-16 → 2026-10-16`,
+`created_by=NULL`), both v2 and both `window_key='current'`, and
+`GET /rfm/movement?mode=rolling_365` answers 200 off them (app readback
+2026-10-17). Differing bounds are the normal case, since each tick
+find-or-creates its own window — which is also why a same-day re-run adds
+nothing to the pair.
 
 **`m_cap_pct` is a live-request knob, never a stored property.** The cap
 is an engine kwarg (`ml_engine/rfm.py:278` → `store_rfm.py:114/139`,
