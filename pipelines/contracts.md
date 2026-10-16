@@ -1548,12 +1548,27 @@ exist because the obligations differ, so which table sits in which group is the
 usable part of this section:
 
 - **Carriers (15)** and **inheritors (14)** — one invariant, and it is a *reader*
-  invariant: no query may touch an inheritor without joining the parent that
-  carries its scope. That is a property of code, not of data, so a DB test over
-  these rows passes **vacuously** — there is no second column to compare. The
-  enforceable form is a static sweep over `db/queries/*.sql`: a reference to an
-  inheritor with no parent join in the statement is the defect, and it is the
-  shape that would have caught the app `7cc4495` leak class.
+  invariant: a query over an inheritor is safe only when whoever resolved its
+  parent did so **under the scope predicate**. It is a property of code, not of
+  data, so a DB test over these rows asserts **nothing** — there is no second
+  column to compare.
+
+  **The enforcement is not a sweep over the SQL text** — measured, app,
+  2026-10-17: that formulation flags 23 of 23 query blocks, and every flag is
+  correct code. The house convention is that the **caller** resolves the parent
+  in scope and passes its id down, so the child query contains no parent join by
+  design. Confirmed here: `../crm-cdp-app/services/api/routers/analytics_explain.py:49`
+  scopes with `scope_filters(user)`, `:51-56` reads the parent scoped (global vs
+  `brand_id`/`group_id` variants), `:59-60` 404s on a miss, and `:61` calls the
+  child with `batch["id"]` — whose block is `WHERE batch_id = $1`, parent id as a
+  parameter (`../crm-cdp-app/db/queries/analytics_explain.sql:19-25`). So the
+  checkable invariant is cross-file: for every call of a child query carrying a
+  parent id, the same code path must first perform a scope-guarded read of that
+  parent — i.e. SQL blocks joined to their call sites in
+  `services/api/routers/*.py`. That is real static analysis with a real
+  false-positive surface (indirect helpers, loops over ids, pagination), it
+  belongs beside the docs-citation audit rather than in a test file, and it is
+  **not built**.
 - **Carriers that also have an artifact parent — 2 edges** (schema-derived,
   app, 2026-10-17): `explain_batches → segment_runs` and
   `pipeline_runs → connector_sync_runs`. Here stamp equality *is* expressible
