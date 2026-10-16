@@ -188,8 +188,10 @@ Tracked in SCRATCHPAD.
 
 ## Daily RFM writer: `ld8_snapshot` (v2) vs `rfm_snapshot` (v1)
 
-`rfm_snapshots` has TWO writers with different rulesets, and the engine
-name in the manifest decides which one a tick uses:
+`rfm_snapshots` has two *scheduled* writers with different rulesets, and
+the engine name in the manifest decides which one a tick uses (a third,
+non-scheduled writer — the app's snapshot POST — is at the end of this
+section):
 
 | engine | ml job -> module | rules | windows | conflict behaviour |
 |---|---|---|---|---|
@@ -269,6 +271,31 @@ cross-version movement is meaningless. The serving-side fix is
 to take the newest snapshot's `rules_version` and then the two newest **of
 that version** — returning the existing `need_two_snapshots` 404 when only
 one exists — not to relax the mismatch check.
+
+**`m_cap_pct` is a live-request knob, never a stored property.** The cap
+is an engine kwarg (`ml_engine/rfm.py:278` → `store_rfm.py:114/139`,
+`store_ld8.py:132-151`) reachable from the app's two live GETs only
+(`../crm-cdp-app/services/api/routers/analytics_rfm.py:107`, `:266`,
+`Query(ge=0.01, le=1.0)`); the scheduled writer always uses
+`DEFAULT_M_CAP_PCT = 0.99`, and no renderer emits a flag for it, so
+`ml_jobs/manifest.py:75 m_cap_pct: (False, None)` on `rfm_snapshot` is a
+declaration nothing can turn into argv (being dropped, ml). The snapshot
+write path is **pinned by decision** (app `6bdf2b4`): a non-default cap
+is rejected by name — `422 {"code": "non_default_m_cap_pct",
+"default": 0.99}` (`analytics_rfm.py:58-66`), plus `bad_m_cap_pct`
+outside `(0, 1]` (`:56-57`) — because `rfm_snapshots` stores no cap and no
+params (`db/migrations/010_analytics_rfm.sql:6-16`), so a caller-chosen
+cap row would be indistinguishable from a default one and its M cuts
+unattributable from storage. Do not add a `--m-cap-pct` flag: a rendered
+flag would re-open exactly that. Cap experiments belong on the live
+endpoints, which persist nothing.
+
+**Third writer, non-scheduled:** `POST /analytics/rfm/snapshots` writes
+**v1** through the same `store_rfm.create_snapshot`, stamped
+`created_by=user.staff_code` (`analytics_rfm.py:132-142`). It is an
+ordinary v1 append, so it changes the v1 row inventory but not the
+pairing rule above, and with the cap pinned it cannot store a fit the v1
+engine path could not express.
 
 ## Batch upload ETL (frontend files land here)
 
