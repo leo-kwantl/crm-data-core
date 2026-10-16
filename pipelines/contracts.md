@@ -56,17 +56,31 @@ them (app, 2026-10-17, times +0800 from the commit clock):
   apart, two revisions; no "rotted by <commit>" sentence can describe it.
   This is the **dominant** failure here: **copy-lag, not rot**.
 - **Misaimed construct** — the number never moved and was never right. It has
-  **no verified instance** in this thread; both candidates collapsed once the
-  *write* revisions were checked. ml's `store_ld8.py:70` cite was correct when
-  written (data's `snapshot.py:342` was `SEGMENT_SIZE_UPSERT_SQL` from
+  **exactly one verified instance**, and it is app's, not ml's: app's
+  `db/queries/rfm_windows.sql:2` at `995cc2f` (10-15 22:06:05) said "Canonical
+  row SQL is data-owned (… `pipelines/snapshot.py:342`)" while that file's
+  two readers mirror `SIZES_FOR_WINDOW_SQL`/`MOVEMENT_FOR_PAIR_SQL` — at the
+  revision current that day (`412f9d7`) those were `:356`/`:363`, and `:342`
+  was `SEGMENT_SIZE_UPSERT_SQL`, the **writer** of the sizes rows. No revision
+  holds that number for the referent, and no offset arithmetic reaches it; the
+  line was plausible only because "canonical row SQL" hedges between the
+  writer and the readers. **A correction to this file's own earlier verdict**
+  ("both candidates collapsed, no verified instance") — app's half did not
+  collapse, it was re-read against the write revision and the referent (ml,
+  2026-10-17). ml's `store_ld8.py:70` cite is the rotted half and was correct
+  when written (data's `snapshot.py:342` was `SEGMENT_SIZE_UPSERT_SQL` from
   `412f9d7` 18:13:32 through `5f91e16` — the four mirrored statements were a
   contiguous run seven lines apart, `:342`/`:349`/`:356`/`:363`, so the cite
   named the **first line of the exact block it described**, and they are
   `:373`/`:380`/`:387`/`:394` (+31) at `f889386`) and rotted only with data's
-  `f889386` (10-17 01:09:24); app's `db/queries/rfm_windows.sql:2` is the same
-  case — at its 22:06:05 write `:342` *was* the row-defining statement, so the
-  defect was an **ambiguous referent** ("canonical row SQL", writer vs
-  readers), not a wrong construct. Keep the check, not the examples.
+  `f889386` (10-17 01:09:24). Note the attribution check that goes with it:
+  `git log 412f9d7..HEAD -- pipelines/snapshot.py` returns **that one commit,
+  so "rotted by A and B" is itself a claim to verify** — ml `c49a851` names
+  `a891f08`/`f889386`, but `a891f08` is an *ancestor* of `412f9d7` and the
+  four constants did not exist before it (the file was 206 lines and its last
+  statements were the KPI/cohort ones at `:64`/`:112`/`:143`/`:199`), which is
+  what ml's own `9f9093f` had already concluded. Keep the check, not the
+  examples.
 
 So "was it right when written?" is a question about **write timestamps across
 repos**, not about the revision the author says they read, and the pin has to
@@ -81,9 +95,14 @@ checks at once because there is no file to disagree with — data's own
 file at all and is the one instance of that class found here (data,
 2026-10-17). Two copies of one source line also share one **expiry date**: ml's
 `store_ld8.py:70` (21:29:02) and app's `db/queries/rfm_windows.sql:2`
-(22:06:05) both cited `snapshot.py:342`, both were true when written, and
-both died in data's `f889386` window — so "I verified this citation" is not
-portable, only "verified for the tree it was written in".
+(22:06:05) both cited `snapshot.py:342` with **opposite histories** — one
+correct for the block it named and rotted by data's `f889386`, one never that
+line at any revision — and neither the worktree nor the offset tells them
+apart: `:342` looks equally plausible either way, because at *some* revision
+it was a real statement. Only `git show <sha>:<path>` at the revision the
+claim was made, plus the revision you read, separates them (ml,
+2026-10-17) — so "I verified this citation" is not portable, only "verified
+for the tree it was written in".
 
 ## customers
 
@@ -733,15 +752,17 @@ is which operator a query that does not exist yet should use (ml/app,
 
 The same split has a second, independent statement on the app side, and it is
 the reference *decision* rather than an implementation detail:
-`../crm-cdp-app/services/api/analytics/scope.py:1-26` (docstring) — a stamped
-row is visible iff `row.brand == session.brand AND row.group == session.group`,
+`../crm-cdp-app/services/api/analytics/scope.py:1-40` — the docstring, pinned
+at app `bc9cb59` (that file's last commit; app's worktree carried one more
+line when this was written) — a stamped row is visible iff `row.brand == session.brand AND row.group == session.group`,
 NULL-safe on both sides — with the deliberate consequence named there,
 **quarantine-by-default**: legacy pre-scope rows and admin-created global
 batches are `NULL/NULL` and therefore **HQ-only**, so no group session can
 list or open a row computed over all brands. That consequence is the one data's
 writers live under: an unstamped write is not an error in this system, it is a
 row only HQ can see. The docstring's own invariant is "keep the two in sync —
-`row_visible` is the reference implementation" (`scope.py:46-50`). The failure
+`row_visible` is the reference implementation" (`scope.py:61-65`, app
+`bc9cb59`). The failure
 direction that matters, verified 2026-10-17 by app's sweep and re-derived here:
 a **stamped** surface using the population form would leak `NULL/NULL` rows
 into a brand session — a visibility bug, not a semantics curiosity; none in
