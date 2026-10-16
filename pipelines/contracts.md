@@ -7,7 +7,12 @@ silently. Grep the symbol; refresh the anchors when you touch the cited file.
 **Pin the revision and both ends of the span together**: cite what you
 actually read, at the revision you actually read it (`git show <sha>:path`),
 and end the citation where the *statement* ends rather than where your
-reading did. A peer's worktree is a moving target — a reviewer reading it
+reading did. When two readings differ by a **constant offset**, suspect two
+revisions rather than an error: one line added above a span shifts every
+number below it (`e423f70`'s third `RETURNING` line moved the INSERT's
+parameter block from `:178` to `:179`, and `engine.RULES_VERSION` from `:152`
+to `:153`), so `git show` both revisions before publishing a correction. A
+peer's worktree is a moving target — a reviewer reading it
 while the peer lands the fix will confirm the fixed state and can call a
 correct claim wrong, which puts a false correction in this file rather than
 in a chat (both happened here on 2026-10-17: the `store_rfm` `RETURNING`
