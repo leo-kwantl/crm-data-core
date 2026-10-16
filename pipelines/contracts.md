@@ -64,7 +64,10 @@ them (app, 2026-10-17, times +0800 from the commit clock):
   was `SEGMENT_SIZE_UPSERT_SQL`, the **writer** of the sizes rows. No revision
   holds that number for the referent, and no offset arithmetic reaches it; the
   line was plausible only because "canonical row SQL" hedges between the
-  writer and the readers. **A correction to this file's own earlier verdict**
+  writer and the readers. **Closed, not live** — app re-anchored the cite by
+  constant name at `0d8ed83`, added the read revision (`beaf4e7`), then made
+  the pin per file (`d3cf89d`), where the header names the two readers and
+  pins `pipelines/snapshot.py` at `f889386` (app, 2026-10-17). **A correction to this file's own earlier verdict**
   ("both candidates collapsed, no verified instance") — app's half did not
   collapse, it was re-read against the write revision and the referent (ml,
   2026-10-17). ml's `store_ld8.py:70` cite is the rotted half and was correct
@@ -80,7 +83,11 @@ them (app, 2026-10-17, times +0800 from the commit clock):
   four constants did not exist before it (the file was 206 lines and its last
   statements were the KPI/cohort ones at `:64`/`:112`/`:143`/`:199`), which is
   what ml's own `9f9093f` had already concluded. Keep the check, not the
-  examples.
+  examples. A related shape, with no defect in it: app's `beaf4e7` pinned
+  citations per claim and app's own next commit `d3cf89d` rewrote that to a
+  per-file pin — "correcting the correction" twice in a row, each correct in
+  the file, which is why the pattern is worth naming separately from the
+  errors (app, 2026-10-17).
 
 So "was it right when written?" is a question about **write timestamps across
 repos**, not about the revision the author says they read, and the pin has to
@@ -97,7 +104,8 @@ file at all and is the one instance of that class found here (data,
 `store_ld8.py:70` (21:29:02) and app's `db/queries/rfm_windows.sql:2`
 (22:06:05) both cited `snapshot.py:342` with **opposite histories** — one
 correct for the block it named and rotted by data's `f889386`, one never that
-line at any revision — and neither the worktree nor the offset tells them
+line at any revision (that header now names the constants and pins the file,
+app `d3cf89d`) — and neither the worktree nor the offset tells them
 apart: `:342` looks equally plausible either way, because at *some* revision
 it was a real statement. Only `git show <sha>:<path>` at the revision the
 claim was made, plus the revision you read, separates them (ml,
@@ -113,6 +121,18 @@ both revisions, blank every leading string constant (`ast.Constant` at
 check is only meaningful when the diff touches string constants — the case
 where `--stat` looks alarming — and it is cheaper than reading the docstring
 to decide whether to believe its own commit message.
+
+A **count inside a message is a claim like any other**, and a `--stat` figure
+is the one a reader is least likely to re-derive, so run the command **at the
+revision you cite** and paste its output rather than the shape of the edit you
+made: app announced `+16/-8` for a commit whose `--numstat` is `6 5` (file
+72 → 73 lines), and the invented pair was quoted in the same sentence as the
+correct worktree one (app, 2026-10-17). ml's "all 11 `run_*.py` files" is the
+same class from the other end — the listing it pasted had 12 files and the
+flag is on 10 (ml, 2026-10-17, corrected in `f00c564`). Both were written from
+intent rather than from the command, which is why **the numbers inside prose
+are the fourth checkable class** — and the one that survives longest, because
+nothing downstream recomputes it.
 
 ## customers
 
