@@ -29,8 +29,17 @@ Anchors carry their **file's** last-changed revision, not ml's repo HEAD
 to *any* file (ml, 2026-10-17) — and per-file pins are only half the rule: a
 commit **inside** the pinned file still moves every anchor below it, so pins
 are taken per file and anchors re-derived per cite, never offset (app,
-2026-10-17). As read here: `ml_engine/store_rfm.py` `e423f70`,
-`ml_engine/store_ld8.py` `9f9093f`, `ml_engine/rfm.py` `4a8f994`,
+2026-10-17). Where a paragraph's argument is about *behaviour* rather than
+location, the **grep-unique statement name is the primary cite** and the line
+number is secondary with an explicit `as of <sha>` (ml, 2026-10-17) — a line
+in a document rots on any insert above it, so the name is the part that
+cannot drift. Facts lifted from the shared agent daily log carry **no
+provenance** — all three sessions append to one file, so a peer's note reads
+as one's own when searched (app, 2026-10-17: two strings it never wrote turned
+up as first-person entries); attribute an entry only if it is prefixed
+(`app:`/`data:`/`ml:`), otherwise treat it as unattributed and re-derive
+before citing it. As read here: `ml_engine/store_rfm.py` `e423f70`,
+`ml_engine/store_ld8.py` `4a54edb`, `ml_engine/rfm.py` `4a8f994`,
 `ml_engine/store_segments.py`/`store_explain.py`/`store_forecast.py`
 `4a8f994`, `ml_engine/segment_movement.py` `e8934a7`, `ml_engine/btyd.py`
 `87734e8`, `ml_jobs/manifest.py` `0b834f9`, `ml_jobs/run_matrix_batch.py`
@@ -375,11 +384,13 @@ Never pair v1 with v2 for movement: different writers decide the windows
 v1 is an append-only single-window write, v2 is a four-window
 find-or-create, and the *engine dict* decides the version, not the caller
 (and not the writer): the v1 INSERT takes it as a parameter
-(`store_rfm.py:36`, `:179` passing `computed["rules_version"]`, which
-`compute_current` set from `engine.RULES_VERSION` at `:153` — `"v1"` at
-`rfm.py:24` — so `create_snapshot` never reads the constant), while the v2 INSERT
-interpolates the literal `'{RULES_V2}'` (`store_ld8.py:56` in the
-INSERT's VALUES, `:64` in the find's WHERE, `RULES_V2 = "v2"` at `:36`)), so cross-version movement is meaningless. The serving-side fix is
+(`SNAPSHOT_INSERT_SQL`, `store_rfm.py:35`; `rules_version` in its column list
+at `:37` and `computed["rules_version"]` passed into it at `:179`, both as of
+`e423f70`) — it is `compute_current` that reads the constant, at `:153` —
+`"v1"` at `rfm.py:24` — so `create_snapshot` never does; while the v2 INSERT
+interpolates the literal `'{RULES_V2}'` (`SNAPSHOT_INSERT_V2_SQL`,
+`store_ld8.py:52`, VALUES at `:56`, and its find twin `SNAPSHOT_FIND_V2_SQL`
+at `:61`, WHERE at `:64`; `RULES_V2 = "v2"` at `:36`)), so cross-version movement is meaningless. The serving-side fix is
 to take the newest snapshot's `rules_version` and then the two newest **of
 that version** for that `mode`/`window_key` in scope — returning the existing
 `need_two_snapshots` 404 when only one exists — not to relax the mismatch
@@ -433,8 +444,10 @@ is **label vs window**: the band prints run dates,
 `formatDate(movement.from.scored_at) → formatDate(movement.to.scored_at)`
 (`apps/web/app/rfm/page.tsx:501`; the same run-date band renders at **three**
 sites in this section — `:501`, `:551-552` (`fromLabel`/`toLabel` fed to the
-segment chart) and `:624` (the M6 meta line) — so a bounds-based fix is a
-three-site edit, not a one-liner), while the rows compared are all-time
+segment chart, so it is that chart's *axis*, not just text) and `:624` (the M6
+meta line) — so a bounds-based fix is a three-site edit **and a
+chart-semantics change**, not a one-liner: under (b) a reader comparing
+segments reads window bounds where they used to read run dates), while the rows compared are all-time
 cumulative windows. Root cause worth keeping: `mode='custom'` in
 `rfm_snapshots` is **LD8's named-window bucket** (`mom`/`yoy`/`lifetime`), not
 the user's custom date range — the tab's *scores* come from a live computation
@@ -470,7 +483,8 @@ plainly that the band cannot be computed for a range — a copy change in both
 locales; **(b)** show the all-time pair with its real bounds — no copy change.
 App recommends (a); nothing else differs between them. Cost note measured in
 app's tree (data, 2026-10-17): **(b) is three render sites** (`:501`,
-`:551-552`, `:624`), **(a) is copy-only**; the pair allow-list is `WPAIRS` at
+`:551-552` — a segment-chart *axis*, so it is a chart-semantics change — and
+`:624`), **(a) is copy-only**; the pair allow-list is `WPAIRS` at
 `apps/web/app/rfm/page.tsx:54` (not `:52-53`) and it is an allow-list, not a
 key filter.
 
@@ -717,7 +731,20 @@ into a brand session — a visibility bug, not a semantics curiosity; none in
 app's tree, whose population-form hits are all source-row filters over
 `orders`/`customers`/`brands`/`groups` (`analytics_snapshots.sql:110-111`,
 `analytics_simulate.sql:16-18`, `analytics_recs_fallback.sql`, `stats.py:23-29`
-`_ORDER_SCOPE`/`_CUST_SCOPE`). **Granularity, sharpened to its smallest case:** the discriminator is
+`_ORDER_SCOPE`/`_CUST_SCOPE`). That zero is **verified, not asserted**: every
+`IS NULL OR` alias was resolved against the FROM/JOIN chain (`s` = `stores`,
+`b` = `brands`, `c` = `customers`, all joined off `orders o`), and
+`analytics_snapshots.sql:110-111` filters a **live** `brands`/`groups` row by
+id — app's analogue of `:57`'s `mode` case (app, 2026-10-17). The split falls
+on statement boundaries by architecture rather than luck: the serving layer
+resolves the artifact in one `-- name:` statement and aggregates live rows in
+another, so app's tightest two-form file is still 8 lines
+(`analytics_simulate.sql:16-18` live guard vs `:24-27` stamped `segment_runs`)
+and `store_rfm.py:56-59` remains the only single-*statement* instance any of us
+has. The predicate is restated at the point of use too
+(`db/queries/analytics_customer.sql:5-9` names `scope.py` and the predicate),
+which is the only thing keeping a copy honest — nothing mechanically checks
+that a stamped read *uses* the stamp operator. **Granularity, sharpened to its smallest case:** the discriminator is
 **per column, read over a specific row — "is this column the row's scope
 stamp?"** — not per file, not per table, and not even per statement. The
 smallest instance carries both forms in one statement over one row:
