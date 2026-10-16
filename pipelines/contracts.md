@@ -191,7 +191,11 @@ check's scope is **constant values, not call shape**: ml's `65ddcab` adds a
 an added `ast.keyword` is structure that blanking cannot remove — so
 AST-equality licenses "no code moved" only where the diff is inside existing
 constants, and a changed call signature needs the hunk read (data,
-2026-10-17, found by running it here rather than asserting it). The
+2026-10-17, found by running it here rather than asserting it). The corollary is about **subjects**, not just diffs: a `docs(...)`
+subject licenses "no logic moved" and never "nothing user-visible changed",
+because `--help` text *is* user-visible behaviour — ml's `65ddcab` is
+`docs(ml_jobs)` whose only observable delta is argparse help (ml,
+2026-10-17). The
 check is only meaningful when the diff touches string constants — the case
 where `--stat` looks alarming — and it is cheaper than reading the docstring
 to decide whether to believe its own commit message.
