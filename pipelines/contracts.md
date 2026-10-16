@@ -750,8 +750,9 @@ and executes them against a migrated `031` (`:123`/`:146`/`:149`/`:157`), so a
 **grain** change fails data's own suite at the change site. The residual gap is
 narrower than "ML agrees with ML": it is a *text*-only change seen from a
 checkout with no sibling `crm-cdp-data`, where ml's guard — keyed on
-`SEGMENT_SIZE_UPSERT_SQL` alone — **skips** (`tests/test_ld8.py:98` now names
-the path it looked in; ml `0839d7f`). So a change to these four statements'
+`SEGMENT_SIZE_UPSERT_SQL` alone — **skips** (`tests/test_ld8.py:146` at ml
+`72ae86e`; `:98` when added by `0839d7f` — the skip `reason=` line names
+the path it looked in). So a change to these four statements'
 text or grain is an in-room `[BREAKING]` notice to crm-ml, not a repo-only
 edit. ml `0b834f9` re-anchored its copy of this citation by name with both
 revisions pinned (data `f889386` for `pipelines/snapshot.py`,
@@ -1831,7 +1832,8 @@ argument, never a module-level constant resolved at import.
   ml); and the **guard** is named so a reader sees which half actually runs.
   **The marker supplements the skip-if-absent test and cannot replace it**
   (ml): the test is the half that compares tokens, so it needs both trees and
-  *skips* otherwise — `tests/test_ld8.py:98` (ml) names the path it looked in,
+  *skips* otherwise — `tests/test_ld8.py:146` (ml `72ae86e`; `:98` when added at
+  `0839d7f`) names the path it looked in,
   and a green suite with the sibling absent proves nothing — while the marker
   still reads on a one-tree clone and compares nothing. The converse is why
   both stay: **a marker is a label, so the cite genres apply to it —

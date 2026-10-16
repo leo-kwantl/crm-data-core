@@ -731,6 +731,37 @@ def span_defines(roots: list[Path], cited: str, start: int, end: int) -> bool:
     return False
 
 
+def span_blank(roots: list[Path], cited: str, start: int, end: int) -> bool:
+    """Is the cited span *empty* in every tree that holds it?
+
+    An empty span is the maximal "defines no name": every content check in
+    this guard passes on it, so a cite whose line moved away -- or was deleted
+    -- reads green in every bucket at once, including
+    ``cite-symbol-unchecked``. It is therefore **decidable**, not a hand-read:
+    no sentence cites a blank line as its evidence, so the verdict can be a
+    bucket instead of advice. Reported by app (2026-10-17) against
+    ``pipelines/contracts.md:753``, where a cite of the skip ``reason=`` is now
+    three insertions stale -- the line it described is at ``:146``.
+
+    Only the direct tree-relative resolution is used, matching
+    ``span_defines``: a path that resolves only by basename is left alone
+    rather than guessed at.
+    """
+    holders = 0
+    for tree in roots:
+        f = tree / cited
+        if not f.is_file():
+            continue
+        try:
+            lines = f.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        holders += 1
+        if any(ln.strip() for ln in lines[start - 1:end]):
+            return False
+    return holders > 0
+
+
 def _window(units: list[tuple[int, str]], i: int, start: int, end: int,
             back: int = 120, fwd: int = 120) -> str:
     """Text around a cite: its **own clause**, capped at ~120 characters a side.
@@ -911,7 +942,7 @@ def audit(root: Path, peers: list[Path], strict: bool,
     idx = basename_index(roots)
     universe0 = _peers(roots)
     counts = {"ok": 0, "disagrees": 0, "out-of-range": 0, "unresolved": 0,
-              "cite-symbol": 0, "cite-symbol-unchecked": 0}
+              "cite-symbol": 0, "cite-symbol-unchecked": 0, "cite-blank": 0}
     hard: list[str] = list(peer_hard or [])
     info: list[str] = list(peer_notes or [])
 
@@ -950,10 +981,25 @@ def audit(root: Path, peers: list[Path], strict: bool,
                             f"unresolved  {rel_doc}:{lineno} -> {span} "
                             f"(path in no tree; peers checked: {_peers(roots)})")
                     elif all(ok for _, _, ok in where):
-                        counts["ok"] += 1
                         win = _window(units, i, m.start(), m.end())
-                        moved = symbol_moved(roots, cited, text, start, end,
-                                             rel_doc, lineno, window=win)
+                        blank = span_blank(roots, cited, start, end)
+                        if blank:
+                            # Counted *instead of* ok, not as well as: the cite
+                            # is in range, and an in-range empty span is the one
+                            # shape where "in range" carries no information.
+                            counts["cite-blank"] += 1
+                            info.append(
+                                "cite-blank  %s:%d -> %s (the cited span is"
+                                " blank in every tree that holds it: every"
+                                " content check passes on an empty span, so this"
+                                " is decidable rather than a hand-read -- the"
+                                " line the sentence described moved or was"
+                                " deleted)" % (rel_doc, lineno, span))
+                        else:
+                            counts["ok"] += 1
+                        moved = None if blank else symbol_moved(
+                            roots, cited, text, start, end,
+                            rel_doc, lineno, window=win)
                         if moved:
                             counts["cite-symbol"] += 1
                             info.append(moved)
@@ -1054,6 +1100,10 @@ def audit(root: Path, peers: list[Path], strict: bool,
     print("citations: " + ", ".join(f"{k}={v}" for k, v in counts.items())
           + "  [pass: %d file(s), %s; peers: %s]" % (len(audited), mode,
                                                       universe))
+    print("  (cite-blank = the cited span is empty in every tree holding it --"
+          " an empty span passes every content check, so a line that moved or"
+          " was deleted is invisible in every other bucket; a zero here is a"
+          " checked zero, not an unchecked one)")
     pins_line = ", ".join(f"{k}={v}" for k, v in pin_counts.items())
     if sites > pin_counts["pin-ok"]:
         # One verdict per (path, revision) pair, but several sites may pin the
