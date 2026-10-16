@@ -714,7 +714,17 @@ DISTINCT FROM`), so row role cannot be the variable there. The file-level
 counterpart is `analytics_snapshots.sql` — artifact form on the stamped row
 (`:22-23`), population form on the joined dimension rows (`:110-111`) — which
 is why a per-file label ("this query file is artifact-form") would annotate
-one of those two lines wrongly.
+one of those two lines wrongly. The property that makes the rule usable by
+someone *editing* rather than auditing: **the form follows the column, so it
+is checkable without first knowing whether the table is stamped** — a
+`brand_id`/`group_id` scope-stamp column takes `IS NOT DISTINCT FROM` (NULL
+there means "computed globally" and must fail closed), every other column
+takes `IS NULL OR` (NULL there means "no restriction"). One sentence covers
+all three demonstrations in this section at once: `analytics_snapshots.sql`
+`:22-23` vs `:110-111` (file), `store_rfm.py:57` vs `:58-59` (statement and
+row), `store_churn.py:193-198` vs `:253-261` (same two columns, opposite
+operators). app's wording, adopted over data's row-role phrasing, which could
+not express the middle case (app/ml, 2026-10-17).
 — **declined on purpose, not missed**: 011's design is exclusion, and a group
 run means the group's pool, not "the pool plus unassigned rows". Recorded so
 the choice is visible rather than rediscovered.
