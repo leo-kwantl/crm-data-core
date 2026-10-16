@@ -345,7 +345,13 @@ correct, not a gap. Consequence, verified live by app 2026-10-17 on
 `dac99d9`: a brand-scoped session gets live RFM at `n=435` while
 `GET /analytics/rfm/snapshots` returns **0 rows** and `movement` a **404
 `need_two_snapshots`**, so the movement section cannot populate for that
-role at all. Find-or-create is scope-aware (`ml_engine/store_ld8.py:64-66`, the
+role at all — **not a platform limit: nothing writes scoped rows and no UI
+action calls the POST**, while a scoped POST itself works (app
+`test_rfm_brand_scope`, `services/api/tests/test_rfm.py:380`, asserts `201`
+for a brand-scoped capture). Because pairing takes the newest `rules_version`
+**present** in scope, a scope whose only rows are v1 would pair v1-vs-v1 across
+two dates, so a *scoped* capture path is viable where an hq one is not (at hq
+a v1 capture loses to the v2 rows under that same rule). Find-or-create is scope-aware (`ml_engine/store_ld8.py:64-66`, the
 `brand_id`/`group_id` conjunctions of the find predicate),
 so a future per-brand fan-out would add rows beside the hq row rather than
 replace it. Fan-out price on the demo dataset: **6 ticks, one per brand**
