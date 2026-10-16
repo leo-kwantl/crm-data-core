@@ -23,17 +23,36 @@ true forever, while "as of HEAD" rots on the next unrelated commit to that
 file. In a **code comment** (which carries no revision context at all) cite
 the content plus that pinned sha, because its reader is the person least
 likely to know the thread existed (app, 2026-10-17). The `ml_engine` anchors
-in this file are **as of ml `c49a851`**. There is a **third failure mode** that
-needs no movement at all: a citation can name the *wrong construct* in a file
-whose numbering never changed — `model_fits.py:54` was never the reader SQL
-and `snapshot.py:342` was never the row SQL, yet both looked plausible
-(app, 2026-10-17). It survives both checks above because nothing about it
-looks wrong; naming the construct is the only fix that catches it. And a
-citation copied in one writing event shares one **expiry date**: the same
-`snapshot.py:342` line rotted on the same day in ml's `store_ld8.py:70` and
-app's `db/queries/rfm_windows.sql:2`, because both were copied from one
-message — so "I verified this citation" is not portable, only "verified for
-the tree it was written in" (app, 2026-10-17).
+in this file are **as of ml `ef4c759`**. Two further failure modes need no movement at all, and archaeology separated
+them (app, 2026-10-17, times +0800 from the commit clock):
+
+- **Stale at birth** — construct right, number right *in the message it was
+  copied from*, and already out of date when written. app's
+  `db/queries/analytics_segment_matrix.sql:3` cited `model_fits.py:54` at
+  21:13:54, but `:54` stopped being `MATRIX_FOR_RUN_SQL` at data `294517b`
+  (18:15:16) — three hours earlier. One sentence, two sources seven minutes
+  apart, two revisions; no "rotted by <commit>" sentence can describe it.
+  This is the **dominant** failure here: **copy-lag, not rot**.
+- **Misaimed construct** — the number never moved and was never right. It has
+  **no verified instance** in this thread; both candidates collapsed once the
+  *write* revisions were checked. ml's `store_ld8.py:70` cite was correct when
+  written (data's `snapshot.py:342` was `SEGMENT_SIZE_UPSERT_SQL` from
+  `412f9d7` 18:13:32 through `5f91e16`) and rotted only with data's `f889386`
+  window (10-17 01:09); app's `db/queries/rfm_windows.sql:2` is the same
+  case — at its 22:06:05 write `:342` *was* the row-defining statement, so the
+  defect was an **ambiguous referent** ("canonical row SQL", writer vs
+  readers), not a wrong construct. Keep the check, not the examples.
+
+So "was it right when written?" is a question about **write timestamps across
+repos**, not about the revision the author says they read, and the pin has to
+be taken **at paste time**. What stands demonstrated is the part that makes
+any of this decidable at all: each sentence above was unresolvable while it
+was a prose referent plus a number — naming the construct is the fix, not the
+number. Two copies of one source line also share one **expiry date**: ml's
+`store_ld8.py:70` (21:29:02) and app's `db/queries/rfm_windows.sql:2`
+(22:06:05) both cited `snapshot.py:342`, both were true when written, and
+both died in data's `f889386` window — so "I verified this citation" is not
+portable, only "verified for the tree it was written in".
 
 ## customers
 
@@ -476,6 +495,21 @@ and its only direct INSERTs are in
 holding **only v1 rows** is exactly a scope **LD8 has never been ticked
 in** — the check is `SELECT DISTINCT rules_version` for that scope, and
 the remedy is a scoped LD8 run, not an empty-state fix (ml, 2026-10-17).
+The copies are now guarded on the **copying** side: ml `ef4c759` adds
+`tests/test_ld8.py::test_031_statements_still_match_data_runner`, which reads
+this repo's `pipelines/snapshot.py` (via `DATA_REPO_PATH`, default
+`../crm-cdp-data`), extracts the four statements by name and asserts
+byte-equality (modulo `_norm`), skipping when the repo is absent — the same
+convention app has offered the owner for its `db/queries/*.sql` copies.
+(`test_031_sql_verbatim` in the same file is the inline-literal guard, which
+catches an edit on ml's side and cannot see one here.) One **data-side
+consequence**: those four statement *names* in `pipelines/snapshot.py` are
+now effectively frozen — the `skipif` is keyed on `SEGMENT_SIZE_UPSERT_SQL`
+alone, and any other name's disappearance fails ml's suite with
+`"{name} missing from data's snapshot.py"`. Data remains the source of both
+copy sets, so nothing mirrors here; what data can offer — versioning
+`pipelines/snapshot.py`'s four LD8 constants and the `031` schema as a frozen
+interface — is the owner's call, not a unilateral one.
 
 **`m_cap_pct` is a live-request knob, never a stored property.** The cap
 is an engine kwarg (`ml_engine/rfm.py:278` → `store_rfm.py:115/140`,
