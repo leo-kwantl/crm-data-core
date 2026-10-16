@@ -326,7 +326,8 @@ two-row requirement is always **two nights of the same window**, never
 two different keys (this sentence read "two different `window_key` values for
 the same `mode`" until ml corrected it, 2026-10-17 — the error was data's
 prose, never the schema).
-Note `SNAPSHOTS_LIST_SQL` (`store_rfm.py:52-60`) projects no `window_key`
+Note `SNAPSHOTS_LIST_SQL` (`store_rfm.py:52-65`; SELECT list `:53-54`,
+ordering `:63`) projects no `window_key`
 (and orders `window_to DESC, scored_at DESC, id DESC` — period, not
 compute time), so a list client cannot see which window a row belongs to.
 Pairing on `window_key` must be **NULL-safe** (`IS NOT DISTINCT FROM`
