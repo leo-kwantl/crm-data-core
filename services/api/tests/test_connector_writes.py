@@ -305,21 +305,20 @@ async def test_write_404_code_aligned(client):
 
 
 async def test_ld2_schedule_cron_lifecycle(client, db_pool):
-    """LD2: schedule_cron set at create, updated/cleared via PUT, bad
-    cron rejected; sync heartbeat stamps the checkpoint."""
+    """LD2: a fresh connector is manual-only; the timetable is set /
+    updated / cleared through the schedule route, which is also where bad
+    cron is rejected (the create body carries no schedule)."""
     r = await _create(client, {
         "source_type": "csv", "name": "sched",
-        "config": {"column_map": {}},
-        "schedule_cron": "0 2 * * *"})
+        "config": {"column_map": {}}})
     assert r.status_code == 201, r.text
-    assert r.json()["schedule_cron"] == "0 2 * * *"
+    assert r.json()["schedule_cron"] is None  # never scheduled
     assert r.json()["last_sync_at"] is None
     cid = r.json()["id"]
 
-    bad = await _create(client, {
-        "source_type": "csv", "name": "bad-cron",
-        "config": {"column_map": {}},
-        "schedule_cron": "hourly"})
+    bad = await client.put(f"/api/v1/connectors/{cid}/schedule",
+                           json={"schedule_cron": "hourly"},
+                           headers=ADMIN_H)
     assert bad.status_code == 422
 
     put = await client.put(f"/api/v1/connectors/{cid}/schedule",
@@ -341,9 +340,10 @@ async def test_ld2_schedule_cron_lifecycle(client, db_pool):
 
 
 async def test_ld2_sync_heartbeat_stamps_checkpoint(client, db_pool):
-    """LD2: note_sync_result closes the run row AND checkpoints the
-    connector row (last_sync_at/status) in one call."""
-    from services.api.repos import connectors as repo
+    """LD2: the worker's note_sync_result closes the run row AND
+    checkpoints the connector row (last_sync_at/status) in one call, and
+    the serving layer renders that checkpoint read-only."""
+    from pipelines.ingest.connector_sync import note_sync_result
 
     r = await _create(client, {
         "source_type": "csv", "name": "beat",
@@ -353,13 +353,16 @@ async def test_ld2_sync_heartbeat_stamps_checkpoint(client, db_pool):
                           json={"entity": "orders"}, headers=ADMIN_H)
     run_id = s.json()["run_id"]
     from uuid import UUID
-    out = await repo.note_sync_result(
+    out = await note_sync_result(
         db_pool, UUID(run_id), "running", rows_seen=100)
     assert out == {"run_id": run_id, "status": "running"}
-    out = await repo.note_sync_result(
+    out = await note_sync_result(
         db_pool, UUID(run_id), "succeeded",
         rows_seen=100, rows_ok=98, rows_rejected=2)
     assert out["status"] == "succeeded"
+    got = await client.get(f"/api/v1/connectors/{cid}", headers=ADMIN_H)
+    assert got.status_code == 200, got.text
+    assert got.json()["last_sync_status"] == "succeeded"
     async with db_pool.acquire() as conn:
         run = await conn.fetchrow(
             "SELECT status, rows_seen, rows_ok, rows_rejected,"

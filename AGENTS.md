@@ -9,7 +9,7 @@ pytest services/api/tests/test_orders.py services/api/tests/test_customer_events
 
 - `member_id` must match `^M-[0-9]{6}$` — reject + quarantine, never coerce. `orders.store_id` NOT NULL (resolve store first).
 - Events/consents append-only; dedup key `(source, source_event_id)`; money in integer cents.
-- Owns future `01x_ingest_*` migrations; `db/` + `services/` mirror app (app owns base — sync, don't fork).
+- Owns future `01x_ingest_*` migrations. For any file present in **both** trees, app's checkout is the base (`db/`, `services/api/**`) — sync byte-for-byte, never fork; never delete a data-only harness file. `services/api/tests/**` is data's own harness and is **not** in a sync's scope; `pipelines/**` is data's (app vendors `pipelines/ingest/connectors.py` for serving). A mirrored module must be mirrored with the files it reads at import (`db/queries/*.sql`), or the tree imports and cannot boot. See `pipelines/contracts.md` §"Tree ownership & the mirror boundary".
 - Never edit `../crm-cdp-app`, `../crm-cdp-ml`.
 - `scripts/bootstrap_db.py` is DEV/CI ONLY — NEVER run against a live DB (TRUNCATEs 11 tables + reseeds demo; live = migrate-only).
 - Multi-pi (all optional/external): `register crm-data` visible (agent-comms, only if installed), room `data-contracts` (only if daemon runs; ingest-required/dedup/resolution/snapshot-math/migration = BREAKING @both, `contracts.md` first; ml-argv-only → `dm @crm-ml`; 2-party → `dm`); `dm_admit` crm-app/crm-ml once; review = directed `dm @target+branch`; `read_room` on start; `codegraph query <sym>` (external CLI, only if installed). New source/field → update `contracts.md` first, then announce as `[BREAKING|ADDITIVE|FYI] <scope> branch+migration`.

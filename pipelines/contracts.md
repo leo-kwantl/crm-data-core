@@ -24,6 +24,21 @@ file. In a **code comment** (which carries no revision context at all) cite
 the content plus that pinned sha, because its reader is the person least
 likely to know the thread existed (app, 2026-10-17).
 
+Citations also name a **tree**: `db/**` and `services/api/**` resolve to
+**app's** checkout (app owns the base; data carries a bootstrap subset —
+see the mirror-boundary section at the end of this file), while
+`pipelines/**` resolves to **data's**. So a cite that is out of range
+against data's shorter copy is not automatically stale, and a bare
+basename is a coin flip (16 cites in this file name a file that exists in
+both trees): resolve by tree, and label the tree in the cite when the
+number matters. `scripts/audit_doc_cites.py` is that rule as a guard —
+it resolves each cite in every tree holding the path and reports a
+split verdict as `disagrees` (never a failure), which is what the drift
+looks like: an ad-hoc run of the same resolution at data `f5237fb`
+reported 139 in-range and 1 flagged, and the guard reads `ok=140,
+disagrees=0` against the re-synced tree, so the flag went away with the
+drift it was measuring rather than with a documentation edit.
+
 Anchors carry their **file's** last-changed revision, not ml's repo HEAD
 (`git log -1 --format=%h -- <path>`), because a HEAD pin rots on any commit
 to *any* file (ml, 2026-10-17) — and per-file pins are only half the rule: a
@@ -1176,10 +1191,18 @@ sync checkpoint (`025_connector_schedule.sql`, [ADDITIVE]):
 (`validate_schedule_cron`; range-checked minute/hour/dom/month/dow);
 `PUT /connectors/{id}/schedule` set/clear (404
 `connector_not_found`, 422 bad cron). `last_sync_at`/`last_sync_status`
-(`queued|running|succeeded|failed`) stamped by the sync worker via
-`note_sync_result(run, status, counts)` — closes the run row AND the
+(`queued|running|succeeded|failed`) are stamped by the **sync worker**,
+not by the serving layer: `pipelines/ingest/connector_sync.py`
+`note_sync_result(run, status, counts)` closes the run row AND the
 connector checkpoint in one transaction (raises on bad status/counts
-or missing run). Incremental-extract helpers (no I/O): optional
+or missing run). The API only reads the checkpoint — `GET
+/connectors/{id}` renders it, `PUT /{id}/schedule` touches
+`schedule_cron` alone. App made the checkpoint **worker-owned** in its
+connector pass, which is why the writer is a pipeline module rather than
+a `services/api/repos` one: data's `4fa0cc3` had landed it inside the API
+copy of an app-owned file, and app's later edit dropped it there. The API
+still enqueues the run (`POST /{id}/sync` → `queued`); everything after
+that is the worker's. Incremental-extract helpers (no I/O): optional
 `pagination` config block (`page|cursor|offset`, cursor REQUIRES
 `cursor_param` — page-only extracts rejected as a smell; validated at
 registration; `default_limit` 1..1000); `since_pushdown` (server-side
@@ -1451,3 +1474,39 @@ can only assert agreement in a skip-if-absent test that copy-reads this tree.
 A version marker on the interface would let both sides assert agreement at
 import or in the manifest instead. That is a contract change, so neither side
 lands it unilaterally; recorded here so the trade-off is not rediscovered.
+
+## Tree ownership & the mirror boundary (app ruling 2026-10-17)
+
+- **The rule:** for any file present in **both** trees, app's checkout is
+the base — copy it byte-for-byte, never fork it, never delete a
+data-only file. Measured at app `4cbf297` / data `f5237fb`: data carried
+9 of app's 25 `db/queries/*.sql` and 77 of 141 `services/api/**/*.py`,
+so data holds a **bootstrap subset**, not a mirror; the 12 data-only
+files (`test_apply.py`, `test_upload.py`, `test_schedule.py`,
+`db/queries/kpi_daily.sql`, …) are harness, not drift, and a sync must
+not touch them.
+- **Harness is out of scope:** `services/api/tests/**` is data's own —
+data's `test_connectors.py` carries 19 cases app's does not (app has 1
+data doesn't), and data's `test_cohort.py` 4 (app has 2). A sync copies
+the runtime, not the tests; when app's runtime changes shape (e.g. a
+connector's cron moved from the create body to `PUT /{id}/schedule`),
+data updates **its** tests to the new API rather than keeping the old
+shape alive.
+- **Closure — learned the hard way:** mirror a module together with the
+files it reads *at import*, or the tree imports and cannot boot. App's
+`services/api/analytics/periods.py` reads
+`db/queries/analytics_comparisons.sql` at module level (`QUERIES_PATH`
+constant), so copying app's `routers/stats.py` + `repos/stats.py`
+without that module **and** that query left the API failing to start —
+`FileNotFoundError` inside every test's client fixture, 40 errors, not
+one of them about stats. Data now carries both files (`analytics/
+periods.py`, `db/queries/analytics_comparisons.sql`); the deficit was
+found by reading the fixture error, not by guessing from the diff.
+- **A mirror can move a writer's layer, and that is not a fork:**
+`note_sync_result` was data's, sitting in data's copy of an app-owned
+file (`services/api/repos/connectors.py`). App's ruling that the sync
+checkpoint is worker-owned moved the truth to data's layer, so the
+writer moved to `pipelines/ingest/connector_sync.py` and the app-owned
+file was left exactly as app has it. Editing an app-owned file to hold
+data's logic is a fork; putting that logic in a data-owned module is
+the fix, and it keeps the documented contract (§019 LD2) true.
