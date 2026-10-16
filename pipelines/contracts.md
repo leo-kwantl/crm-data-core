@@ -422,10 +422,15 @@ unlinkable defaults (`:217`), tier brand scope (`:287`) and staff-link defaults
 (`:331`) — none of them puts a NULL-`group_id` customer under a group-scoped
 run, so this predicate is a property with **no coverage in either suite**; a
 fixture would have to be added app/data-side if it is ever challenged.
-The switch that would **include** those rows instead of dropping them is
-`c.group_id IS NOT DISTINCT FROM $4::uuid` at the aggregate's `:30` (the
-operator the *listing* query already uses at `:57-58`, where unfiltered
-selection is the goal — the two must not be confused for each other)
+The switch that would **include** those rows instead of dropping them is to
+swap the aggregate's guard for the `IS NOT DISTINCT FROM` form. The aggregate
+filters by `AND ($4::uuid IS NULL OR c.group_id = $4::uuid)`
+(`ml_engine/store_rfm.py:30`, with `brand_id` at `:29`) — the `IS NULL OR`
+guard sits on the **parameter**, so a supplied scope leaves plain equality
+against a NULLable column and drops those rows — whereas the *listing* query
+already uses `brand_id IS NOT DISTINCT FROM $3::uuid` / `group_id IS NOT
+DISTINCT FROM $4::uuid` at `store_rfm.py:57-58`, where unfiltered selection is
+the goal; the two must not be confused for each other
 — **declined on purpose, not missed**: 011's design is exclusion, and a group
 run means the group's pool, not "the pool plus unassigned rows". Recorded so
 the choice is visible rather than rediscovered.
