@@ -302,19 +302,40 @@ Never pair v1 with v2 for movement: different writers decide the windows
 (same maths both ways — `store_ld8.compute_window` calls
 `store_rfm.compute_current` verbatim, `ml_engine/store_ld8.py:130-153`;
 v1 is an append-only single-window write, v2 is a four-window
-find-or-create, and only the SQL literal stamps `rules_version`), so
-cross-version movement is meaningless. The serving-side fix is
+find-or-create, and the *writer* decides the version, not the caller: the
+v1 INSERT takes it as a parameter (`store_rfm.py:36`, `:174` passing
+`computed["rules_version"]`, set by `RULES_VERSION = "v1"`, `rfm.py:24` —
+`create_snapshot` itself is version-agnostic), while the v2 INSERT
+interpolates the literal `'{RULES_V2}'` (`store_ld8.py:53`, `:56`,
+`RULES_V2 = "v2"` at `:36`)), so cross-version movement is meaningless. The serving-side fix is
 to take the newest snapshot's `rules_version` and then the two newest **of
 that version** for that `mode`/`window_key` in scope — returning the existing
 `need_two_snapshots` 404 when only one exists — not to relax the mismatch
-check. Note the pair is keyed by `mode`/`window_key`, **not by matching window
-bounds**: the live pair today is `92537b23` (`2025-10-17 → 2026-10-17`,
+check. Note the pair is the two newest rows of the same `mode` **and the
+same `window_key`** — the *bounds* need not match and normally do not
+(the live pair today is `92537b23` (`2025-10-17 → 2026-10-17`,
 `created_by=scheduler`) with `e234dc57` (`2025-10-16 → 2026-10-16`,
 `created_by=NULL`), both v2 and both `window_key='current'`, and
 `GET /rfm/movement?mode=rolling_365` answers 200 off them (app readback
 2026-10-17). Differing bounds are the normal case, since each tick
 find-or-creates its own window — which is also why a same-day re-run adds
-nothing to the pair.
+nothing to the pair. The `window_key` separates windows *within* a mode
+(`current` vs `mom`/`yoy`/`lifetime`); it never pairs across them, so a
+two-row requirement is always **two nights of the same window**, never
+two different keys (this sentence read "two different `window_key` values for
+the same `mode`" until ml corrected it, 2026-10-17 — the error was data's
+prose, never the schema).
+Note `SNAPSHOTS_LIST_SQL` (`store_rfm.py:52-60`) projects no `window_key`
+(and orders `window_to DESC, scored_at DESC, id DESC` — period, not
+compute time), so a list client cannot see which window a row belongs to.
+
+Those two INSERTs are the only production writes of `rules_version`
+(`store_rfm.py:36`, `store_ld8.py:53`; the app's POST reuses the former,
+and its only direct INSERTs are in
+`../crm-cdp-app/services/api/tests/test_rfm.py:451/513/537`), so a scope
+holding **only v1 rows** is exactly a scope **LD8 has never been ticked
+in** — the check is `SELECT DISTINCT rules_version` for that scope, and
+the remedy is a scoped LD8 run, not an empty-state fix (ml, 2026-10-17).
 
 **`m_cap_pct` is a live-request knob, never a stored property.** The cap
 is an engine kwarg (`ml_engine/rfm.py:278` → `store_rfm.py:114/139`,
@@ -398,7 +419,12 @@ aggregate is already scope-parameterized, `ml_engine/store_rfm.py:29-31`, and
 is a **runner** decision, not an ML one — and it does **not** fix the scoped
 role that night: the band pairs **two** `current` rows of the newest
 `rules_version` in scope, so each scope needs a second scoped night before it
-can populate.
+can populate — and the accurate copy is scope-neutral (*"no movement for
+this scope yet — movement appears once two snapshots of this window exist
+for this scope"*), because "the view needs a second night" is true of a
+hq/unscoped session and **false of a scoped one**: a second night still
+writes hq-stamped rows while the nightly's manifest scope stays hq-only,
+so the scope's own row count never moves.
 
 **Group scope is conjunctive by design, and its only silent exclusion is
 pre-group customers.** A group run requires `customers.group_id = g`
