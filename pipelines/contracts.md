@@ -428,7 +428,7 @@ either; and of the 10 declarers only 9 reference the column — the tenth is
 the flag does nothing (ml, 2026-10-17, re-derived here per file). It is also
 unreachable from a tick for a second reason: `churn_predict` is not an
 `ENGINE_BUILDERS` key (`pipelines/schedule.py:464-477` — ten engines) and
-dispatch raises `UnknownEngineError` for anything else (`:678-686`), so no
+dispatch raises `UnknownEngineError` (`:179`) for anything else (`:683-686`), so no
 scheduler argv can carry the flag to that job at all; only a direct ml-CLI
 hand-run reaches it, and that path writes no row either. A NULL in the
 column therefore dates the row to a **direct ml-CLI hand-run** of one of the 9
