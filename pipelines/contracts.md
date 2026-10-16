@@ -258,10 +258,11 @@ period, and never reuse a date whose window is on disk.
 
 `created_by` is passed through (`--created-by`;
 `scripts/run_pipeline.py:132` default `scheduler`), so through the runner a
-NULL is **unreachable**. Every `ml_jobs/run_*.py` declares `--created-by`
-with `default=None`, so a NULL in the column dates the row to a **direct
-ml-CLI hand-run** rather than to a caller who forgot the flag
-(`rfm_snapshots.e234dc57` is one). Pass a staff code wherever a job writes,
+NULL is **unreachable**. Every `ml_jobs/run_*.py` that writes a
+`created_by` column declares `--created-by` with `default=None` (10 of the
+12; `run_alive_path.py` and `run_matrix_batch.py` write no such column), so
+a NULL in the column dates the row to a **direct ml-CLI hand-run** rather
+than to a caller who forgot the flag (`rfm_snapshots.e234dc57` is one). Pass a staff code wherever a job writes,
 or the row is indistinguishable from "written by an unset caller" (this
 cost a manual row dump to diagnose).
 
