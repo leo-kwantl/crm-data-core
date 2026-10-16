@@ -1,0 +1,8 @@
+# This change owns no spec deltas: the pipeline/ingestion contract lives in
+# `pipelines/contracts.md` (the file the app and ml repos both read), and the
+# change is a repo split + table/runner scaffolding. Without `skip_specs`,
+# `openspec validate --changes --strict` reports "Change must have at least
+# one delta".
+schema: spec-driven
+created: 2026-10-17
+skip_specs: true
