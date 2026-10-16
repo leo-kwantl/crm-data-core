@@ -29,7 +29,14 @@ Read-only, stdlib only. Exit 1 on a hard failure (a cite out of range in every
 tree holding it, a stale pin; or — under ``--strict`` — a path in no tree).
 
     python scripts/audit_doc_cites.py
+    python scripts/audit_doc_cites.py --comments
     python scripts/audit_doc_cites.py --strict
+
+``--comments`` extends the same genres to the places the cites actually live:
+comment lines (``#`` in .py, ``--`` in .sql) and triple-quoted string bodies,
+where ml's and app's anchors are. Two boundaries are stated in the output rather
+than left to the reader: a default run is a pass over **markdown only**, and a
+trailing ``# …`` after code is not read, because attributing it means guessing.
 """
 
 from __future__ import annotations
@@ -38,6 +45,7 @@ import argparse
 import re
 import subprocess
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 
 SKIP_DIRS = {
@@ -46,6 +54,9 @@ SKIP_DIRS = {
 }
 EXTS = ("py", "sql", "md", "ts", "tsx", "js", "jsx", "json", "yaml", "yml",
         "toml", "sh")
+# What ``--comments`` reads out of a code file. A sha-shaped token in code is not
+# a citation, so only comment lines and triple-quoted bodies are scanned.
+COMMENT_PREFIX = {".py": ("#",), ".sql": ("--",)}
 CITE = re.compile(r"[\w./-]+\.(?:" + "|".join(EXTS) + r"):(\d+)(?:\s*-\s*(\d+))?")
 # Two genres of anchor, and **the form decides which** (app+ml, 2026-10-17) — a
 # guard that infers the genre by asking "does this sha equal `git log -1`?"
@@ -59,17 +70,89 @@ CITE = re.compile(r"[\w./-]+\.(?:" + "|".join(EXTS) + r"):(\d+)(?:\s*-\s*(\d+))?
 SHA = r"[0-9a-f]{7,40}"
 PATH_TOK = r"`[\w./-]+\.(?:" + "|".join(EXTS) + r")`"
 # The cue sits between the **last** path token and the sha; a repo name in front
-# of the path attributes the path's owner, not the revision, so
-# ``ml `store_ld8.py` `36e65e6` `` stays a cross-repo PIN (app, 2026-10-17).
+# of the path attributes the path's owner, not the revision, so a cross-repo
+# anchor keeps the genre its own form declares -- `ml `x.py` `sha`` is a pin,
+# `ml `x.py` as of `sha`` a label (app, 2026-10-17).
+#
+# The values here are schematic on purpose. This comment carried the same example
+# with real values (ml's `store_ld8.py` and a real revision) until the comment
+# pass flagged it as a stale pin within the hour: **an example written with real
+# values IS a citation**, so the fix is to stop writing live numbers into prose
+# about the rule, not to keep bumping them.
 PIN = re.compile(r"((?:" + PATH_TOK + r"(?:\s*[/,]\s*)?)+)\s*`(" + SHA + r")`")
 PIN_PATH = re.compile(r"`([\w./-]+\.(?:" + "|".join(EXTS) + r"))`")
 SHA_TOK = re.compile(r"`(" + SHA + r")`")
 
 
-def iter_md(root: Path):
-    for p in sorted(root.rglob("*.md")):
-        if not any(part in SKIP_DIRS for part in p.parts):
+def repo_files(root: Path) -> list[Path] | None:
+    """Tracked + untracked-not-ignored files; ``None`` when git cannot say.
+
+    Walking the filesystem instead audits example placeholders inside ignored
+trees (``.pi/`` vendored skill docs, app's find 2026-10-17): two permanent
+findings nobody can fix, which is how ``unclassified=0`` stops being
+achievable and a guard stops being read.
+    """
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(root), "ls-files", "-z", "--cached", "--others",
+             "--exclude-standard"],
+            capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if out.returncode != 0:
+        return None
+    return [root / name for name in out.stdout.split("\0") if name]
+
+
+def iter_md(root: Path, comments: bool = False):
+    """Markdown files, plus the comment-bearing code files under ``--comments``."""
+    suffixes = {".md"} | ({".py", ".sql"} if comments else set())
+    files = repo_files(root)
+    if files is None:  # not a git checkout: fall back to a directory walk
+        files = [p for p in root.rglob("*")
+                 if p.is_file() and not any(part in SKIP_DIRS for part in p.parts)]
+    for p in sorted(files):
+        if p.suffix in suffixes:
             yield p
+
+
+def text_units(doc: Path, comments: bool) -> list[tuple[int, str]]:
+    """The ``(lineno, text)`` units the guard reads for one file.
+
+    Markdown is read whole. Under ``--comments`` a code file contributes only its
+comment lines and triple-quoted string bodies -- the surface where the cites
+actually are -- with real line numbers, so a finding is still ``path:LINE``.
+    """
+    lines = list(enumerate(doc.read_text(encoding="utf-8", errors="replace")
+                           .splitlines(keepends=True), 1))
+    if not comments or doc.suffix == ".md":
+        return lines
+    prefixes = COMMENT_PREFIX.get(doc.suffix, ("#",))
+    units: list[tuple[int, str]] = []
+    quote: str | None = None
+    for lineno, raw in lines:
+        stripped = raw.strip()
+        if quote is not None:
+            units.append((lineno, raw))
+            if stripped.count(quote) % 2 == 1:
+                quote = None
+            continue
+        opener = next((q for q in ('"""', "'''") if stripped.startswith(q)), None)
+        if opener is not None:
+            units.append((lineno, raw))
+            if stripped.count(opener) % 2 == 1:
+                quote = opener
+            continue
+        if any(stripped.startswith(pre) for pre in prefixes):
+            units.append((lineno, raw))
+    return units
+
+
+@contextmanager
+def doc_units(doc: Path, comments: bool):
+    """Context-shaped seam so the audit loop reads units instead of a handle."""
+    yield text_units(doc, comments)
 
 
 def line_count(p: Path) -> int:
@@ -124,16 +207,24 @@ def path_at_rev(tree: Path, sha: str, path: str) -> bool:
     return out.returncode == 0
 
 
-def is_ancestor(tree: Path, sha: str) -> bool:
-    """True when ``sha`` is an ancestor of HEAD (false for a squashed branch tip)."""
+def reachable_refs(tree: Path, sha: str) -> list[str]:
+    """Advertised refs (``origin/*``, tags) reaching ``sha``; empty = unreferenced.
+
+    Judged against *advertised* refs rather than ancestry-of-HEAD or local
+    branches, because a citation asks "will a reader who clones this repo resolve
+    this sha?": a never-pushed branch, or an ``origin/<branch>`` left behind
+    after the branch was deleted upstream, keeps the object alive here and
+    absent in a fresh clone (app, 2026-10-17).
+    """
     try:
         out = subprocess.run(
-            ["git", "-C", str(tree), "merge-base", "--is-ancestor", sha, "HEAD"],
+            ["git", "-C", str(tree), "for-each-ref", "--contains", sha,
+             "--format=%(refname)", "refs/remotes/origin/*", "refs/tags/*"],
             capture_output=True, text=True, encoding="utf-8",
-            errors="replace", timeout=30)
+            errors="replace", timeout=60)
     except (OSError, subprocess.SubprocessError):
-        return False
-    return out.returncode == 0
+        return []
+    return [x.strip() for x in out.stdout.splitlines() if x.strip()]
 
 
 def changed_spans(tree: Path, old: str, new: str, path: str) -> list[tuple[int, int]]:
@@ -227,22 +318,21 @@ def _check_pin(counts, hard, info, seen, rel_doc, lineno, path, pinned, roots, i
                 ", ".join(f"{g} ({r.name})" for r, _, g in found), note))
 
 
-def audit_pins(root: Path, roots: list[Path],
-               idx: dict[str, list[Path]]) -> tuple[dict[str, int], list[str], list[str]]:
+def audit_pins(root: Path, roots: list[Path], idx: dict[str, list[Path]],
+               comments: bool = False) -> tuple[dict[str, int], list[str], list[str]]:
     """Check both anchor genres: pins for equality, revision labels for existence."""
     counts = {"pin-ok": 0, "pin-stale": 0, "pin-unresolved": 0,
-              "label-ok": 0, "label-detached": 0, "label-bad": 0,
+              "label-ok": 0, "label-unreferenced": 0, "label-bad": 0,
               "label-unknown": 0, "label-cross": 0, "repo-ok": 0,
-              "repo-detached": 0,
+              "repo-unreferenced": 0,
               "repo-elsewhere": 0, "no-commit": 0, "unclassified": 0,
               "sentinel-skipped": 0, "rowid-skipped": 0}
     hard: list[str] = []
     info: list[str] = []
     seen: set[tuple[str, str]] = set()
-    for doc in iter_md(root):
+    for doc in iter_md(root, comments):
         rel_doc = doc.relative_to(root)
-        with doc.open(encoding="utf-8", errors="replace") as fh:
-            lines = list(enumerate(fh, 1))
+        lines = text_units(doc, comments)
         # every `path:LINE[-LINE]` this doc makes, keyed by path: a stale pin is
         # judged by whether one of these ranges actually moved.
         cites_by_path: dict[str, list[tuple[int, int, int]]] = {}
@@ -303,13 +393,14 @@ def audit_pins(root: Path, roots: list[Path],
                                     rel_doc, lineno, paths[-1].group(1), sha))
                         elif any(path_at_rev(t, sha, rel) for t, rel in owns):
                             counts["label-ok"] += 1
-                            if not any(is_ancestor(t, sha) for t, _ in owns):
-                                counts["label-detached"] += 1
+                            if not any(reachable_refs(t, sha) for t, _ in owns):
+                                counts["label-unreferenced"] += 1
                                 info.append(
-                                    "label-detached %s:%d -> `%s` existed with %s but"
-                                    " is not an ancestor of HEAD (squash-merged"
-                                    " branch tip?)" % (rel_doc, lineno, sha,
-                                                       paths[-1].group(1)))
+                                    "label-unreferenced %s:%d -> `%s` existed with"
+                                    " %s but no origin ref or tag reaches it (a"
+                                    " fresh clone cannot resolve it; dies at the"
+                                    " next gc)" % (rel_doc, lineno, sha,
+                                                   paths[-1].group(1)))
                         elif [r for r in roots if r is not owns[0][0]
                               and commit_exists(r, sha)]:
                             # The sha is a commit in another repo while the path
@@ -336,38 +427,43 @@ def audit_pins(root: Path, roots: list[Path],
                             % (rel_doc, lineno, paths[-1].group(1), cue.strip() or
                                "<adjacent?>", sha))
                     else:
-                        tail = ctx[max(0, m.start() - 240):m.start()]
+                        # Text *before* the sha, not after it: the doc's own word
+                        # for a row id ("row `<id>`", "snapshot `<id>`") precedes
+                        # the token, so a parenthetical "(row id)" written after it
+                        # is not seen -- the window is named for the side it reads
+                        # (app's find, 2026-10-17).
+                        before = ctx[max(0, m.start() - 240):m.start()]
                         if commit_exists(root, sha):
                             # A sha with no qualifier in this repo's own doc is
                             # this repo's by default; nothing to attribute.
                             counts["repo-ok"] += 1
-                            if not is_ancestor(root, sha):
-                                counts["repo-detached"] += 1
+                            if not reachable_refs(root, sha):
+                                counts["repo-unreferenced"] += 1
                                 info.append(
-                                    "repo-detached %s:%d -> `%s` is not an ancestor"
-                                    " of this repo's HEAD"
+                                    "repo-unreferenced %s:%d -> `%s` is reached by no"
+                                    " origin ref or tag in this repo"
                                     % (rel_doc, lineno, sha))
                             continue
-                        if ROWISH.search(tail):
+                        if ROWISH.search(before):
                             # A snapshot/window row id reads exactly like a short
                             # sha; the doc's own words are what say it is not a
                             # revision, so the guard takes them.
                             counts["rowid-skipped"] += 1
                             continue
-                        hits = list(REPO_TOK.finditer(tail))
+                        hits = list(REPO_TOK.finditer(before))
                         repo = hits[-1] if hits else None
                         tree = next((r for r in roots if r.name == "crm-cdp-" +
                                      (repo.group(1) or repo.group(2)).lower()),
                                     None) if repo else None
                         if tree is not None and commit_exists(tree, sha):
                             counts["repo-ok"] += 1
-                            if not is_ancestor(tree, sha):
-                                counts["repo-detached"] += 1
+                            if not reachable_refs(tree, sha):
+                                counts["repo-unreferenced"] += 1
                                 info.append(
-                                    "repo-detached %s:%d -> `%s` exists in %s but is"
-                                    " not an ancestor of HEAD (a squash-merged branch"
-                                    " tip is expected to fail this)"
-                                    % (rel_doc, lineno, sha, tree.name))
+                                    "repo-unreferenced %s:%d -> `%s` exists in %s but"
+                                    " no origin ref or tag reaches it (unpushed or"
+                                    " deleted branch: a fresh clone cannot resolve"
+                                    " it)" % (rel_doc, lineno, sha, tree.name))
                         elif tree is not None:
                             elsewhere = [r.name for r in roots if r is not tree
                                          and commit_exists(r, sha)]
@@ -386,9 +482,11 @@ def audit_pins(root: Path, roots: list[Path],
                                 # is not checked out here.
                                 counts["no-commit"] += 1
                                 info.append(
-                                    "no-commit  %s:%d -> `%s` names no commit in any"
-                                    " checked-out tree (another system's hash, or a"
-                                    " repo not present)"
+                                    "no-commit  %s:%d -> `%s` is UNVERIFIABLE here:"
+                                    " no checked-out tree holds it (another"
+                                    " system's hash, a repo not checked out, or a"
+                                    " sha this clone never fetched) -- absence of a"
+                                    " verdict is not a pass"
                                     % (rel_doc, lineno, sha))
                         else:
                             counts["unclassified"] += 1
@@ -403,26 +501,29 @@ def audit_pins(root: Path, roots: list[Path],
 def basename_index(roots: list[Path]) -> dict[str, list[Path]]:
     idx: dict[str, list[Path]] = {}
     for root in roots:
-        for p in root.rglob("*"):
-            if not p.is_file() or p.suffix.lstrip(".") not in EXTS:
-                continue
-            if any(part in SKIP_DIRS for part in p.parts):
-                continue
-            idx.setdefault(p.name, []).append(p)
+        files = repo_files(root)
+        if files is None:
+            files = [p for p in root.rglob("*")
+                     if p.is_file() and not any(part in SKIP_DIRS
+                                                for part in p.parts)]
+        for p in files:
+            if p.suffix.lstrip(".") in EXTS:
+                idx.setdefault(p.name, []).append(p)
     return idx
 
 
-def audit(root: Path, peers: list[Path], strict: bool) -> int:
+def audit(root: Path, peers: list[Path], strict: bool,
+          comments: bool = False) -> int:
     roots = [root, *peers]
     idx = basename_index(roots)
     counts = {"ok": 0, "disagrees": 0, "out-of-range": 0, "unresolved": 0}
     hard: list[str] = []
     info: list[str] = []
 
-    for doc in iter_md(root):
+    for doc in iter_md(root, comments):
         rel_doc = doc.relative_to(root)
-        with doc.open(encoding="utf-8", errors="replace") as fh:
-            for lineno, text in enumerate(fh, 1):
+        with doc_units(doc, comments) as units:
+            for lineno, text in units:
                 for m in re.finditer(
                         r"[\w./-]+\.(?:" + "|".join(EXTS) + r"):\d+(?:\s*-\s*\d+)?", text):
                     span = m.group(0)
@@ -469,13 +570,22 @@ def audit(root: Path, peers: list[Path], strict: bool) -> int:
                                 rel_doc, lineno, span,
                                 ", ".join(f"{n}={c}L" for n, c, _ in where)))
             # end line loop
-    pin_counts, pin_hard, pin_info = audit_pins(root, roots, idx)
+    pin_counts, pin_hard, pin_info = audit_pins(root, roots, idx, comments)
+    audited = list(iter_md(root, comments))
     print("trees: " + ", ".join(str(r) for r in roots if r.is_dir()))
+    print("coverage: %d file(s) -- %s" % (
+        len(audited),
+        "markdown + comment lines/docstrings in .py/.sql" if comments else
+        "markdown only: cites in Python docstrings and SQL comments are outside"
+        " this pass, so green means green over one file type (add --comments)"))
     print("citations: " + ", ".join(f"{k}={v}" for k, v in counts.items()))
     print("pins: " + ", ".join(f"{k}={v}" for k, v in pin_counts.items()))
     print("  (a pin asserts equality with the file's last-changed revision; a"
           " label proves existence + ancestry, and with a path that the path was"
           " there at that sha -- never that the quoted words are)")
+    print("  (*-unreferenced = reached by no origin ref or tag: a fresh clone"
+          " cannot resolve it and the object dies at the next gc, so it is a"
+          " clock on the reader, not an error in the cite)")
     # `hard` is never capped (it is the exit condition); the informational
     # stream is, so the findings above cannot be buried by a long tail.
     shown = info + pin_info
@@ -494,6 +604,8 @@ def main() -> int:
                          "crm-cdp-app / crm-cdp-ml if present)")
     ap.add_argument("--strict", action="store_true",
                     help="also fail when a cited path is in no tree")
+    ap.add_argument("--comments", action="store_true",
+                    help="also read cites in `#`/`--` comments and docstrings")
     args = ap.parse_args()
 
     root = Path(args.repo).resolve()
@@ -502,7 +614,7 @@ def main() -> int:
                  if p.is_dir()]
     else:
         peers = [Path(p).resolve() for p in args.peer]
-    return audit(root, peers, args.strict)
+    return audit(root, peers, args.strict, args.comments)
 
 
 if __name__ == "__main__":
