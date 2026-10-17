@@ -739,9 +739,11 @@ def span_blank(roots: list[Path], cited: str, start: int, end: int) -> bool:
     -- reads green in every bucket at once, including
     ``cite-symbol-unchecked``. It is therefore **decidable**, not a hand-read:
     no sentence cites a blank line as its evidence, so the verdict can be a
-    bucket instead of advice. Reported by app (2026-10-17) against
-    ``pipelines/contracts.md:753``, where a cite of the skip ``reason=`` is now
-    three insertions stale -- the line it described is at ``:146``.
+    bucket instead of advice. Reported by app (2026-10-17) against a cite in
+    data's ``pipelines/contracts.md`` of the skip ``reason=`` in ml's
+    ``tests/test_ld8.py``: the cited line was blank, so every span-level filter
+    was vacuous while the sentence it described had moved on -- the defect was
+    an empty span, not a wrong number, and no count of *numbers* could see it.
 
     Only the direct tree-relative resolution is used, matching
     ``span_defines``: a path that resolves only by basename is left alone
@@ -808,7 +810,7 @@ def symbol_moved(roots: list[Path], cited: str, text: str, start: int,
     Three filters keep the hit honest: the sentence must name a symbol-shaped
     token **on the cite's own line**, and the cited span must *define* some
     other name -- otherwise a sentence that names a statement while deliberately
-    citing part of it (contracts.md:475 cites the scope conjuncts `:63-66` of
+    citing part of it (a cite of the scope conjuncts `:63-66` inside
     `SNAPSHOT_FIND_V2_SQL`) would be reported as a defect, and a bucket that
     fires on correct cites is as useless as one that hides bad ones -- and a
     candidate that *encloses* the span is the subject, not a mismatch (app,
@@ -820,8 +822,9 @@ def symbol_moved(roots: list[Path], cited: str, text: str, start: int,
     sites as `cite-symbol-unchecked` instead. Line scope has the same sharp
     edge in the other direction, and it is deliberately left to the author: a
     line naming **two** subjects reports the first cite against the second
-    name (`pipelines/contracts.md:817` did, naming `_scope_args` for one cite
-    and the helper for the next), and the fix there was the wrap, not a radius
+    name (a `pipelines/contracts.md` line did, naming `_scope_args` for one
+    cite and the helper for the next), and the fix there was the wrap, not a
+    radius
     -- narrowing candidates to the names *before* each cite was tried and
     discarded in the same pass, because it silently drops the trailing form
     ("cited `:NNN-NNN` for `X`") that the detector was built on: it cost 10
@@ -1014,8 +1017,8 @@ def audit(root: Path, peers: list[Path], strict: bool,
                             # the one outcome this guard must not produce. It is
                             # reported rather than resolved, because widening
                             # the candidate set to the window flags correct
-                            # cites (`pipelines/contracts.md:369` on
-                            # `store_segments.py:174-181`, `:817` on
+                            # cites (three in data's `pipelines/contracts.md`,
+                            # on `store_segments.py:174-181` and
                             # `schedule.py:255-263` -- measured 2026-10-17).
                             counts["cite-symbol-unchecked"] += 1
                             near = ", ".join(sorted(_symbols(win))[:2])

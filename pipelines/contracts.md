@@ -1,219 +1,48 @@
 # Source → table contracts
 
-Reading citations here: the **symbol** is the anchor (`store_ld8.run_ld8`,
-`_checked_body`, `PAIR_WINDOWS`) and a line number is only ever stated with
-an `as of <commit>` — a bare line number is a promise the next commit breaks
-silently. Grep the symbol; refresh the anchors when you touch the cited file.
-**Pin the revision and both ends of the span together**: cite what you
-actually read, at the revision you actually read it (`git show <sha>:path`),
-and end the citation where the *statement* ends rather than where your
-reading did. When two readings differ by a **constant offset**, suspect two
-revisions rather than an error: one line added above a span shifts every
-number below it (ml `e423f70`'s third `RETURNING` line moved the INSERT's
-parameter block from `:178` to `:179`, and `engine.RULES_VERSION` from `:152`
-to `:153`), so `git show` both revisions before publishing a correction. A
-peer's worktree is a moving target — a reviewer reading it
-while the peer lands the fix will confirm the fixed state and can call a
-correct claim wrong, which puts a false correction in this file rather than
-in a chat (both happened here on 2026-10-17: the `store_rfm` `RETURNING`
-attribution, and two half-statement spans). Pin line numbers **once per cited file, per
-revision** (one `as of ml <sha>` line for a whole section) instead of per
-claim, and cite the revision **you read**, not HEAD — a witness number stays
-true forever, while "as of HEAD" rots on the next unrelated commit to that
-file. In a **code comment** (which carries no revision context at all) cite
-the content plus that pinned sha, because its reader is the person least
-likely to know the thread existed (app, 2026-10-17).
+Reading citations here: the **symbol** is the anchor (`store_ld8.run_ld8`, `_checked_body`,
+`PAIR_WINDOWS`), never a number — a line number is stated only with an `as of <sha>`, since a bare
+line number breaks silently at the next commit. Cite what you read, at the revision you read it
+(`git show <sha>:<path>`), and end the citation where the *statement* ends, not where your reading
+did. A **constant offset** between two readings means two revisions, not an error: `git show` both
+before publishing a correction. A pin is **per cited file, not repo HEAD** (`git log -1 --format=%h --
+<path>`) and is **regenerated at paste time, never copied**, since a copied value rots before the doc
+stores it.
 
-Citations also name a **tree**: `db/**` and `services/api/**` resolve to
-**app's** checkout (app owns the base; data carries a bootstrap subset —
-see the mirror-boundary section at the end of this file), while
-`pipelines/**` resolves to **data's**. So a cite that is out of range
-against data's shorter copy is not automatically stale, and a bare
-basename is a coin flip (16 cites in this file name a file that exists in
-both trees): resolve by tree, and label the tree in the cite when the
-number matters. `scripts/audit_doc_cites.py` is that rule as a guard —
-it resolves each cite in every tree holding the path and reports a
-split verdict as `disagrees` (never a failure), which is what the drift
-looks like: an ad-hoc run of the same resolution at data `f5237fb`
-reported 139 in-range and 1 flagged, and the guard reads `ok=140,
-disagrees=0` against the re-synced tree, so the flag went away with the
-drift it was measuring rather than with a documentation edit.
+Citations also name a **tree**: `db/**` and `services/api/**` resolve to **app's** checkout,
+`pipelines/**` to **data's** (see the mirror-boundary section at the end of this file). A path
+mirrored byte-identically in two trees cannot carry a pin — **currency is the tree's property,
+content is the revision's** — and a bare basename is a coin flip. Resolve by tree, and name the tree
+when the number matters.
 
-Anchors carry their **file's** last-changed revision, not ml's repo HEAD
-(`git log -1 --format=%h -- <path>`), because a HEAD pin rots on any commit
-to *any* file (ml, 2026-10-17) — and per-file pins are only half the rule: a
-commit **inside** the pinned file still moves every anchor below it, so pins
-are taken per file and anchors re-derived per cite, never offset (app,
-2026-10-17). The "As read here" list below was meant to be that rule's
-demonstration and turned out to disprove it: **five of its ten pins were stale
-when the check for them was added** (`scripts/audit_doc_cites.py`, the `pins:`
-line), `ml_engine/store_ld8.py` among them — ml handed the value over as
-`c61fa0d` and that file moved again three commits later (`b66f591`, `de192ab`,
-`36e65e6`), so the pin was stale **as written**. That file is not the exception
-because pins are hard, it is the extreme case: ml committed to that one path
-six times (`9f9093f`, `4a54edb`, `c61fa0d`, `b66f591`, `de192ab`, `36e65e6`)
-while other paths sat still. **A pin is regenerated, never copied** —
-`git log -1 --format=%h -- <path>`, at paste time — because the value rots in
-the gap between the message that states it and the doc that stores it.
+**Two genres, and the difference is what a sha can be checked against.** A path token (bare or
+backticked; backticks are punctuation, not the rule) immediately followed by a backticked sha **on the
+same line** is a **pin** — equality with that file's last-changed revision. A sha carrying a cue word
+(`read at` / `measured at` / `as of`) is a **label** — existence plus ancestry, and with a path, that
+the path was there at that sha. A label proves **never** content: a count-neutral edit leaves every
+line valid while replacing the words at them, so only a human re-verifies a quotation. A default run
+is **markdown only** and `scripts/audit_doc_cites.py` prints that boundary beside its counts; a sha
+with neither a path nor a repo name is unjudgeable, reported as `unclassified`, never guessed. A row
+id is not a revision, and one pin never covers several paths or a wrapped pair.
 
-Where a paragraph's argument is about *behaviour* rather than
-location, the **grep-unique statement name is the primary cite** and the line
-number is secondary with an explicit `as of <sha>` (ml, 2026-10-17) — a line
-in a document rots on any insert above it, so the name is the part that
-cannot drift. Facts lifted from the shared agent daily log carry **no
-provenance** — all three sessions append to one file, so a peer's note reads
-as one's own when searched (app, 2026-10-17: two strings it never wrote turned
-up as first-person entries); attribute an entry only if it is prefixed
-(`app:`/`data:`/`ml:`), otherwise treat it as unattributed and re-derive
-before citing it. As read here: `ml_engine/store_rfm.py` `d007ddc`,
-`ml_engine/store_ld8.py` `f132233`, `ml_engine/rfm.py` `d007ddc`,
-`ml_engine/store_segments.py` `d007ddc`, `ml_engine/store_explain.py`
-`4a8f994`, `ml_engine/store_forecast.py` `4a8f994`,
-`ml_engine/segment_movement.py` `e8934a7`, `ml_engine/btyd.py` `87734e8`,
-`ml_jobs/manifest.py` `e1c2cf4`, `ml_jobs/run_matrix_batch.py` `bb6b45c` —
-regenerated at paste time and checked by the guard, which is the only state in
-which this list means anything. **Two genres, and the difference is what a
-sha can be checked against** (data + app + ml, 2026-10-17): a path token — `x.py` or `` `x.py` ``, backticks are punctuation and not the rule — immediately
-followed by a backticked sha is a **pin** — equality with that file's last-changed revision (`git log -1 --format=%h -- <path>`), the pair on **one** line (the scan is per line, so a wrap makes a citation invisible, not weaker; a path mirrored byte-identically in two trees cannot carry a pin at all — **currency is the tree's property, content is the revision's**, so a mirrored migration goes in the label genre with the owning tree named, and `pin-ambiguous` says so rather than picking an owner silently (app, 2026-10-17);
-a comment-mode wrap is stripped of its `-- `/`# ` marker rather than tolerated); a sha carrying a cue
-word (`read at` / `measured at` / `as of`) is a **label** — existence plus
-ancestry, and with a path, that the path was there at that sha. A label proves
-**never** content: a count-neutral edit leaves every line valid while replacing
-the words at them, so a quotation at a revision is a label and only a human can
-re-verify it. A sha with neither a path nor a repo name is unjudgeable and the
-guard reports it rather than guessing, so `unclassified=0` reads "every sha here
-declared its genre" (two genres diverging on one commit: `## Pin half-life, worked`). `--comments` runs the same two genres over comment lines and
-triple-quoted string bodies in `.py`/`.sql`, which is where most cites actually
-live (`citations ok=169` there against `164` over markdown alone); a default run
-is a pass over **markdown only**, and the tool prints that boundary beside its
-counts so a green run is never read as a green tree. And a snapshot/window **row
-id** is not a revision at all:
-the guard reads the doc's own word (`row` / `pair` / `id`) and skips it. One path
-per pin deliberately: a `sha` written
-once after a slash-continuation of paths (`a.py`/`b.py` `sha`) is invisible to
-the guard in exactly the way a bare `:NN` continuation is (above) — and the
-stale `store_segments.py` pin hid in precisely that form while its two
-neighbours were fine.
+A grep-unique statement name is the primary cite; a bare `:NN` is legitimate only where the file is
+named in the same sentence, and a bare number with **no referent in scope** clears the checks
+vacuously. **"Your file still says X" is itself a claim that needs its revision**: quote it with
+`git show <sha>:<path>`, and read `git log --oneline -- <path>` to see whether a later commit already
+acted on it. Facts from the shared agent daily log carry **no provenance** unless prefixed
+(`app:`/`data:`/`ml:`); re-derive before citing.
 
-- **"Your file still says X" is itself a claim that needs its revision** (ml,
-  2026-10-17): quote it with `git show <sha>:<path>` and read
-  `git log --oneline -- <path>` to see whether a later commit already acted on
-  it, *before* asking for a change. Its first firing was against data's report
-  of ml's tree: in-room, data quoted `a891f08`'s text as ml's current state
-  when it belongs to ml's `c49a851` revision, and ml's own `9f9093f` had
-already dropped it — `git show c49a851:ml_engine/store_ld8.py` has 1 hit for
-  `a891f08`; ml HEAD has 0. Note which side held the date: this file's entry
-  named `c49a851` and credited `9f9093f` from the start, so the doc was right
-  and the message was wrong. The fix is not "be careful with peers' trees",
-  it is **date every quote** — the same rule as the pins above, where the
-  sentence was real and the revision it belonged to was not stated.
-
-Two further failure modes need no movement at all, and archaeology separated
-them (app, 2026-10-17, times +0800 from the commit clock):
-
-- **Stale at birth** — construct right, number right *in the message it was
-  copied from*, and already out of date when written. app's
-  `db/queries/analytics_segment_matrix.sql:3` cited `model_fits.py:54` at
-  21:13:54, but `:54` stopped being `MATRIX_FOR_RUN_SQL` at data `294517b`
-  (18:15:16) — three hours earlier. One sentence, two sources seven minutes
-  apart, two revisions; no "rotted by <commit>" sentence can describe it.
-  This is the **dominant** failure here: **copy-lag, not rot**.
-- **Misaimed construct** — the number never moved and was never right. It has
-  **exactly one verified instance**, and it is app's, not ml's: app's
-  `db/queries/rfm_windows.sql:2` at `995cc2f` (10-15 22:06:05) said "Canonical
-  row SQL is data-owned (… `pipelines/snapshot.py:342`)" while that file's
-  two readers mirror `SIZES_FOR_WINDOW_SQL`/`MOVEMENT_FOR_PAIR_SQL` — at the
-  revision current that day (`412f9d7`) those were `:356`/`:363`, and `:342`
-  was `SEGMENT_SIZE_UPSERT_SQL`, the **writer** of the sizes rows. No revision
-  holds that number for the referent, and no offset arithmetic reaches it; the
-  line was plausible only because "canonical row SQL" hedges between the
-  writer and the readers. **Closed, not live** — app re-anchored the cite by
-  constant name at `0d8ed83`, added the read revision (`beaf4e7`), then made
-  the pin per file (`d3cf89d`), where the header names the two readers and
-  records `pipelines/snapshot.py` read at `f889386` (app, 2026-10-17). The one
-  bare peer number data kept raising as a non-defect there is closed too: app
-  `6f80430` (`2 2 db/queries/rfm_windows.sql`) pins
-  `db/migrations/031_rfm_time_aware.sql:19-20` at `412f9d7` — that file's
-  **only** revision, so `git log --` is the check — in the header at `:9`,
-  verified in app's tree (app, 2026-10-17). **A correction to this file's own earlier verdict**
-  ("both candidates collapsed, no verified instance") — app's half did not
-  collapse, it was re-read against the write revision and the referent (ml,
-  2026-10-17). ml's `store_ld8.py:70` cite is the rotted half and was correct
-  when written (data's `snapshot.py:342` was `SEGMENT_SIZE_UPSERT_SQL` from
-  `412f9d7` 18:13:32 through `5f91e16` — the four mirrored statements were a
-  contiguous run seven lines apart, `:342`/`:349`/`:356`/`:363`, so the cite
-  named the **first line of the exact block it described**, and they are
-  `:373`/`:380`/`:387`/`:394` (+31) at `f889386`) and rotted only with data's
-  `f889386` (10-17 01:09:24). Note the attribution check that goes with it:
-  `git log 412f9d7..HEAD -- pipelines/snapshot.py` returns **that one commit,
-  so "rotted by A and B" is itself a claim to verify** — ml `c49a851` names
-  `a891f08`/`f889386`, but `a891f08` is an *ancestor* of `412f9d7` and the
-  four constants did not exist before it (the file was 206 lines and its last
-  statements were the KPI/cohort ones at `:64`/`:112`/`:143`/`:199`), which is
-  what ml's own `9f9093f` had already concluded. Keep the check, not the
-  examples. A related shape, with no defect in it: app's `beaf4e7` pinned
-  citations per claim and app's own next commit `d3cf89d` rewrote that to a
-  per-file pin — "correcting the correction" twice in a row, each correct in
-  the file, which is why the pattern is worth naming separately from the
-  errors (app, 2026-10-17).
-
-So "was it right when written?" is a question about **write timestamps across
-repos**, not about the revision the author says they read, and the pin has to
-be taken **at paste time**. What stands demonstrated is the part that makes
-any of this decidable at all: each sentence above was unresolvable while it
-was a prose referent plus a number — naming the construct is the fix, not the
-number. A bare `:NN` is legitimate where the file is named in the same
-sentence (both repos cite that way; app's sweep found six such hits and no
-defect), but a bare number with **no referent in scope** clears all three
-checks at once because there is no file to disagree with — data's own
-`:938-943`, offered as the file's `segment_movement` pair cite, matched no ml
-file at all and is the one instance of that class found here (data,
-2026-10-17). Two copies of one source line also share one **expiry date**: ml's
-`store_ld8.py:70` (21:29:02) and app's `db/queries/rfm_windows.sql:2`
-(22:06:05) both cited `snapshot.py:342` with **opposite histories** — one
-correct for the block it named and rotted by data's `f889386`, one never that
-line at any revision (that header now names the constants and pins the file,
-app `d3cf89d`) — and neither the worktree nor the offset tells them
-apart: `:342` looks equally plausible either way, because at *some* revision
-it was a real statement. Only `git show <sha>:<path>` at the revision the
-claim was made, plus the revision you read, separates them (ml,
-2026-10-17) — so "I verified this citation" is not portable, only "verified
-for the tree it was written in".
-
-A **docstring-only commit in a BREAKING-category file** is still a claim, so
-check it rather than accept it: `git show --stat` for the shape, then parse
-both revisions, blank every leading string constant (`ast.Constant` at
-`body[0]`) and compare `ast.dump` — equal means no code moved, which is what
-"comments only" asserts (app/data, 2026-10-17, on app's `bc9cb59` and
-`9f5a67b`: both AST-identical, while `--stat` read `+15/-0` and `+6/-5`). The
-check's scope is **constant values, not call shape**: ml's `65ddcab` adds a
-`help=` keyword to a declaration and the blanked ASTs are *not* equal, because
-an added `ast.keyword` is structure that blanking cannot remove — so
-AST-equality licenses "no code moved" only where the diff is inside existing
-constants, and a changed call signature needs the hunk read (data,
-2026-10-17, found by running it here rather than asserting it). The corollary is about **subjects**, not just diffs: a `docs(...)` subject licenses "no logic moved" and never "nothing user-visible changed", because `--help` text *is* user-visible behaviour — ml's `65ddcab` is `docs(ml_jobs)` whose only observable delta is argparse help (ml, 2026-10-17). The
-check is only meaningful when the diff touches string constants — the case
-where `--stat` looks alarming — and it is cheaper than reading the docstring
-to decide whether to believe its own commit message.
-
-A **count inside a message is a claim like any other**, and a `--stat` figure
-is the one a reader is least likely to re-derive, so run the command **at the
-revision you cite** and paste its output rather than the shape of the edit you
-made: app announced `+16/-8` for a commit whose `--numstat` is `6 5` (file
-72 → 73 lines), and the invented pair was quoted in the same sentence as the
-correct worktree one (app, 2026-10-17). ml's "all 11 `run_*.py` files" is the
-same class from the other end — the listing it pasted had 12 files and the
-flag is on 10 (ml, 2026-10-17, corrected in `f00c564`). Both were written from
-intent rather than from the command, which is why **the numbers inside prose
-are the fourth checkable class** — and the one that survives longest, because
-nothing downstream recomputes it. The class splits in two and only one half is
-mechanical: a figure is checkable when the same sentence binds it to a sha
-(`git show --numstat <sha> -- <path>`, tab-separated, no graph wrapping,
-per-file) — a number written *in the same act as the commit*, before the sha
-exists, can only be re-derived afterwards, never checked at birth (ml,
-2026-10-17). `--numstat` over `--stat` for exactly that reason: it exposes the
-multi-file commit, whose per-file pair cannot be summarized as one `+N/-M`
-without being wrong by construction.
+A **docstring-only commit** is still a claim: `git show --stat`, then parse both revisions, blank every
+leading string constant (`ast.Constant` at `body[0]`) and compare `ast.dump` — equality means no code
+moved, but only where the diff is inside existing string constants, because an added `ast.keyword` is
+structure blanking cannot remove; a changed call signature needs the hunk read. The **subject** is a
+claim too: a `docs(...)` subject licenses "no logic moved", never "nothing user-visible changed",
+because `--help` text *is* user-visible behaviour. A **number inside a message is a claim like any
+other**: run the command **at the revision you cite** and paste its output, using `--numstat`
+(`git show --numstat <sha> -- <path>`, per-file, tab-separated), not `--stat`, since a multi-file
+commit's per-file pair cannot be summed as one `+N/-M`. A figure is checkable only when the same
+sentence binds it to a sha; a number written with the commit, before the sha exists, can only be
+re-derived afterwards.
 
 ## customers
 
@@ -278,764 +107,90 @@ jobs — see **Daily RFM writer** below. Queries in
 `db/queries/kpi_daily.sql`.
 Scope columns (`brand_id`, `group_id`, NULL = group-wide) match 012.
 
-**Day boundary is business time (Asia/Hong_Kong, +08) — rule added
-2026-10-17.** `as_of` / `window_from` / `window_to` are business-day
-dates, not server- or host-timezone days: the effective instant of a
-bound named `2026-10-16` is `2026-10-16T00:00+08` = `2026-10-15T16:00Z`.
-`rfm_snapshots.window_from` is a `date` column, so **no stored row
-reveals the offset** — a reader who assumes `SHOW TimeZone` (GMT on this
-stack) or the host clock silently disagrees by up to 8h. ML now pins the
-naive->aware conversion explicitly (`ml_engine/rfm.py:_day_start`,
-`ZoneInfo("Asia/Hong_Kong")`); zero stored values change on a +08 host,
-so no `RULES_VERSION` bump was needed.
+**Snapshot day boundary is business time (Asia/Hong_Kong, +08).**
+- `as_of` / `window_from` / `window_to` are business-day dates: a bound named `2026-10-16` is `2026-10-16T00:00+08` = `2026-10-15T16:00Z`. `rfm_snapshots.window_from` is a `date`, so no stored row reveals the offset; a reader assuming `SHOW TimeZone` (GMT on this stack) or the host clock is wrong by up to 8h.
+- ML pins the naive->aware conversion (`ml_engine/rfm.py:_day_start`, `ZoneInfo("Asia/Hong_Kong")`); zero stored values change on a +08 host, so no `RULES_VERSION` bump.
+- Fixed 2026-10-17 in `pipelines/snapshot.py` (no migration, no schema change): every bucket-deciding trunc carries the offset (`BUSINESS_TZ_SQL`, `pipelines/snapshot.py:144-146`, `AT TIME ZONE interval '{BUSINESS_TZ_OFFSET_HOURS} hours'`).
+- `business_today()` (`pipelines/snapshot.py:245`) = `datetime.now(timezone(timedelta(hours=8))).date()` is the default `--as-of` of `scripts/run_daily_snapshot.py:70` and `scripts/run_pipeline.py:144`.
+- `BUSINESS_TZ_NAME` keeps the zone name (app pins `TIME_ZONE` in `apps/web/lib/format.ts`, ML pins `ZoneInfo`).
+- The defects: `date_trunc($1::text, ordered_at)` ran in the **session** zone (GMT), so week/month cohorts were UTC — over 8,685 orders, 137 month / 628 week / 3,698 day shift; and the `current` cutoff was server `CURRENT_DATE - 1` while both scripts defaulted `--as-of` to host `date.today()` (they disagree 00:00-08:00 local).
+- **Cohort figures change by design; old and new are NOT comparable.** Over 940 purchasing customers, 10 month / 62 week / 0 year cohorts move. `cohort_snapshots` was purged and regenerated: its grain UNIQUE (`granularity, cohort_period, period_offset, COALESCE(brand_id), COALESCE(group_id)`, `020_cohort_snapshots.sql:31`) has **no tz component**, so a re-run without the purge would mix UTC and +08 generations in the heatmap. Post-fix: offset-0 `cohort_size` == +08 recomputation for all 36 month / 152 week / 4 year buckets, 940 members each.
+- Server-zone exception, one CHECK: every stored date is passed as an explicit `$1::date` parameter, except `db/migrations/017_customers_demographics.sql:11 CHECK (date_of_birth IS NULL OR date_of_birth <= CURRENT_DATE)`, evaluated in the **server** zone (a today DOB is then a violation 00:00-08:00 HKT). Deliberately not tightened — a false rejection of a newborn's DOB is worse than a one-day-future value.
+- Environment trap: this pgembed install ships **no tzdata**, so `AT TIME ZONE 'Asia/Hong_Kong'` raises `time zone "Asia/Hong_Kong" not recognized`; any SQL-side pin must use the explicit offset form (Hong Kong has no DST).
 
-Two data-side gaps in the same class (found 2026-10-17, owner GO
-2026-10-17, **both FIXED in the same commit** — see below):
+**Which `as_of` default do you get?** Read the call site, not the column.
 
-1. `pipelines/snapshot.py` cohort SQL truncated with
-   `date_trunc($1::text, ordered_at)`, which PG evaluates in the
-   **session** zone (GMT) — so week/month cohort buckets were UTC
-   boundaries while the snapshot dates are +08. Blast radius over 8,685
-   orders: 137 shift month bucket, 628 shift week bucket, 3,698 shift
-   day bucket.
-2. The `current` cutoff was server `CURRENT_DATE - 1`, while
-   `scripts/run_daily_snapshot.py` / `scripts/run_pipeline.py` defaulted
-   `--as-of` to host `date.today()`; during 00:00-08:00 local those
-   disagree (observed server `2026-10-16` vs +08 `2026-10-17`).
+| source (default when `as_of` is omitted) | resolves to |
+|---|---|
+| data `pipelines/snapshot.py:245 business_today()` (+08 fixed offset), used by `scripts/run_daily_snapshot.py:70`, `scripts/run_pipeline.py:144` | +08 business date |
+| data scheduler `pipelines/schedule.py:293` in `_with_common` | passes `--as-of ctx.as_of`; `explain_batch` / `assoc_batch` / `matrix_batch` / `recs_batch` declare no `--as-of` (argparse rejects it, `pipelines/schedule.py:441`) — always explicit or absent |
+| ml `ml_engine/rfm.py:79 business_today()` (`ZoneInfo("Asia/Hong_Kong")`), applied by `ml_engine/rfm.py:123` in `resolve_window(...)` (`:101` def), `ml_engine/store_ld8.py:240 run_ld8(...)`, `_coerce_as_of` of `store_churn.py:217`, `store_clv.py:189`, `store_forecast.py:50`, `store_segments.py:419` | +08 business date |
 
-**FIXED 2026-10-17 (`pipelines/snapshot.py`, no migration, no schema
-change):** every bucket-deciding trunc now carries the offset
-(`BUSINESS_TZ_SQL`, `pipelines/snapshot.py:144-146`: a parenthesized f-string
-`AT TIME ZONE interval '{BUSINESS_TZ_OFFSET_HOURS} hours'`, quoted condensed), the cohort UPSERT + `/stats/overview`
-month series use it, and the cutoff source is explicit:
-`business_today()` = `datetime.now(timezone(timedelta(hours=8))).date()`,
-used by both scripts as the default `--as-of`. The zone NAME is kept in
-`BUSINESS_TZ_NAME` + the constant's comment so the offset never floats
-free of the business zone (app pins `TIME_ZONE` in
-`apps/web/lib/format.ts`, ML pins `ZoneInfo("Asia/Hong_Kong")` — all
-three repos now name the same business day).
+Guard `tests/test_engine.py:382-408` pins an in-band instant 17:37Z = 01:37 HKT.
 
-**Cohort figures change by design and old/new are NOT comparable.**
-Recomputed over the 940 purchasing customers: 10 customers' month
-cohort, 62 week cohort, 0 year cohort move (they are the customers whose
-FIRST order sits in the 16h band). `cohort_snapshots` was purged and
-regenerated in the same commit — the grain UNIQUE
-(`granularity, cohort_period, period_offset, COALESCE(brand_id),
-COALESCE(group_id)`, `020_cohort_snapshots.sql:31`) has **no tz
-component**, so without the purge a re-run would leave the UTC
-generation alongside the +08 rows and the heatmap would silently mix two
-generations. Verified post-fix: stored offset-0 `cohort_size` ==
-+08 recomputation for all 36 month / 152 week / 4 year buckets, 0
-missing, 0 extra, 0 mismatches; 940 members at every granularity.
+**`--as-of` labels a run; it does not anchor a fit.** The OVERALL/current segments fit is always the current rolling-365 business window (`_fit_overall`, `ml_engine/store_segments.py:174-181`; same at `store_explain.py:97-98`), so a run row's `as_of` is an idempotency/version key, not a window key. For a backfill only `forecast` (`as_of` → `forecast_demand`, `store_forecast.py:80-81`) and `ld8` (`resolve_ld8_window(key, as_of)`) derive a window from `--as-of`; churn/clv fit against `datetime.now(timezone.utc)` and segments-overall fits the current window, so re-running an old `as_of` there **relabels** today's fit.
 
-Environment note: this pgembed install ships **no tzdata**
-(`pgembed/pginstall/share/postgresql/timezone` missing), so no named zone
-works in SQL here — `AT TIME ZONE 'Asia/Hong_Kong'` raises
-`time zone "Asia/Hong_Kong" not recognized`, while an explicit offset
-(`AT TIME ZONE interval '8 hours'`) works. Any SQL-side pin must use the
-offset form (Hong Kong has no DST, so it is semantically identical
-forever).
-
-**Which `as_of` default do you get? (inventory, 2026-10-17, after ml
-`4a8f994`).** Read the call site, not the column — and since `4a8f994`
-there is exactly ONE default in the ml package:
-
-| source (default when `as_of` is omitted) | resolves to | business-day? |
-|---|---|---|
-| data `pipelines/snapshot.py:245 business_today()` (`+08` fixed offset), used as the default `--as-of` by `scripts/run_daily_snapshot.py:70` and `scripts/run_pipeline.py:144` | +08 business date | yes |
-| data scheduler — `pipelines/schedule.py:293` in `_with_common` | passes `--as-of ctx.as_of` for every engine whose CLI declares it; `explain_batch` / `assoc_batch` / `matrix_batch` / `recs_batch` take no `--as-of` at all (argparse rejects it — `pipelines/schedule.py:441`), so their args are always explicit or absent, never guessed | n/a (explicit) |
-| ml `ml_engine/rfm.py:79 business_today()` (`ZoneInfo("Asia/Hong_Kong")`) — the default applied by `ml_engine/rfm.py:123` inside `resolve_window(...)` (`:101` def), `ml_engine/store_ld8.py:240 run_ld8(...)`, and the `_coerce_as_of` of all four other run writers (`store_churn.py:217`, `store_clv.py:189`, `store_forecast.py:50`, `store_segments.py:419` — each imports the helper directly, so no UTC path remains) | +08 business date | yes |
-
-Closed by ml `4a8f994` (no migration, no schema, no `RULES_VERSION`, no
-argv change; guard `tests/test_engine.py:382-408` pins an in-band instant
-17:37Z = 01:37 HKT and asserts all four plus the explicit
-str/date pass-throughs).
-
-History, because the first version of this note **overstated** it: the
-four copies read the UTC clock, but only **segments** contradicted
-itself. churn/clv anchor their calibration frame at a UTC *instant*
-(`store_churn.py:147`, `store_clv.py:111`) and forecast derives its
-periods from the same `as_of_date` — and no date from that frame is
-persisted (`churn_snapshots`' insert takes only `as_of, activity,
-horizon_days, fit, customer_count, created_by, brand_id, group_id`;
-`ml_engine/btyd.py:359 summarize_fit` returns no date), so those three
-were consistently UTC: wrong convention, not self-contradicting.
-Segments was the one whose UTC *label* disagreed with the business-day
-window `resolve_window` had fitted.
-
-**`--as-of` labels a run; it does not anchor a fit (ml, 2026-10-17).**
-Now stated in the code rather than inferred: the OVERALL/current segments
-fit is **always the current rolling-365 business window** (`_fit_overall`,
-docstring at `ml_engine/store_segments.py:174-181`; same comment at
-`store_explain.py:97-98`), so a run row's `as_of` is an
-idempotency/version key, not a window key, and `compute_current` /
-`overall_segments` take no `as_of` at all. Threading one in would be a
-historical-re-fit feature (a second source of truth for the same fit),
-deliberately not done. Operationally, for a backfill: **only `forecast`
-(`as_of` → `forecast_demand`, `store_forecast.py:80-81`) and `ld8`
-(`resolve_ld8_window(key, as_of)`) derive a window from `--as-of`** —
-churn/clv fit against `datetime.now(timezone.utc)` and segments-overall
-explains fit the current window, so re-running an old `as_of` there
-*relabels* today's fit instead of reproducing an old one.
-
-**Name collision — `resolve_window` is two different functions.** data
-`pipelines/schedule.py:130 resolve_window(mode, n, unit, ...)` resolves a
-**cohort/period** window; ml `ml_engine/rfm.py:96 resolve_window(mode,
-as_of, date_from, date_to, *, max_span_days=731)` resolves the **RFM
-snapshot** window (tz-aware `+08` day boundaries; `max_span_days=None` is
-the caller asserting a deliberate full-history span, not a clamp). A bare
-grep returns both — check the repo before reading either as the other's
-contract.
-
-**Server-zone evaluation in data-owned SQL: one CHECK, nothing else.**
-Every stored date in the pipeline is passed as an explicit `$1::date`
-parameter, so the postmaster's zone never decides a stored value. The
-single exception is `db/migrations/017_customers_demographics.sql:11`
-`CHECK (date_of_birth IS NULL OR date_of_birth <= CURRENT_DATE)`, which
-PG evaluates in the **server** zone (GMT on this stack). During the same
-00:00-08:00 HKT band that makes `date_of_birth` = today a constraint
-violation (server `2026-10-16` while the business day is `2026-10-17`).
-Low impact — DOB = today is implausible outside fixtures — and
-deliberately not "fixed": the honest repair is a *looser* bound or
-read-time validation, never a stricter one, because a false rejection of
-a real newborn's DOB is worse than accepting a one-day-future value.
-Tracked in SCRATCHPAD.
+**Name collision — `resolve_window` is two different functions.** data `pipelines/schedule.py:130 resolve_window(mode, n, unit, ...)` = cohort/period window; ml `ml_engine/rfm.py:96 resolve_window(mode, as_of, date_from, date_to, *, max_span_days=731)` = RFM snapshot window (tz-aware `+08`; `max_span_days=None` is the caller asserting a deliberate full-history span, not a clamp). Check the repo before reading either as the other's contract.
 
 ## Daily RFM writer: `ld8_snapshot` (v2) vs `rfm_snapshot` (v1)
 
-`rfm_snapshots` has two *scheduled* writers with different rulesets, and
-the engine name in the manifest decides which one a tick uses (a third,
-non-scheduled writer — the app's snapshot POST — is at the end of this
-section):
+`rfm_snapshots` has two *scheduled* writers, and the engine name in the manifest decides which one a tick uses (a third, non-scheduled writer is at the end of this section):
 
 | engine | ml job -> module | rules | windows | conflict behaviour |
 |---|---|---|---|---|
 | `rfm_snapshot` | `ml_jobs.run_snapshot` -> `ml_engine/store_rfm.py` | **v1** (`ml_engine/rfm.py:24 RULES_VERSION = "v1"`) | one, from `params.mode` | **APPEND-only**: `SNAPSHOT_INSERT_SQL` has no `ON CONFLICT` and no find |
 | `ld8_snapshot` | `ml_jobs.run_ld8_snapshot` -> `ml_engine/store_ld8.py` | **v2** (`store_ld8.py:36 RULES_V2`) | FOUR: `current` (rolling 365d ending as-of) \| `mom` \| `yoy` \| `lifetime` | find-or-create on (mode, window_from, window_to, window_key, scope), filtered `rules_version='v2'` |
 
-031 declares v2 for time-aware rows, so **v2 is canonical for
-`window_key='current'`** and `ld8_snapshot` is the engine the daily
-capture belongs on. `rfm_snapshot` stays available for v1 history /
-backfill only.
+- 031 declares v2 for time-aware rows, so **v2 is canonical for `window_key='current'`** and `ld8_snapshot` is the daily-capture engine; `rfm_snapshot` stays for v1 history/backfill only.
+- Trap: if the daily job is left on `rfm_snapshot`, the v1 insert is append-only and the v2 find is v2-scoped, so one v1 and one v2 row land for the same `window_key='current'` window **every day**; `GET /analytics/rfm/movement?mode=rolling_365` auto-selects the two most recent rows by `window_to` and only then rejects a version mismatch, so the default path answers **422 `snapshot_mode_mismatch`**.
 
-**The trap this closes (proved on live, 2026-10-17):** with the daily job
-on `rfm_snapshot`, the v1 insert is append-only and the v2 find is
-v2-scoped, so one v1 and one v2 row land for the same
-`window_key='current'` window **every day** — the newest two are
-cross-version by construction, not by accident.
-`GET /analytics/rfm/movement?mode=rolling_365` auto-selects the two most
-recent rows by `window_to` and only then rejects a version mismatch, so
-the default path answers **422 `snapshot_mode_mismatch`**.
+**Never pair v1 with v2 for movement.** Same maths both ways (`store_ld8.compute_window` calls `store_rfm.compute_current` verbatim, `ml_engine/store_ld8.py:141-175`), but v1 is an append-only single-window write and v2 a four-window find-or-create, and the *engine dict* decides the version, not the caller. The v1 INSERT takes `rules_version` as a parameter (`SNAPSHOT_INSERT_SQL`, `store_rfm.py:35`; column at `:37`, `computed["rules_version"]` passed at `:179`) — `compute_current` reads the constant at `:153` (`"v1"` at `rfm.py:24`) — while the v2 INSERT interpolates the literal `'{RULES_V2}'` (`SNAPSHOT_INSERT_V2_SQL`, `store_ld8.py:52`, VALUES at `:56`; find twin `SNAPSHOT_FIND_V2_SQL` at `:61`, WHERE at `:64`; `RULES_V2 = "v2"` at `:36`), so cross-version movement is meaningless. Serving fix: take the newest snapshot's `rules_version`, then the two newest **of that version** for that `mode`/`window_key` in scope, returning the existing `need_two_snapshots` 404 when only one exists — never relax the mismatch check.
+- Pairing is **same `mode` + same `rules_version` + same `window_key`**; the bounds need not match and normally do not (each tick find-or-creates its own window, so a same-day re-run adds nothing). `window_key` separates windows *within* a mode (`current` vs `mom`/`yoy`/`lifetime`) and never pairs across them: a two-row requirement is always **two nights of the same window**.
+- The version term is load-bearing for `rolling_365` (a v1 `current` row sits beside v2 `current` rows) and vacuous in `custom` (no v1 row), because `window_key` **cannot** separate v1 from v2: it is `NOT NULL DEFAULT 'current'` (`db/migrations/031_rfm_time_aware.sql:19-20`) and the v1 INSERT omits the column (`store_rfm.py:35-43`, nine columns at `:37-38`), so the **DDL default fills it** and a v1 `rolling_365` row reads `'current'` exactly like a v2 one.
+- **LD8's reachable space is exactly four combinations** (`ml_engine/store_ld8.py:154-155` four-combination statement, mapping applied at `:174`; the write-site invariant is that docstring, `:145-156` at this HEAD): `rolling_365×current`, `custom×lifetime`, `custom×mom`, `custom×yoy` — **`custom×current` is unreachable from the writer**. The `window_key='current'` pin therefore yields the empty state structurally.
 
-Switching the job is a manifest edit, and **`pipeline_manifests` rows are
-edited through the app config API, never by migration** (015 seed
-comment):
+**Switching the job is a manifest edit, and `pipeline_manifests` rows are edited through the app config API, never by migration** (015 seed comment):
 
     rfm:
       engine: ld8_snapshot
       depends_on: [apply]
       params: {}          # drop `mode: rolling_365`: the LD8 CLI has no --mode
+The builder rejects the legacy param with a named `ManifestError` rather than letting the CLI exit 2 on every tick (`pipelines/schedule.py` `_build_ld8`).
 
-The builder rejects the legacy param with a named `ManifestError` rather
-than letting the CLI exit 2 on every tick (`pipelines/schedule.py`
-`_build_ld8`).
+**First-tick triage.** The argv's positional DB URL is the runner's resolved `ctx.db_url` (`pipelines/schedule.py:281` emits `[python, -m, <module>, ctx.db_url]`, sourced from `scripts/run_pipeline.py:96-116` via `_connect_resolved`), **never** a manifest `params` value: a wrong row fails at dispatch as a `ManifestError` with a message *above* the spawn, a bad URL is a runner/env fault that takes every ml job in the tick down, and an unset one is caught pre-spawn (`pipelines/schedule.py:278-280`, `UnknownEngineError`). The ml CLI connects *before* validating its own args (`ml_jobs/run_ld8_snapshot.py:20-27`), so a malformed `--as-of` or scope UUID surfaces as `ValueError` only after a successful connect while a bad URL is a driver error (`exit 1`, e.g. `socket.gaierror` / `ConnectionRefusedError`) that reads as a connectivity incident — that ordering bites **hand-runs** only, since the tick always passes `ctx.as_of.isoformat()` (`pipelines/schedule.py:293`, a `date`).
 
-First-tick triage, so a failure is not misread as the wrong subsystem:
-the argv's positional DB URL is the runner's resolved `ctx.db_url`
-(`pipelines/schedule.py:281` emits `[python, -m, <module>, ctx.db_url]`,
-sourced from `scripts/run_pipeline.py:96-116` via `_connect_resolved`),
-**never** a manifest `params` value. So a wrong row fails at dispatch as
-a `ManifestError` with a message *above* the spawn, while a bad URL is a
-runner/env fault that takes every ml job in the tick down with it — and
-an unset one is caught pre-spawn too (`pipelines/schedule.py:278-280`,
-`UnknownEngineError`). The ml CLI connects *before* it validates its own
-args (`ml_jobs/run_ld8_snapshot.py:20-27`), so a malformed `--as-of` or
-scope UUID surfaces as `ValueError` only after a successful connect and a
-bad URL as a driver error (`exit 1`, e.g. `socket.gaierror` /
-`ConnectionRefusedError`) — which reads as a connectivity incident. That
-ordering only bites **hand-runs**: the tick always passes
-`ctx.as_of.isoformat()` (`pipelines/schedule.py:293`, a `date`, so never
-malformed) together with the runner's own URL.
+**`--as-of` is a silent no-op knob on a window that already exists.** On the tick it is always explicit (`_build_ld8` → `_with_common`, `pipelines/schedule.py:340`/`:286-293`). `ld8_snapshot` find-or-creates on `(mode, window_from, window_to, v2, window_key, scope)` (`ml_engine/store_ld8.py:63-66`, the `SNAPSHOT_FIND_V2_SQL` predicate), so an `--as-of` whose `current` window is already stored (e.g. `--as-of 2026-10-16` while the v2 row for `2025-10-16 → 2026-10-16` exists) exits 0 having written nothing: the tick is green, no row is wrong, and a consumer needing a newer period stays on `need_two_snapshots` with nothing to point at. Rule: omit `--as-of` unless you intend a new period; never reuse a date whose window is on disk.
 
-`--as-of` is also a **silent no-op knob on a window that already
-exists**, and on the tick it is always explicit (`_build_ld8` →
-`_with_common`, `pipelines/schedule.py:340`/`:286-293`; the ml CLI's own
-`business_today()` default is therefore never the tick's — and it is not
-hand-run-only either: the app's own
-`POST /analytics/{churn,clv,segments}/snapshots` calls `store_*.create_snapshot`
-**in-process with `as_of` omitted** (app `services/api/analytics/snapshots_serve.py:48-54`,
-imported at request time), so an `ml_engine/` change is live for `ml_jobs/`
-immediately (fresh process per run) but **live in the API only after that process
-restarts** — "landed" and "live" differ by one process lifetime on the serving
-side; the test is to compare the changed file's mtime against the serving
-process's start time rather than infer it from `git log` (app runbook
-`docs/reseed-runbook.md` read at `9674976`: `Get-NetTCPConnection -LocalPort 8000
--State Listen` for the PID, then `Get-Process -Id <pid> | Select StartTime`)).
-`ld8_snapshot` find-or-creates on `(mode, window_from, window_to, v2,
-window_key, scope)` (`ml_engine/store_ld8.py:63-66`, the `SNAPSHOT_FIND_V2_SQL`
-find predicate), so an `--as-of`
-whose `current` window is already stored — e.g. `--as-of 2026-10-16`
-while the v2 row for `2025-10-16 → 2026-10-16` exists — exits 0 having
-written nothing. The tick is green, no row is wrong, and a consumer that
-needs a *newer* period (movement needs two periods of one version) stays
-on its `need_two_snapshots` 404 with nothing anywhere to point at. Rule
-for a catch-up or `--force` tick: omit `--as-of` unless you intend a new
-period, and never reuse a date whose window is on disk.
+**Serving-side freshness.** The app's `POST /analytics/{churn,clv,segments}/snapshots` calls `store_*.create_snapshot` **in-process with `as_of` omitted** (app `services/api/analytics/snapshots_serve.py:48-54`), so an `ml_engine/` change is live for `ml_jobs/` immediately but **live in the API only after that process restarts** — compare the changed file's mtime against the serving process's start time, not `git log`.
 
-`created_by` is passed through (`--created-by`;
-`scripts/run_pipeline.py:132` default `scheduler`), so through the runner a
-NULL is **unreachable**. Every `ml_jobs/run_*.py` that writes a
-`created_by` column declares `--created-by` with `default=None`, but the count
-is of **declarers and writers separately** — the two are **10** and **9** of
-the 12, and quoting one for the other is how this sentence was wrong once
-already: 10 files declare the flag; the 2 that declare nothing
-(`run_alive_path.py`, `run_matrix_batch.py`) reference no `created_by` column
-either; and of the 10 declarers only 9 reference the column — the tenth is
-**inert**, `run_churn_predict.py:50-52` accepts `--created-by` and never passes
-it (`:26` calls `store_churn.predict_one`, `:54` prints JSON), so through that
-job the flag does nothing (ml, 2026-10-17, re-derived here per file). ml
-resolved it as **annotate, not remove** (`65ddcab`, 2026-10-17 03:53:06, 3+/1-:
-the flag still parses and `help=` now says it is ignored, since this job
-writes no row), which moved this file's own cite from a one-line declaration
-at `:50` to the three-line call site — the same copy-lag rule applied to a
-line *span*. That commit leaves the ledger unchanged, and the declaration
-count is a **call-site** count: `grep -rn 'add_argument("--created-by"'
-ml_jobs/*.py` returns 10, where a bare `grep --created-by` returns **11**
-source hits because `ml_jobs/manifest.py:86` names the flag in a comment (and
-`.pyc` files match under `__pycache__` unless excluded) — the number is only
-as good as the predicate, exactly like the count above (ml, 2026-10-17); re-derived per construct in ml's tree on 2026-10-17: 12 job entry points (`ml_jobs/run_*.py`), 10 `add_argument("--created-by"` call sites, 9 `created_by` column referencers, 1 inert declarer (`run_churn_predict.py:50`), the 13th `.py` (`ml_jobs/manifest.py`) being a helper module rather than a job whose only hit is prose. It is also
-unreachable from a tick for a second reason: `churn_predict` is not an
-`ENGINE_BUILDERS` key (`pipelines/schedule.py:464-477` — ten engines) and
-dispatch raises `UnknownEngineError` (`:179`) for anything else (`:683-686`), so no
-scheduler argv can carry the flag to that job at all; only a direct ml-CLI
-hand-run reaches it, and that path writes no row either. app settled the
-*other* half independently, because "no tick can reach it" and "nothing serves
-it" are different claims: `churn_customer_scores` **is** read by app
-(`db/queries/analytics_customer.sql:26-33`, `analytics_snapshots.sql:31`), but
-those rows come from `store_churn.create_snapshot` (`:478`; `SNAPSHOT_INSERT_SQL`
-`:538`, `SCORES_INSERT_SQL` via `executemany` `:548`) driven by
-`ml_jobs/run_churn_snapshot.py:23` — the `churn_snapshot` key that **is** in
-`ENGINE_BUILDERS` — while `predict_one` (`:411`) writes nothing (`return out`
-at `:428`/`:475`, no INSERT in its body; re-derived here). So the unreachable
-job's output is served by nobody, and removing the dead flag would be
-**app-safe as well as scheduler-safe**; it stays ml's call either way (app,
-2026-10-17). A NULL in the
-column therefore dates the row to a **direct ml-CLI hand-run** of one of the 9
-writers, or to a tick handed an explicitly falsy stamp — `--created-by ""` is dropped by the truthiness guard at `pipelines/schedule.py:261-262` (again at `:296-297`) before `scripts/run_pipeline.py:132`'s non-empty `default="scheduler"` can apply, so a NULL does not by itself prove a hand-run; ml found that residual and it is re-derived here, including that `JobCtx` is constructed only at `scripts/run_pipeline.py:113`, so no config path can inject an empty stamp (`rfm_snapshots.e234dc57` is one). Pass a staff code wherever a job writes,
-or the row is indistinguishable from "written by an unset caller" (this
-cost a manual row dump to diagnose).
+**`created_by` provenance.** `--created-by` is passed through (`scripts/run_pipeline.py:132` default `scheduler`), so via the runner a NULL is **unreachable**. Of the 12 `ml_jobs/run_*.py` entry points, 10 declare `add_argument("--created-by"` and 9 reference a `created_by` column; the 2 that declare nothing (`run_alive_path.py`, `run_matrix_batch.py`) reference none; `run_churn_predict.py:50-52` is **inert** — it accepts the flag and never passes it (`:26` calls `store_churn.predict_one`, `:54` prints JSON) — and no tick can reach it: `churn_predict` is not an `ENGINE_BUILDERS` key (`pipelines/schedule.py:464-477`, ten engines) and dispatch raises `UnknownEngineError` (`:179`, `:683-686`). app settled the other half: `churn_customer_scores` **is** read by app (`db/queries/analytics_customer.sql:26-33`, `analytics_snapshots.sql:31`), but those rows come from `store_churn.create_snapshot` (`:478`; `SNAPSHOT_INSERT_SQL` `:538`, `SCORES_INSERT_SQL` via `executemany` `:548`)
+driven by the churn snapshot writer `ml_jobs/run_churn_snapshot.py:23`, while `predict_one` (`:411`) writes nothing (`return out` at `:428`/`:475`) — so removing the dead flag is app-safe as well as scheduler-safe. A NULL in the column therefore dates the row to a **direct ml-CLI hand-run** of one of the 9 writers, or to a tick handed an explicitly falsy stamp: `--created-by ""` is dropped by the truthiness guard at `pipelines/schedule.py:261-262` (again at `:296-297`) before `scripts/run_pipeline.py:132`'s non-empty default applies.
+`JobCtx` is constructed only at `scripts/run_pipeline.py:113`. **Pass a staff code wherever a job writes.**
+- The hole is **structural, not incidental**: all 12 `created_by` columns in this repo's DDL are `text NULL` with no `DEFAULT` (`db/migrations/007_customer_events.sql:14`, `010_analytics_rfm.sql:15`, `011_recommendations.sql:14`, `013_analytics_history.sql:24,57,115`, `014_upload_staging.sql:39`, `015_segments_pipelines.sql:37`, `018_assoc_rules.sql:25`, `019_connectors.sql:27`, `021_explain.sql:27`, `022_forecast.sql:30`), so an unstamped hand-run **cannot fail anywhere**. Data's own CLI follows the convention (`scripts/run_upload.py:124` `default=None`; the API stamps the session, `services/api/routers/customer_events.py:73`). Making `--created-by` **required** in the 10 ml CLIs was considered and **declined**: a 10-file argv change (`[BREAKING @both]`) that forces every dev/one-off invocation to pass a value, so the rule above closes the hole operationally.
 
-The hole is **structural, not incidental**: all 12 `created_by` columns in
-this repo's DDL are declared `text NULL` with no `DEFAULT`
-(`db/migrations/007_customer_events.sql:14`, `010_analytics_rfm.sql:15`,
-`011_recommendations.sql:14`, `013_analytics_history.sql:24,57,115`,
-`014_upload_staging.sql:39`, `015_segments_pipelines.sql:37`,
-`018_assoc_rules.sql:25`, `019_connectors.sql:27`, `021_explain.sql:27`,
-`022_forecast.sql:30`), so an unstamped hand-run **cannot fail anywhere** —
-there is no NOT NULL guard that would have turned an unattributed write into
-an error. Data's own CLI follows the same convention (`scripts/run_upload.py:124`
-declares `--created-by` with `default=None`; the API path stamps the session
-instead, `services/api/routers/customer_events.py:73`). Making `--created-by`
-**required** in the 10 ml CLIs was considered and **declined, not missed**:
-it is a 10-file argv change (`[BREAKING @both]`) and it forces every
-dev/one-off invocation to pass a value, so the rule below closes the hole
-operationally instead.
+**The list query's window projection.** `SNAPSHOTS_LIST_SQL` (`store_rfm.py:53-66`) projects `window_key` (`:54-55`) and orders `window_to DESC, scored_at DESC, id DESC` (`:64`) — period, not compute time. App consumes it **directly** (`../crm-cdp-app/services/api/routers/analytics_rfm.py:37`), and its `custom` tab pairs the two newest `custom` rows. Trap: `mode='custom'` in `rfm_snapshots` is **LD8's named-window bucket** (`mom`/`yoy`/`lifetime`), not the user's custom date range — the tab's *scores* come from a live computation over the requested dates, its *band* from that bucket (the stored `custom` rows are all v2: `lifetime` `807d4f38` / `2895ba93`, `mom` `880c0cbe`, `yoy` `8950aaec`). What is wrong there is **label vs window**: the band prints run dates, not bounds (`formatDate(movement.from.scored_at) → formatDate(movement.to.scored_at)`, `apps/web/app/rfm/page.tsx:501`, also `:551-552` — a segment-chart *axis* — and `:624`), so a bounds-based fix is a three-site edit and a chart-semantics change, not a one-liner.
 
-Never pair v1 with v2 for movement: different writers decide the windows
-(same maths both ways — `store_ld8.compute_window` calls
-`store_rfm.compute_current` verbatim, `ml_engine/store_ld8.py:141-175`;
-v1 is an append-only single-window write, v2 is a four-window
-find-or-create, and the *engine dict* decides the version, not the caller
-(and not the writer): the v1 INSERT takes it as a parameter
-(`SNAPSHOT_INSERT_SQL`, `store_rfm.py:35`; `rules_version` in its column list
-at `:37` and `computed["rules_version"]` passed into it at `:179`, both as of
-ml `e423f70`) — it is `compute_current` that reads the constant, at `:153` —
-`"v1"` at `rfm.py:24` — so `create_snapshot` never does; while the v2 INSERT
-interpolates the literal `'{RULES_V2}'` (`SNAPSHOT_INSERT_V2_SQL`,
-`store_ld8.py:52`, VALUES at `:56`, and its find twin `SNAPSHOT_FIND_V2_SQL`
-at `:61`, WHERE at `:64`; `RULES_V2 = "v2"` at `:36`)), so cross-version movement is meaningless. The serving-side fix is
-to take the newest snapshot's `rules_version` and then the two newest **of
-that version** for that `mode`/`window_key` in scope — returning the existing
-`need_two_snapshots` 404 when only one exists — not to relax the mismatch
-check. Note the pair is the two newest rows of the same `mode` **and the
-same `window_key`** — the *bounds* need not match and normally do not
-(the live pair today is `92537b23` (`2025-10-17 → 2026-10-17`,
-`created_by=scheduler`) with `e234dc57` (`2025-10-16 → 2026-10-16`,
-`created_by=NULL`), both v2 and both `window_key='current'`, and
-`GET /rfm/movement?mode=rolling_365` answers 200 off them (app readback
-2026-10-17). Differing bounds are the normal case, since each tick
-find-or-creates its own window — which is also why a same-day re-run adds
-nothing to the pair. The `window_key` separates windows *within* a mode
-(`current` vs `mom`/`yoy`/`lifetime`); it never pairs across them, so a
-two-row requirement is always **two nights of the same window**, never
-two different keys (this sentence read "two different `window_key` values for
-the same `mode`" until ml corrected it, 2026-10-17 — the error was data's
-prose, never the schema).
-Note `SNAPSHOTS_LIST_SQL` (`store_rfm.py:53-66`; SELECT list `:54-55`,
-ordering `:64`) **did not project `window_key` until ml `e234563`**
-(2026-10-17, both snapshot reads — this one at `:54` and the by-id read), so
-before that a list client could not see which window a row belonged to; it
-orders `window_to DESC, scored_at DESC, id DESC` (period, not compute time).
-Pairing is **version-inclusive** — same `mode` + same `rules_version` +
-same `window_key` — and **which term is load-bearing depends on the mode**:
-the version term carries `rolling_365`, where a v1 `current` row sits beside
-v2 `current` rows, while in `custom` it is vacuous (that mode holds no v1 row
-at all) and a cross-*window* pair is what the key term prevents. The version
-term has to carry `rolling_365` because
-`window_key` **cannot** separate v1 from v2: it is `NOT NULL DEFAULT
-'current'` (`db/migrations/031_rfm_time_aware.sql:19-20`), so the v1 INSERT
-omitting the column (`store_rfm.py:35-43` — nine columns at `:37-38`, and
-it is not one
-of them; the v2 INSERT at `store_ld8.py:52-59` sets it as `$9`) means the
-**DDL default fills it**, and a v1 `rolling_365` row carries `'current'`
-exactly like a v2 one. Verified live 2026-10-17: `information_schema` says
-`is_nullable=NO, default='current'::text`, 7 of 7 rows non-null, and the lone
-v1 row (`57414845`) reads `'current'`. That kills the nullability reading of
-this rule that data recorded in `443ba03` (withdrawn: *the statement not
-writing a column is not the row being NULL*). App-visible consequence of that
-projection gap: the app consumes this list
-query **directly** (`../crm-cdp-app/services/api/routers/analytics_rfm.py:37`
-`from ml_engine import store_rfm as repo`), and its `custom` tab pairs the two
-newest `custom` rows whatever window they held. Data's first reading of that
-was wrong and app corrected it with a live inventory (2026-10-17): mode
-`custom` holds **four v2 rows and no v1 row at all** — `lifetime` `807d4f38`
-(`…→2026-10-17`) and `2895ba93` (`…→2026-10-16`), `mom` `880c0cbe`, `yoy`
-`8950aaec` — so the pair the page actually takes is **same version and same
-`window_key`**, differing only in `window_to`, which the predicate above
-accepts correctly; it is not a version or key mispairing. What is wrong there
-is **label vs window**: the band prints run dates,
-`formatDate(movement.from.scored_at) → formatDate(movement.to.scored_at)`
-(`apps/web/app/rfm/page.tsx:501`; the same run-date band renders at **three**
-sites in this section — `:501`, `:551-552` (`fromLabel`/`toLabel` fed to the
-segment chart, so it is that chart's *axis*, not just text) and `:624` (the M6
-meta line) — so a bounds-based fix is a three-site edit **and a
-chart-semantics change**, not a one-liner: under (b) a reader comparing
-segments reads window bounds where they used to read run dates), while the rows compared are all-time
-cumulative windows. Root cause worth keeping: `mode='custom'` in
-`rfm_snapshots` is **LD8's named-window bucket** (`mom`/`yoy`/`lifetime`), not
-the user's custom date range — the tab's *scores* come from a live computation
-over the requested dates, its *band* from that bucket, and `rolling_365` reads
-correctly only because there the stored `current` window is what the mode
-means. So the missing projection is an identification gap, not a pairing bug;
-the tab's fix is the period rule below, and under either shape today's visible
-outcome there is the empty state (app/ml, 2026-10-17).
+**Successive-period rule, branched by what the page displays.** A *mode-defined* window (`rolling_365`, `year_to_date`) tests **translation** — equal deltas at both ends equal to the cadence (the `rolling_365` pair is 1d/1d, accepted; the `custom` `lifetime` pair grows from the 2023-11-12 floor, 0d/1d, rejected because it *grows* rather than shifts). An *explicit range* (the custom tab's `date_from`/`date_to`) tests **equality with the request** — identical bounds, different `scored_at`; translation alone accepts any two same-length ranges in different months. The `window_key='current'` pin stays in both branches, yielding the empty state structurally.
 
-Chosen shape for that tab (app, 2026-10-17): the page's period rule goes
-window-shaped — pin `current` where the mode defines the window, requested
-bounds on the custom tab — **plus** the guard's key term and a bounds label on
-the band. Showing the stored `lifetime` pair labelled with its real bounds was
-rejected, because the page's own empty-state copy already promises the band is
-about *this window* ("appears once two snapshots of this window exist for this
-scope"), so it would be truthful yet contradict the surface it sits on; an
-all-time or standalone movement view is where that shape belongs. All three
-parts are app-side only — no ML edit, no migration, no extra request, since
-`_snapshot_row` (`store_rfm.py:86-97`, isoformatting the bounds at `:92-94`
-and `scored_at` at `:95-96` — every anchor in this paragraph re-derived
-line-for-line at ml `4a54edb`, 2026-10-17) is already in the payload the page
-holds via
-`movement()`'s `"from"`/`"to"` dicts (`:297-299`) — and the guard term alone
-changes nothing visible, because the pair it currently compares shares a key.
-Two things are still the owner's call rather than either team's (app,
-2026-10-17): the shape itself, and the **empty-state copy**, which under this
-shape is mode-shaped — "appears once two snapshots of this window exist for
-this scope" implies an achievable wait that is true for `rolling_365` and
-year-to-date and false for a custom range, where option (a) makes the stored
-band *unreachable* rather than pending until the POST path is wired. The
-trade-off in one line each, for the owner (app, 2026-10-17): **(a)** state
-plainly that the band cannot be computed for a range — a copy change in both
-locales; **(b)** show the all-time pair with its real bounds — no copy change.
-App recommends (a); nothing else differs between them. Cost note measured in
-app's tree (data, 2026-10-17): **(b) is three render sites** (`:501`,
-`:551-552` — a segment-chart *axis*, so it is a chart-semantics change — and
-`:624`), **(a) is copy-only**; the pair allow-list is `WPAIRS` at
-`apps/web/app/rfm/page.tsx:54` (not `:52-53`) and it is an allow-list, not a
-key filter.
+**POST path.** `SNAPSHOT_INSERT_SQL` (`store_rfm.py:35-43`) omits `window_key` from its column list (`:37-38`, nine columns), so the DDL default stamps `'current'` on every app-POSTed row **regardless of mode or user dates**; the `RETURNING` names it too (`:40-42`), so a POSTed row comes back **self-identifying** (`mode='custom'` *and* `window_key='current'`) with no schema change and no extra request, and two POSTed `custom` snapshots for different ranges would both be `current`. `window_key`'s job here is in the **guard**, not the predicate: the movement guard checks `mode` + `rules_version` only (`analytics_rfm.py:265-270`), so a cross-key pair is accepted with 200 — proven live `from=880c0cbe` (`mom`) → `to=807d4f38` (`lifetime`) → `customers_both 252, entered 688, exited 0`, which is the window widening, not movement. Scope that fix to this endpoint: LD8's own `segment_movement` pairs different keys **by design** (`mom`→`current`; `ml_engine/segment_movement.py:23-26` `PAIR_WINDOWS`).
+- `store_rfm.py:36` and `store_ld8.py:53` are the only production writes of `rules_version` (the app POST reuses the former; its only direct INSERTs are in `../crm-cdp-app/services/api/tests/test_rfm.py:451/513/537`), so a scope holding **only v1 rows** is exactly a scope **LD8 has never been ticked in** — check `SELECT DISTINCT rules_version` for that scope; the remedy is a scoped LD8 run, not an empty-state fix.
 
-**Successive-period rule, branched by what the page displays** (app/ml,
-2026-10-17, both branches verified live against the pairs above). Where the
-page shows a *mode-defined* window (`rolling_365`, `year_to_date`), successive
-periods are equal-span windows shifted by the run cadence, so the test is
-**translation** — equal deltas at both ends, equal to the cadence: the
-`rolling_365` pair gives 1d/1d and is accepted, while the `custom` `lifetime`
-pair (`window_from` pinned to the 2023-11-12 floor) gives 0d/1d and is
-rejected, correctly, because that window *grows* rather than shifts. Where the
-page shows an *explicit range* (the custom tab's `date_from`/`date_to`),
-successive periods are two runs of **that same range** — identical bounds,
-different `scored_at` — so the test is **equality with the request**, not
-translation; translation alone accepts any two same-length ranges in different
-months (`2026-09-01→09-30` vs `2026-08-01→08-30` → 30d/30d → accept, and vs
-`2026-10-01→10-30` → accept), which is what a date-range tab produces on its
-second use. The `window_key='current'` pin stays in both branches as the cheap
-sanity check: `custom` holds no `current` row at all — LD8's reachable space is
-`rolling_365×current`, `custom×lifetime`, `custom×mom`, `custom×yoy`, with
-`custom×current` unreachable from the writer (`ml_engine/store_ld8.py:154-155` four-combination statement,
-mapping applied at `:174` — both unchanged at ml `4a54edb`, which re-scoped the
-same docstring to "reachable by a POSTed snapshot, not by LD8" by a
-line-count-neutral edit, 2026-10-17; the write-site invariant ml landed at
-`6fcfc00` is that same docstring, `:145-156` at this HEAD — ml's own
-`:130-144` for it is stale pre-`6fcfc00` numbering, kept here only so the two
-numbers are not silently interchanged) — so the pin yields the empty state structurally
-rather than by accident.
+**The four `snapshot.py` statements are effectively frozen.** ml `tests/test_ld8.py::test_031_statements_still_match_data_runner` reads this repo's `pipelines/snapshot.py` (via `DATA_REPO_PATH`, default `../crm-cdp-data`), extracts the four statements by name and asserts **token**-equality — `_norm` collapses every run of whitespace, so reformatting passes and only a token change fails (`tests/test_ld8.py:43`) — skipping when the repo is absent and keyed on `SEGMENT_SIZE_UPSERT_SQL` alone, so any other name's disappearance fails ml's suite with `"{name} missing from data's snapshot.py"`. Data's four constants are `pipelines/snapshot.py:373` (`SEGMENT_SIZE_UPSERT_SQL`), `:380` (`MOVEMENT_UPSERT_SQL`), `:387` (`SIZES_FOR_WINDOW_SQL`), `:394` (`MOVEMENT_FOR_PAIR_SQL`) — the lines are illustration, the **names are the pin** — and `services/api/tests/test_rfm_movement.py:78-81` imports all four and executes them against a migrated `031` (`:123`/`:146`/`:149`/`:157`), so a **grain** change fails data's own suite at the change site. The residual gap is a *text*-only change seen from a checkout with no sibling `crm-cdp-data`, where ml's guard **skips** (`tests/test_ld8.py:146`). A change to these four statements' text or grain is an in-room `[BREAKING]` notice to crm-ml, not a repo-only edit. App's four `db/queries/*.sql` copies lag data's edits the same way and fail *worse*: self-contained SQL keeps serving an old shape with no error anywhere.
 
-The POST path is why the explicit-range branch exists rather than being
-deferred: `SNAPSHOT_INSERT_SQL` (`store_rfm.py:35-43`) omits `window_key` from
-its column list (`:37-38`, nine columns), so the DDL default stamps `'current'`
-on every app-POSTed row **regardless of mode or user dates**. The `RETURNING`
-did not name the key either until ml `e423f70` (2026-10-17, *fix(store_rfm):
-name the window in the write path's RETURNING too*), which makes this the
-**third** snapshot projection to carry it (`:40-42`; `git show
-e234563:ml_engine/store_rfm.py` shows the pre-fix `RETURNING id, mode,
-window_from, window_to, scored_at, …`), and ml's
-`test_snapshot_projections_expose_window_key` now covers all three. So a
-POSTed row comes back **self-identifying** — `mode='custom'` *and*
-`window_key='current'` — in a response the app already holds, with no schema
-change and no extra request. Two
-app-POSTed `custom` snapshots for different user ranges would therefore both be
-`current` and pair under a `current` pin alone (app/ml, 2026-10-17).
-`window_key` does have a job in this area — in the **guard**, not in the
-predicate: the movement guard checks `mode` + `rules_version` only
-(`analytics_rfm.py:265-270`), so a cross-key pair is accepted with 200, proven
-live `from=880c0cbe` (`mom`) → `to=807d4f38` (`lifetime`) → `customers_both
-252, entered 688, exited 0`, which is the window widening, not movement. Scope
-that fix to this endpoint: LD8's own `segment_movement` pairs different keys
-**by design** (`mom`→`current`; `ml_engine/segment_movement.py:23-26`
-`PAIR_WINDOWS`), so same-key is a property of the
-app's run-to-run diff, not of the concept (app, 2026-10-17).
+**`m_cap_pct` is a live-request knob, never a stored property.** The cap is an engine kwarg (`ml_engine/rfm.py:262` declares it, applied `:278-279`; forwards to `store_rfm.py:115/140`, `store_ld8.py:157-174`) reachable from the app's two live GETs only (`../crm-cdp-app/services/api/routers/analytics_rfm.py` params `:115`/`:279`, `Query(ge=0.01, le=1.0)`, passed straight to the engine at `:125`/`:290`); the scheduled writer always uses `DEFAULT_M_CAP_PCT = 0.99`, and no renderer emits a flag for it (the `m_cap_pct: (False, None)` entry `rfm_snapshot` carried was a declaration nothing could turn into argv; removed). Do not add a `--m-cap-pct` flag, and do not pin the GETs: `rfm_snapshots` stores no cap and no params (`db/migrations/010_analytics_rfm.sql:6-16`), so a caller-chosen cap row would be unattributable from storage, while a live response **self-attributes**, returning the cap it used (`"m": {"m_cap_pct": …, "winsor_cap_cents": …}`, `ml_engine/rfm.py:317`, validated `:292-295`). The write path is **pinned by decision** (app, read at `6bdf2b4`; guard `_checked_body` at `analytics_rfm.py:55-67`, applied on the POST at `:140`): the body default is the engine constant (`:52`); a non-default cap is rejected by name — `422 {"code": "non_default_m_cap_pct", "default": engine.DEFAULT_M_CAP_PCT}` (`:61-64`) — and any cap outside `(0, 1]` with `bad_m_cap_pct` (`:59-60`). Cap experiments belong on the live endpoints, which persist nothing.
+- Edge 1: the cap is consulted **only on the quintile path** — `score_rfm` validates and applies it in the `else` branch alone (`:292-295`, reported `:317`), so a population below `QUINTILE_MIN_POPULATION` (`:25`, 25 rows) takes `_fallback_scores` (`:289`) and is stamped `method="threshold_fallback"` (`:290`): the cap is never read, and that path's `m` boundaries are median-relative with no `m_cap_pct` key.
+- Edge 2: `DEFAULT_M_CAP_PCT` (`:26`) is covered by **no version string** — `RULES_VERSION = "v1"` (`:24`) and `RULES_V2 = "v2"` (`store_ld8.py:36`) version the segmentation ruleset, not the cap — so changing that constant is a **contract event (@both)**, not a refactor: every stored row's M cuts would lose their stated derivation and no column records it.
 
-Those two INSERTs are the only production writes of `rules_version`
-(`store_rfm.py:36`, `store_ld8.py:53`; the app's POST reuses the former,
-and its only direct INSERTs are in
-`../crm-cdp-app/services/api/tests/test_rfm.py:451/513/537`), so a scope
-holding **only v1 rows** is exactly a scope **LD8 has never been ticked
-in** — the check is `SELECT DISTINCT rules_version` for that scope, and
-the remedy is a scoped LD8 run, not an empty-state fix (ml, 2026-10-17).
-The copies are now guarded on the **copying** side: ml `ef4c759` adds
-`tests/test_ld8.py::test_031_statements_still_match_data_runner`, which reads
-this repo's `pipelines/snapshot.py` (via `DATA_REPO_PATH`, default
-`../crm-cdp-data`), extracts the four statements by name and asserts
-**token**-equality — `_norm` collapses every run of whitespace, so reformatting
-either side passes and only a token change fails (`tests/test_ld8.py:43`, ml,
-applied to both sides); "byte-equal" was the wrong level and ml corrected it in
-`cd003d0` — skipping when the repo is absent, the same
-convention app has offered the owner for its `db/queries/*.sql` copies.
-(`test_031_sql_verbatim` in the same file is the inline-literal guard, which
-catches an edit on ml's side and cannot see one here.) One **data-side
-consequence**: those four statement *names* in `pipelines/snapshot.py` are
-now effectively frozen — the `skipif` is keyed on `SEGMENT_SIZE_UPSERT_SQL`
-alone, and any other name's disappearance fails ml's suite with
-`"{name} missing from data's snapshot.py"`. Data remains the source of both
-copy sets, so nothing mirrors here; what data can offer — versioning
-`pipelines/snapshot.py`'s four LD8 constants and the `031` schema as a frozen
-interface — is the owner's call, not a unilateral one. **Two consumers, and
-the freeze and the guard are complements** (app, 2026-10-17): app's four
-`db/queries/*.sql` copies lag data's edits exactly as ml's constants do, and
-fail *worse* — self-contained SQL keeps serving an old shape with no error
-anywhere, where a lagged ml constant at least raises a column/conflict error
-— so the freeze would have to cover ML's four `snapshot.py` statements **and**
-app's four copies, with the `031` schema under both. A guard alone reports
-every lag after it happens; a freeze with no guard still lets a later
-re-freeze lag unnoticed. For app the freeze is the **cheap** half, because
-nothing in the app reads data's tree at serve time: those four copies
-*already are* the frozen artifact, implicitly and with no label saying which
-revision each was taken from, so what the freeze adds there is a **version
-marker** rather than a new artifact — and the guard stays a developer-time
-detector on that side too (app, 2026-10-17).
+**Scope is a run-level dimension, so no brand-scoped snapshot row exists.** `--brand-id`/`--group-id` (`scripts/run_pipeline.py:130-131` → `JobCtx`, `:113-114`) reach **every** job of a tick via `_scope_args(ctx)` (`pipelines/schedule.py:255-263`) and `_with_common` (`:284-299`, `with_scope` default True): per-brand rows require **one runner invocation per brand**, and that invocation scopes the *whole* pipeline, not one job. The nightly cron passes neither flag, so every stored row is hq-scoped (`brand_id IS NULL`) — correct. A brand-scoped session then gets live RFM at `n=435` while `GET /analytics/rfm/snapshots` returns **0 rows** and `movement` a **404 `need_two_snapshots`** — **not a platform limit: nothing writes scoped rows and no UI action calls the POST**, while a scoped POST works (`services/api/tests/test_rfm.py:380` asserts `201`). Find-or-create is scope-aware (`ml_engine/store_ld8.py:65-66`), so a per-brand fan-out would add rows beside the hq row; its price on the demo dataset is **6 ticks**, one per brand (`DEMO`/`SUNHING`/`KVLN`/`VICEW`/`HARBOR`/`PEAKLENS`), because the single group makes a `--group-id` run customer-identical to hq. No ML change is needed (`ml_engine/store_rfm.py:29-31`; `run_ld8` already threads `brand_id`/`group_id`), so per-brand writes are a **runner** decision — and they do not fix the scoped role that night: the band pairs **two** `current` rows of the newest `rules_version` in scope, so each scope needs a second scoped night, and the accurate copy is scope-neutral (*"no movement for this scope yet — movement appears once two snapshots of this window exist for this scope"*), because "the view needs a second night" is false of a scope whose own row count never moves.
 
-**Data's side of that mirror, verified 2026-10-17.** The four constants sit at
-`pipelines/snapshot.py:373` (`SEGMENT_SIZE_UPSERT_SQL`), `:380`
-(`MOVEMENT_UPSERT_SQL`), `:387` (`SIZES_FOR_WINDOW_SQL`), `:394`
-(`MOVEMENT_FOR_PAIR_SQL`) — the lines are illustration, the **names are the
-pin** — and `services/api/tests/test_rfm_movement.py:78-81` imports all four
-and executes them against a migrated `031` (`:123`/`:146`/`:149`/`:157`), so a
-**grain** change fails data's own suite at the change site. The residual gap is
-narrower than "ML agrees with ML": it is a *text*-only change seen from a
-checkout with no sibling `crm-cdp-data`, where ml's guard — keyed on
-`SEGMENT_SIZE_UPSERT_SQL` alone — **skips** (`tests/test_ld8.py:146` at ml
-`72ae86e`; `:98` when added by `0839d7f` — the skip `reason=` line names
-the path it looked in). So a change to these four statements'
-text or grain is an in-room `[BREAKING]` notice to crm-ml, not a repo-only
-edit. ml `0b834f9` re-anchored its copy of this citation by name with both
-revisions pinned (data `f889386` for `pipelines/snapshot.py`,
-`031_rfm_time_aware.sql` as of `412f9d7`), which is the form that survives the
-next edit here.
+**Group scope is conjunctive by design, and its only silent exclusion is pre-group customers.** A group run requires `customers.group_id = g` **and** `brands.group_id = g` (`db/migrations/011_groups.sql:6` — customers shared within a group with NO linkage across clients, a hard silo). `brands.group_id` is NOT NULL (`:23`); `customers.group_id` is NULLABLE on purpose (`:86`, the same legacy pattern as `consents.brand_id` / `NULL = pre-brand`, `:95-99`), so a group-scoped run **excludes** those rows silently. On the live demo that half is a no-op (1 group `DEMO`, 6 brands, **0 of 1208 customers with a NULL `group_id`**), so it is a contract property, not a testable one, and it has **no coverage in either suite** (app's group tests at `services/api/tests/test_groups.py:90`, `:133`, `:155`, `:217`, `:287`, `:331` never put a NULL-`group_id` customer under a group run). The switch that would **include** those rows instead of dropping them is the `IS NOT DISTINCT FROM` form — **declined on purpose, not missed**: 011's design is exclusion, and a group run means the group's pool, not "the pool plus unassigned rows".
 
-**`m_cap_pct` is a live-request knob, never a stored property.** The cap
-is an engine kwarg (`ml_engine/rfm.py:278` → `store_rfm.py:115/140`,
-`store_ld8.py:157-174`) reachable from the app's two live GETs only
-(`../crm-cdp-app/services/api/routers/analytics_rfm.py`, the `m_cap_pct`
-query params `:115`/`:279`, `Query(ge=0.01, le=1.0)`, passed straight to the
-engine at `:125`/`:290` — as of app `2285bfd`; symbol names are the stable
-anchors, these line numbers move); the scheduled writer always uses
-`DEFAULT_M_CAP_PCT = 0.99`, and no renderer emits a flag for it, so the
-`m_cap_pct: (False, None)` entry `rfm_snapshot` carried was a declaration
-nothing could turn into argv (removed, ml `f78d127`). Deleting it is
-editorial, not protective: `_validate_job` (`ml_jobs/manifest.py:226-234`)
-checks known keys only for `required`/`allowed` values, and unknown params
-pass through by design (`:64-72`, so that scheduler-only keys reach the
-pipeline), so a stored row setting it would still validate and still be
-ignored. The guards are this line, the absent renderer, and app's pin. The snapshot
-write path is **pinned by decision** (app `6bdf2b4`; guard `_checked_body` at
-`analytics_rfm.py:55-67` as of app `2285bfd`, applied on the POST at `:140`):
-the body default is the engine constant (`:52`) and `_checked_body` rejects a
-non-default cap by name — `422 {"code": "non_default_m_cap_pct",
-"default": engine.DEFAULT_M_CAP_PCT}` (`:61-64`) — and any cap outside
-`(0, 1]` with `bad_m_cap_pct` (`:59-60`) — because `rfm_snapshots` stores no cap and no
-params (`db/migrations/010_analytics_rfm.sql:6-16`), so a caller-chosen
-cap row would be indistinguishable from a default one and its M cuts
-unattributable from storage. Do not add a `--m-cap-pct` flag: a rendered
-flag would re-open exactly that. Cap experiments belong on the live
-endpoints, which persist nothing — and the GETs must stay unpinned for the
-mirror-image reason: a live response **self-attributes**, returning the cap it
-used inside the boundaries payload (`"m": {"m_cap_pct": …, "winsor_cap_cents": …}`,
-`ml_engine/rfm.py:317`, validated `:292-295`), so a cap-chosen response states
-its own M cuts and cannot be silently incomparable, while a stored row cannot.
-Do not pin the GETs to the default either: that would delete the only place a
-cap can be inspected before it is proposed as an engine default. The refusals
-are covered by app tests since `0fb9fba` (mutation-checked: disable the branch
-and the refusal answers 201).
+**`IS NOT DISTINCT FROM` locates a stored artifact by its recorded scope; the `IS NULL OR` guard scopes a live population.** The two forms must not be confused, and they fail in opposite directions. The population form's NULL test is on the *parameter* (`$3::uuid IS NULL OR …` = "no restriction on this column"), so a **stamped** surface using it would **disclose** `NULL/NULL` rows into a brand session — a visibility bug; the artifact form compares *column to parameter* NULL-safely (`IS NOT DISTINCT FROM …` = "only rows whose stamp is NULL here") and can only **hide**, which is this system's quarantine default. The rule is **two-step**: locate the row whose visibility the predicate decides — a **stamped** row takes stamp-equality on its scope stamp, a live or joined source row takes the population form even when the column in hand is called `brand_id` — then ask what the column *is on that row*: a scope-stamp column of the located row takes `IS NOT DISTINCT FROM` (a NULL there means "computed globally" and must fail closed), a non-scope attribute of that row or a dimension of a joined row takes `IS NULL OR` (a NULL there means "no restriction").
+- One statement, one row, both forms: `SNAPSHOTS_LIST_SQL` `store_rfm.py:57 WHERE ($1::text IS NULL OR mode = $1)` is the population form for `mode` (NULL = every mode), `:58-59` the artifact form for the scope stamp (`:56` is only `FROM rfm_snapshots`). One file, the same two scope columns, opposite operators: `store_churn.py:193-198` (`SNAPSHOT_FIND_SQL`, artifact, guarding `:196-197`) vs `:253-261` (`CUSTOMER_TX_ORDERS_SQL` / `CUSTOMER_TX_ACTIVITY_SQL`, population, guarding `:258-259`, `:263-281`). File-level: `analytics_snapshots.sql:22-23` (artifact, stamped row) vs `:110-111` (population, joined `b.id`/`g.id` dimensions) — which kills a per-file label.
+- All **11** `IS NOT DISTINCT FROM` predicate pairs in `ml_engine/` are the artifact form (`store_churn.py:193-198`, `:301-302`, `:311-312`, `:323-324`, `store_clv.py:168-169`, `store_forecast.py:31-32`, `store_ld8.py:65-66`, `store_recs.py:88-89`, `:103-104`, `store_rfm.py:58-59`, `store_segments.py:388-389`); the guard's *reads* are the population form (`store_churn.py:253-261`). The aggregate filter is population form — `AND ($4::uuid IS NULL OR c.group_id = $4::uuid)` (`ml_engine/store_rfm.py:30`; the guard form is three lines `:29-31`, and the last two guard the **same** `$4`, so a customer whose own group differs from their store brand's group is dropped by the brand line) — whereas the *listing* query uses `brand_id IS NOT DISTINCT FROM $3::uuid` / `group_id IS NOT DISTINCT FROM $4::uuid` (`store_rfm.py:58-59`). Both shorthands are wrong alone: the column *name* is not the rule (`brand_id` sits under both operators at `store_rfm.py:29` vs `:58`), and the row's *kind* is not the rule (one row can carry both forms).
+- App's reference decision is `../crm-cdp-app/services/api/analytics/scope.py:1-51`: a stamped row is visible iff `row.brand == session.brand AND row.group == session.group`, NULL-safe on both sides, with **quarantine-by-default** — `NULL/NULL` legacy and global rows are **HQ-only**, so an unstamped write is not an error but a row only HQ can see (`row_visible`, `scope.py:72-76`). Because the predicate is **mutual**, a brand-less HQ session `(None, None)` matches only `NULL/NULL` rows, so brand- and group-stamped rows are invisible to HQ **by construction** (`scope.py:18-19`) — deliberate, not a defect. Where the intent really is "this session's rows *or* the global ones", the population form cannot express it; app writes the disjunction out explicitly as an **added term**, never a relaxed operator (`scope.py:29-37`). `session_scope` returns `(brand, None)` or `(None, group)`, which keeps a group-stamped `(NULL, G)` row out of a brand session. App's population-form hits are all source-row filters over `orders`/`customers`/`brands`/`groups` (`analytics_snapshots.sql:110-111`, `analytics_simulate.sql:16-18`, `analytics_recs_fallback.sql`, `stats.py:23-29` `_ORDER_SCOPE`/`_CUST_SCOPE`) — none is a stamped surface, so no leak. So "admin can't see the brand runs" is a **visibility-policy** question for the contract and the owner, never a WHERE-clause tweak in a migration.
 
-**Two edges of that claim** (ml, re-checked in `ml_engine/rfm.py` at
-`4a8f994` — that file's own last-changed sha, not a moving HEAD — where `:25`,
-`:288-290`, `:292-295` and `:317` all re-derive). (1) The cap is consulted **only on the quintile
-path**: `score_rfm` validates and applies it in the `else` branch alone
-(`:292-295`, reported `:317`), so a population below
-`QUINTILE_MIN_POPULATION` (`:25`, 25 rows) takes `_fallback_scores`
-(`:289`) and is stamped `method="threshold_fallback"` (`:290`) — the cap is
-never read, and the `m` boundaries that path returns are median-relative
-thresholds with no `m_cap_pct` key. Self-attribution therefore holds for
-every response, but *about the cap* only on the quintile path; irrelevant at
-920 customers, yet it is the honest scope of the sentence above, including
-for the app refusals, which guard a parameter the engine may not consult.
-(2) `DEFAULT_M_CAP_PCT` (`:26`) is covered by **no version string**:
-`RULES_VERSION = "v1"` (`:24`) and `RULES_V2 = "v2"` (`store_ld8.py:36`)
-version the segmentation ruleset, not the cap. Changing that constant is
-therefore a **contract event (@both)**, not a refactor — every stored row's
-M cuts would lose their stated derivation and no column records it.
-
-**Scope is a run-level dimension, so no brand-scoped snapshot row exists.**
-`--brand-id`/`--group-id` (`scripts/run_pipeline.py:130-131` → `JobCtx`,
-`:113-114`) reach **every** job of a tick, since the helper
-`_scope_args(ctx)` (`pipelines/schedule.py:255-263`) builds the flags and
-`_with_common` (`:284-299`, `with_scope` default True) appends them; a job's
-per-brand rows require **one runner invocation per brand** and that
-invocation scopes the *whole* pipeline, not one job. The nightly cron passes
-neither flag, so every stored row is hq-scoped (`brand_id IS NULL`) —
-correct, not a gap. Consequence, verified live by app 2026-10-17 on
-`dac99d9`: a brand-scoped session gets live RFM at `n=435` while
-`GET /analytics/rfm/snapshots` returns **0 rows** and `movement` a **404
-`need_two_snapshots`**, so the movement section cannot populate for that
-role at all — **not a platform limit: nothing writes scoped rows and no UI
-action calls the POST**, while a scoped POST itself works (app
-`test_rfm_brand_scope`, `services/api/tests/test_rfm.py:380`, asserts `201`
-for a brand-scoped capture). Because pairing takes the newest `rules_version`
-**present** in scope, a scope whose only rows are v1 would pair v1-vs-v1 across
-two dates, so a *scoped* capture path is viable where an hq one is not (at hq
-a v1 capture loses to the v2 rows under that same rule). Find-or-create is scope-aware (`ml_engine/store_ld8.py:65-66`, the
-`brand_id`/`group_id` conjunctions of the find predicate),
-so a future per-brand fan-out would add rows beside the hq row rather than
-replace it. Fan-out price on the demo dataset: **6 ticks, one per brand**
-(`DEMO`/`SUNHING`/`KVLN`/`VICEW`/`HARBOR`/`PEAKLENS`), because the single
-group makes a `--group-id` run customer-identical to hq — brand is the only
-dimension that partitions anything here. No ML change is needed for it (the
-aggregate is already scope-parameterized, `ml_engine/store_rfm.py:29-31`, and
-`run_ld8` already threads `brand_id`/`group_id`), so enabling per-brand writes
-is a **runner** decision, not an ML one — and it does **not** fix the scoped
-role that night: the band pairs **two** `current` rows of the newest
-`rules_version` in scope, so each scope needs a second scoped night before it
-can populate — and the accurate copy is scope-neutral (*"no movement for
-this scope yet — movement appears once two snapshots of this window exist
-for this scope"*), because "the view needs a second night" is true of a
-hq/unscoped session and **false of a scoped one**: a second night still
-writes hq-stamped rows while the nightly's manifest scope stays hq-only,
-so the scope's own row count never moves.
-
-**Group scope is conjunctive by design, and its only silent exclusion is
-pre-group customers.** A group run requires `customers.group_id = g`
-**and** `brands.group_id = g` (scope is the group's shared pool *and* the
-brands inside it), matching `db/migrations/011_groups.sql:6` —
-"Customers are shared within a group (customers.group_id) with NO linkage"
-across clients (hard silo at the group level). `brands.group_id` is NOT NULL
-(`:23`), so the brand half can never be NULL-matched away;
-`customers.group_id` is NULLABLE on purpose (`:86`), the same legacy pattern
-as `consents.brand_id` / `NULL = pre-brand` (`:95-99`), and a group-scoped
-run **excludes** those rows silently. Checked against the live demo dataset
-2026-10-17: 1 group (`DEMO`), 6 brands, all in it, and **0 of 1208 customers
-with a NULL `group_id`** — so the customer half is a no-op here and the
-predicate cannot be exercised on demo data (a `--group-id DEMO` run is
-customer-identical to hq). Treat it as a contract property, not a testable
-one: it only becomes a live edge on operator data with pre-group customers.
-Nobody asserts the exclusion either — ML's suite is pure/DB-less by design, and
-app's group tests cover CRUD (`services/api/tests/test_groups.py:90`), the seed
-backfill (`:133`), cross-brand 403 + group-wide managers (`:155`), silo and
-unlinkable defaults (`:217`), tier brand scope (`:287`) and staff-link defaults
-(`:331`) — none of them puts a NULL-`group_id` customer under a group-scoped
-run, so this predicate is a property with **no coverage in either suite**; a
-fixture would have to be added app/data-side if it is ever challenged.
-The switch that would **include** those rows instead of dropping them is to
-swap the aggregate's guard for the `IS NOT DISTINCT FROM` form. The aggregate
-filters by `AND ($4::uuid IS NULL OR c.group_id = $4::uuid)`
-(`ml_engine/store_rfm.py:30`; the guard form is **three** lines, `:29-31`
-— brand `s.brand_id` at `:29`, customer group `c.group_id` at `:30`,
-brand group `b.group_id` at `:31`, and note the last two guard the **same**
-`$4`, so under a supplied scope a customer whose own group differs from
-their store brand's group is dropped by the brand line, not the customer
-line — ml re-derived `:29-31` 2026-10-17) — the `IS NULL OR`
-guard sits on the **parameter**, so a supplied scope leaves plain equality
-against a NULLable column and drops those rows — whereas the *listing* query
-already uses `brand_id IS NOT DISTINCT FROM $3::uuid` / `group_id IS NOT
-DISTINCT FROM $4::uuid` at `store_rfm.py:58-59`, where unfiltered selection is
-the goal; the two must not be confused for each other — and the discriminator
-is **artifact vs population**, not selection vs filtering (ml, 2026-10-17):
-`IS NOT DISTINCT FROM` **locates a stored artifact by its recorded scope**
-(a NULL stamp means "unscoped artifact" and must match, or the row you are
-about to find/create is invisible), while the `IS NULL OR` guard **scopes a
-live population**, where a NULL group means unassigned and must drop. The test
-is **two-step, and neither shorthand alone survives** (see the granularity
-note below): locate the row whose visibility this predicate decides — a
-**stamped** row takes stamp-equality on its scope stamp, a live or joined
-source row takes the population form even when the column in hand is called
-`brand_id` — and where the located row *is* the stamped one and also carries
-non-scope attributes, the column's role inside that row decides.
-`SNAPSHOTS_LIST_SQL` is the same-statement case: `:57`
-`WHERE ($1::text IS NULL OR mode = $1)` uses the population form because `mode`
-is a property of the *requested computation* (NULL = "no mode restriction"),
-while `:58-59` locate the artifact by its recorded stamp, where NULL/NULL means
-"computed globally, HQ-only". ml's sweep for the leak direction (a stamped
-row's scope predicate carrying the population form) found zero instances in
-`ml_engine/` (ml, 2026-10-17). All 11
-`IS NOT DISTINCT FROM` predicate pairs in `ml_engine/` are the former
-(`SNAPSHOT_FIND_SQL` `store_churn.py:193-198`, guarding `:196-197`, then
-`:301-302`, `:311-312`, `:323-324`, `store_clv.py:168-169`,
-`store_forecast.py:31-32`, `store_ld8.py:65-66`, `store_recs.py:88-89`,
-`:103-104`, `store_rfm.py:58-59`, `store_segments.py:388-389`); the guard's
-*reads* are the latter — `CUSTOMER_TX_ORDERS_SQL` / `CUSTOMER_TX_ACTIVITY_SQL`
-(`store_churn.py:253-261`, guarding `:258-259`, `:263-281`) scope per-customer
-transaction history for the BG/NBD fit rather than locating a stored row. One
-file carries both sides over the same two scope columns with opposite
-operators (`store_churn.py:193-198` vs `:253-261`), so artifact-vs-population
-is the only variable in that comparison — the form to cite when the question
-is which operator a query that does not exist yet should use (ml/app,
-2026-10-17).
-
-The same split has a second, independent statement on the app side, and it is
-the reference *decision* rather than an implementation detail:
-`../crm-cdp-app/services/api/analytics/scope.py:1-51` — the docstring, pinned
-at app `509c56e` (that file's last commit; it was `:1-41` one commit earlier
-at `9f5a67b` and `:1-40` one before that at `bc9cb59`, so the same
-docstring-only move shows up in three successive states, each shifting every
-symbol below it) — a stamped row is visible iff `row.brand == session.brand AND row.group == session.group`,
-NULL-safe on both sides — with the deliberate consequence named there,
-**quarantine-by-default**: legacy pre-scope rows and admin-created global
-batches are `NULL/NULL` and therefore **HQ-only**, so no group session can
-list or open a row computed over all brands. That consequence is the one data's
-writers live under: an unstamped write is not an error in this system, it is a
-row only HQ can see. The docstring's own invariant is "keep the two in sync —
-`row_visible` is the reference implementation" (`scope.py:72-76` at app
-`509c56e` — the function re-derived here; it was `:62-66` at `9f5a67b` and
-`:61-65` one commit earlier — app's docstring has now moved that pin twice, so
-a docstring-only commit moves the pin of every symbol below it, including the
-one it merely precedes, and the shift is +10 for +10 lines). The failure
-direction that matters, verified 2026-10-17 by app's sweep and re-derived here:
-a **stamped** surface using the population form would leak `NULL/NULL` rows
-into a brand session — a visibility bug, not a semantics curiosity; none in
-app's tree, whose population-form hits are all source-row filters over
-`orders`/`customers`/`brands`/`groups` (`analytics_snapshots.sql:110-111`,
-`analytics_simulate.sql:16-18`, `analytics_recs_fallback.sql`, `stats.py:23-29`
-`_ORDER_SCOPE`/`_CUST_SCOPE`). That zero is **verified, not asserted**: every
-`IS NULL OR` alias was resolved against the FROM/JOIN chain (`s` = `stores`,
-`b` = `brands`, `c` = `customers`, all joined off `orders o`), and
-`analytics_snapshots.sql:110-111` filters a **live** `brands`/`groups` row by
-id — app's analogue of `:57`'s `mode` case (app, 2026-10-17). The other
-direction of the same picture, and the one that explains why the artifact form
-is the default rather than just the convenient one: because that predicate is
-**mutual**, a brand-less HQ session `(None, None)` matches only `NULL/NULL`
-rows, so brand- and group-stamped rows are invisible to HQ **by construction**
-— deliberate, not a defect ("brand detail needs a brand-scoped session",
-`scope.py:18-19`) — and the two operators therefore fail in opposite
-directions: the population form can **disclose** (it is the leak swept above),
-while the artifact form can only **hide**. Hiding is survivable and is this
-system's quarantine default (an unstamped write is a row only HQ can see);
-disclosure is not. So "admin can't see the brand runs" is a
-**visibility-policy** question for the contract and the owner, never a
-WHERE-clause tweak in a migration — and where the intent really is "this
-session's rows *or* the global ones", the population form cannot express it
-(with a brand session `(B, None)` it reduces to `brand_id = B` and drops the
-globals it was meant to add): app writes the disjunction out explicitly at
-`scope.py:29-37` — as an **added term**, never a relaxed operator. The
-divergence has exactly one trigger, a **NULL session parameter**: the
-population form's NULL test is on the *parameter* (`$3::uuid IS NULL OR …`
-means "no restriction on this column"), while the artifact form compares
-*column to parameter* NULL-safely (`IS NOT DISTINCT FROM …` means "only rows
-whose stamp is NULL here"). So relaxing that column is the disclosure
-direction above, and the term's explicit tuple is also what keeps a
-group-stamped `(NULL, G)` row — the *normal* shape, since `session_scope`
-returns `(brand, None)` or `(None, group)` — out of a brand session (ml,
-2026-10-17). The mutuality is app's own text at `scope.py:21-27`
-(app `bc9cb59` "state the mutuality of the stamp predicate and the per-row
-rule", cited here rather than re-derived). The split falls
-on statement boundaries by architecture rather than luck: the serving layer
-resolves the artifact in one `-- name:` statement and aggregates live rows in
-another, so app's tightest two-form file is still 8 lines
-(`analytics_simulate.sql:16-18` live guard vs `:24-27` stamped `segment_runs`)
-and `store_rfm.py:57-59` remains the only single-*statement* instance any of us
-has. The predicate is restated at the point of use too
-(`db/queries/analytics_customer.sql:5-9` names `scope.py` and the predicate),
-which is the only thing keeping a copy honest — nothing mechanically checks
-that a stamped read *uses* the stamp operator. **Granularity, sharpened to its smallest case:** the rule is stated at the
-**row** first ("which row is this predicate deciding visibility for?") and at
-the **column within that row** second, for the case the row test cannot settle
-because the located row is itself the stamped one. The smallest instance
-carries both forms in one statement over one row:
-`SNAPSHOTS_LIST_SQL` (`store_rfm.py:57-59` — the WHERE clause; `:56` is only
-`FROM rfm_snapshots`) asks population-form for `mode`
-(`:57`, `$1::text IS NULL OR mode = $1`, where NULL means "every mode") and
-artifact-form for the scope stamp (`:58-59`, `brand_id`/`group_id IS NOT
-DISTINCT FROM`), so the row step is uniform there and it is the column's role
-that discriminates. The file-level
-counterpart is `analytics_snapshots.sql` — artifact form on the stamped row
-(`:22-23`), population form on the joined dimension rows (`:110-111`) — which
-is why a per-file label ("this query file is artifact-form") would annotate
-one of those two lines wrongly. The property that makes the rule usable by
-someone *editing* rather than auditing is that two-step form: **locate the row
-first** (a live or joined source row takes the population form, whatever the
-column is called), **then ask what the column is *on that row*** — a
-`brand_id`/`group_id` scope-stamp column *of the located row* takes `IS NOT
-DISTINCT FROM` (NULL there means "computed globally" and must fail closed), a
-non-scope attribute of that same row, or a dimension of a joined row, takes
-`IS NULL OR` (NULL there means "no restriction"). One sentence covers
-all three demonstrations in this section at once: `analytics_snapshots.sql`
-`:22-23` vs `:110-111` (file), `store_rfm.py:57` vs `:58-59` (statement and
-row), `store_churn.py:193-198` vs `:253-261` (same two columns, opposite
-operators). Both shorthands were
-stated and both are wrong alone: "per column" dies on
-`analytics_snapshots.sql:110-111`, where the filtered `b.id`/`g.id` are not
-stamp columns at all (ml, 2026-10-17), and "per row" dies on the middle case
-above — one row carrying both forms (data, 2026-10-17). The two-step form is
-the synthesis, and the row step is the one that generalises (app's `scope.py:43-50`
-states it in app's words; app/ml/data, 2026-10-17).
-
-Two boundary tests, because each half-solution fails one of them. **The column
-*name* is not the rule:** `brand_id` sits under both operators in one file and
-at one parameter position — `store_rfm.py:29` population form over the joined
-`stores` row (`$3::uuid IS NULL OR s.brand_id = $3::uuid`) against `:58`
-artifact form over `rfm_snapshots`. **The row's kind is not the rule either:**
-the middle case above is one row carrying both forms. What decides is what the
-column *is* on the row being located — the artifact's own stamp, or a
-dimension of a source row — which also disposes of the one apparent
-counterexample to the column framing, `analytics_snapshots.sql:110-111`
-(`b.id`/`g.id`): those filter a joined dimension row by its identity, not an
-artifact by a stamp.
-— **declined on purpose, not missed**: 011's design is exclusion, and a group
-run means the group's pool, not "the pool plus unassigned rows". Recorded so
-the choice is visible rather than rediscovered.
-
-**Third writer, non-scheduled:** `POST /analytics/rfm/snapshots` writes
-**v1** through the same `store_rfm.create_snapshot`, stamped
-`created_by=user.staff_code` (`analytics_rfm.py:132-142`). It is an
-ordinary v1 append, so it changes the v1 row inventory but not the
-pairing rule above, and with the cap pinned it cannot store a fit the v1
-engine path could not express.
-
+**Third writer, non-scheduled:** `POST /analytics/rfm/snapshots` writes **v1** through the same `store_rfm.create_snapshot`, stamped `created_by=user.staff_code` (`analytics_rfm.py:132-142`). It is an ordinary v1 append: it changes the v1 row inventory, not the pairing rule above, and with the cap pinned it cannot store a fit the v1 engine path could not express.
 ## Batch upload ETL (frontend files land here)
 
 App posts the file edge (`upload_jobs` row); data owns stage → validate
@@ -1519,387 +674,142 @@ uppercase, never collide with lowercase segments; pct_of_from NULL
 enforced (outside the flow pct denominator by construction).
 Lesson: `window` is a PG reserved word — column is `window_key`.
 ml executes the movement math verbatim via `validate_movement_row`
-/ `validate_segment_size` + the UPSERT/SELECT SQL. **Scope:** both
-aggregates are **unscoped outputs** — no scope column, no parent FK, global
-by construction (see *The stamped set* below for the enumeration and the
-pending writer-side choice).
-
-**Frozen-interface marker (proposed, deliberately unlanded — the owner's call,
-ml 2026-10-17).** Both repos execute the same statements (this repo's four
-`pipelines/snapshot.py` constants and 031's `window_key` schema), so ml's guard
-can only assert agreement in a skip-if-absent test that copy-reads this tree.
-A version marker on the interface would let both sides assert agreement at
-import or in the manifest instead. That is a contract change, so neither side
-lands it unilaterally; recorded here so the trade-off is not rediscovered.
+/ `validate_segment_size` + the UPSERT/SELECT SQL. **Scope:** both aggregates are **unscoped outputs** — no scope
+column, no parent FK, global by construction (see **Unscoped outputs** below).
 
 ## The stamped set: which relations carry a scope stamp (app+data+ml, 2026-10-17)
 
-A **stamped relation** is one whose row carries a scope stamp
-(`brand_id`/`group_id`) on the row itself, or inherits exactly one through its
-parent artifact. That is the set `row_visible` decides on
-(`../crm-cdp-app/services/api/analytics/scope.py:1-51`, reference
-implementation `:72-76`), so it is also the set the artifact-vs-population
-operator rule above applies to. It is written down because all three repos
-classified a relation from its **name** — a suffix (`order_items`, CTE names),
-a filename, a pair of alias letters — and each was wrong once: the category was
-not enumerated anywhere, so every repo re-derived it. **Derive it, do not
-infer it.**
+A **stamped relation** carries a scope stamp (`brand_id`/`group_id`) on the row itself or inherits exactly one through
+its parent artifact: the set `row_visible` decides on (`../crm-cdp-app/services/api/analytics/scope.py:1-51`, reference
+`:72-76`), and the set the artifact-vs-population rule above applies to. **Derive the group from the schema, never from
+the name.** Over `db/migrations/*.sql` `migrate:up` bodies only: **22 = 15 carriers + 7 negatives**; never union the
+`migrate:down` direction (it drops `012_analytics_scope.sql:26-32`, `031_rfm_time_aware.sql`).
 
-**Derivation (re-checkable):** every `CREATE TABLE` body and every
-`ALTER TABLE … ADD COLUMN` in `db/migrations/*.sql`, **`migrate:up` sections
-only, in filename order**. At data `1faf31d` that is **22** scope-carrying
-tables = **15 carriers + 7 negatives**, exactly, with nothing left over. The
-direction matters: `012_analytics_scope.sql` adds the scope columns at `:15-16`
-(`rfm_snapshots`) and `:21-22` (`rec_batches`) while its `migrate:down` `:26-32`
-drops them, and `031_rfm_time_aware.sql`'s down `DROP TABLE`s both
-`rfm_segment_*` tables — so a `CREATE TABLE`-only scan, or one unioned across
-directions, reports a different set (a first pass of ours reported 14, missing
-the inline and multi-column ALTERs).
+**Visibility (`row_visible`).** Visible ⟺ NULL-safe stamp-equality between the row's own stamp and the reader's scope
+(`row.brand == session.brand AND row.group == session.group`; session = brand `(brand, None)`, group `(None, group)`,
+HQ `(None, None)`). The equality is **mutual**: HQ matches only NULL/NULL rows (legacy pre-scope rows, admin-created
+global batches), and a group manager sees group-stamped runs but not brand rows. Never relax it to the population form
+to "let admin see brand runs" — a brand session would then match global/legacy rows; for "own rows or global" write the
+disjunction.
 
-**Carriers — 15.** The row's own stamp decides its visibility: `rfm_snapshots`,
-`rec_batches`, `clv_snapshots`, `churn_snapshots`, `kpi_daily_snapshots`,
-`cohort_snapshots`, `segment_runs`, `assoc_batches`, `explain_batches`,
-`forecast_batches`, `model_training_runs`, `pipeline_runs`, `connector_sync_runs`,
-`upload_jobs`, `btyd_params`.
+### Carriers — 15
+The row's **own** stamp decides visibility: `rfm_snapshots`, `rec_batches`, `clv_snapshots`, `churn_snapshots`,
+`kpi_daily_snapshots`, `cohort_snapshots`, `segment_runs`, `assoc_batches`, `explain_batches`, `forecast_batches`,
+`model_training_runs`, `pipeline_runs`, `connector_sync_runs`, `upload_jobs`, `btyd_params`.
 
-**Inheritors — 14.** No scope column of their own; visibility follows the
-parent's stamp through an FK, so a scope predicate can only be applied by
-joining the parent — the parent→child edges, which are the whole list (writer
-→ carrier → carrier's children): `rfm_customer_scores` ← `rfm_snapshots`
-(`snapshot_id`), `churn_customer_scores` ← `churn_snapshots` (`snapshot_id`),
-`clv_customer_scores` ← `clv_snapshots` (`snapshot_id`),
-`segment_assignments` ← `segment_runs` (`run_id`), `cluster_feature_matrix` ←
-`segment_runs`, `cluster_feature_matrix_long` ← `segment_runs`, and
-`seg_surrogate_fits` ← `segment_runs` (all `segment_run_id`), `assoc_rules` ←
-`assoc_batches` (`batch_id`), `explain_rows` ← `explain_batches` (`batch_id`),
-`forecast_rows` ← `forecast_batches` (`batch_id`), `rec_items` ← `rec_batches`
-(`batch_id`), and `landing_receipts` / `quarantine_rows` / `staging_rows` ←
-`upload_jobs` (`upload_job_id`). **A group is a property of the edge, not of
-the child**: five of the fourteen children carry a second, non-scope parent edge
-(`rec_items`, `segment_assignments`, `rfm_customer_scores`,
-`churn_customer_scores`, `clv_customer_scores` each also reference `customers`
-via `customer_id`), which is a population relation, and `landing_receipts`
-carries a second optional parent of a different kind
-(`manifest_pipeline → pipeline_manifests`,
-`027_landing_receipts.sql:26-27`). So a guard keyed on a table proves one path
-and misses the other; key it on the edge. Thirteen of the fourteen edges are
-`NOT NULL … ON DELETE CASCADE`; the exception is the fourteenth, and it is a
-boundary case rather than a detail: `landing_receipts.upload_job_id` is
-`uuid NULL UNIQUE … REFERENCES upload_jobs (id) ON DELETE RESTRICT`
-(`027_landing_receipts.sql:16-17`) because exactly one of it and
-`vendor_batch_id` must be set (`:31-33` `CHECK ((upload_job_id IS NOT NULL)::int
-+ (vendor_batch_id IS NOT NULL)::int = 1)`). So the table is an inheritor on
-the **file-upload** path only: a **vendor batch import** receipt has no parent
-artifact, no scope column and no join to a stamped relation — it is unscoped by
-construction, and it is the one row shape where the parent→child coherence
-check has nothing to compare. That is also why such a loop must skip on the
-**edge** rather than the table: with this table empty, the
-`CHECK ((upload_job_id IS NOT NULL)::int + (vendor_batch_id IS NOT NULL)::int
-= 1)` at `:31-33` is the only thing holding the invariant today, so an empty read
-is not evidence of safety.
-`cluster_feature_matrix` and `cluster_feature_matrix_long` are **two relations,
-not one**: `029` carries a `layout` column with
-`CHECK (layout IN ('wide','long'))`, and `032` gives the melted-stat grain its
-own table because the wide PK cannot hold those rows; serving reads both
-(`db/queries/analytics_segment_matrix.sql`, wide by `layout`, long by table).
+### Inheritors — 14
+**No scope column of their own**: visibility follows the parent's stamp through an FK, so a scope predicate on an
+inheritor can only be evaluated by **joining the parent**. The parent→child edges are the whole list:
+- `rfm_customer_scores` ← `rfm_snapshots` (`snapshot_id`); `churn_customer_scores` ← `churn_snapshots`;
+  `clv_customer_scores` ← `clv_snapshots` (all `snapshot_id`)
+- `segment_assignments` ← `segment_runs` (`run_id`); `cluster_feature_matrix`, `cluster_feature_matrix_long`,
+  `seg_surrogate_fits` ← `segment_runs` (`segment_run_id`) — the two `cluster_feature_matrix*` relations are **one
+  logical matrix** (`031` `layout IN ('wide','long')`; `032` melts the grain the wide PK cannot hold), so a guard
+  covering one misses the other
+- `assoc_rules` ← `assoc_batches`; `explain_rows` ← `explain_batches`; `forecast_rows` ← `forecast_batches`;
+  `rec_items` ← `rec_batches` (all `batch_id`)
+- `landing_receipts`, `quarantine_rows`, `staging_rows` ← `upload_jobs` (`upload_job_id`)
 
-**Negatives — 7.** Live entities carrying a scope column that is **not** a
-visibility stamp: `brands` (`group_id`), `customers` (`group_id`), `stores`
-(`brand_id`), `staff` (`brand_id`), `membership_tiers` (`brand_id`),
-`campaigns` (`brand_id`), `consents` (`brand_id`). A predicate over these is an
-ordinary filter over live rows, and is expected to use the population form.
+**A group is a property of the edge, not of the child.** Five children carry a second, non-scope parent edge
+(`rec_items`, `segment_assignments`, `rfm_customer_scores`, `churn_customer_scores`, `clv_customer_scores` reference
+`customers` via `customer_id`), and `landing_receipts` a second optional parent (`manifest_pipeline →
+pipeline_manifests`, `027_landing_receipts.sql:26-27`); key a guard on the **edge**, not the table.
 
-**Obligations per group, and what a guard can actually assert.** The groups
-exist because the obligations differ, so which table sits in which group is the
-usable part of this section:
+Thirteen of the fourteen edges are `NOT NULL … ON DELETE CASCADE`; the exception is a boundary case:
+`landing_receipts.upload_job_id` is `uuid NULL UNIQUE … REFERENCES upload_jobs (id) ON DELETE RESTRICT`
+(`027_landing_receipts.sql:16-17`), because exactly one of it and `vendor_batch_id` must be set (`:31-33`
+`CHECK ((upload_job_id IS NOT NULL)::int + (vendor_batch_id IS NOT NULL)::int = 1)`), so it inherits on the
+**file-upload** path only: a **vendor batch import** receipt has no parent artifact, no scope column and no join to a
+stamped relation (unscoped by construction), and a guard must skip on the **edge**, not the table — with it empty that
+`CHECK` alone holds the invariant, so an empty read proves nothing.
 
-- **Carriers (15)** and **inheritors (14)** — one invariant, and it is a *reader*
-  invariant: a query over an inheritor is safe only when whoever resolved its
-  parent did so **under the scope predicate**. It is a property of code, not of
-  data, so a DB test over these rows asserts **nothing** — there is no second
-  column to compare.
+### Negatives — 7
+Live entities carrying a scope column that is **not** a visibility stamp: `brands` (`group_id`), `customers` (`group_id`),
+`stores` (`brand_id`), `staff` (`brand_id`), `membership_tiers` (`brand_id`), `campaigns` (`brand_id`), `consents`
+(`brand_id`). A predicate over these is an ordinary filter over live rows.
 
-  **The enforcement is not a sweep over the SQL text** — measured, app,
-  2026-10-17: that formulation flags 23 of 23 query blocks, and every flag is
-  correct code. The house convention is that the **caller** resolves the parent
-  in scope and passes its id down, so the child query contains no parent join by
-  design. Confirmed at app `ce5a65a` (the file is 91 lines):
-  `../crm-cdp-app/services/api/routers/analytics_explain.py:54-64` is the whole
-  shape — `:54` `scope_filters(user)`, `:56-61` the parent read (global `:57-58`,
-  scoped `:60-61`), `:62-63` the 404 on a miss, `:64` the child call with
-  `batch["id"]` — whose block is `WHERE batch_id = $1`, parent id as a parameter
-  (`../crm-cdp-app/db/queries/analytics_explain.sql:19-25`). One checkable range
-  rather than four bare `:NN` continuations on purpose: the continuations fall
-  outside `scripts/audit_doc_cites.py`'s regex (`CITE` at
-  `scripts/audit_doc_cites.py:34` needs a `file.ext:LINE` token), so the first
-  version of this sentence carried four offsets the guard could not check — and
-  all four were wrong. So the
-  checkable invariant is cross-file: for every call of a child query carrying a
-  parent id, the same code path must first perform a scope-guarded read of that
-  parent — i.e. SQL blocks joined to their call sites in
-  `services/api/routers/*.py`. That is real static analysis with a real
-  false-positive surface (indirect helpers, loops over ids, pagination), it
-  belongs beside the docs-citation audit rather than in a test file, and it is
-  **not built**.
-- **Carriers that also have an artifact parent — 2 edges** (schema-derived,
-  app, 2026-10-17): `explain_batches → segment_runs` and
-  `pipeline_runs → connector_sync_runs` — and the two edges are **not the same
-  case**, which is why writer attribution belongs in this list:
-  - `explain_batches → segment_runs` (**writer: ml**): equality is structural,
-    because the child's stamp is copied from the parent row read in the same
-    call. Live, 2026-10-17: **7 rows compared, 0 violations**. The paired
-    run-identity check (`explain_batches.fit_id → seg_surrogate_fits`) is **2 /
-    0**.
-  - `pipeline_runs → connector_sync_runs` (**writer: data, both sides**): the
-    stamps are **not** written by one statement. The sync row is inserted by
-    `services/api/repos/connectors.py:218-224` with the session's scope, while
-    the run row's stamps arrive as caller flags
-    (`scripts/run_pipeline.py:113-116`) and are stored by
-    `pipelines/schedule.py:65-79` — one statement for the row, but the runner
-    **never reads the sync row's stamps**, so agreement across the edge is
-    *caller-supplied* and nothing structural holds it. Live: **0 rows** (no
-    pipeline runs exist) — untested rather than verified. The harness for this
-    edge is data's, because the writer is data's: app cannot build this half.
-  - **Expressible is not enforceable either.** Where a suite seeds these
-    artifacts with direct SQL and no scope columns
-    (`../crm-cdp-app/services/api/tests/test_explain.py:47-53`, plus 6 sibling
-    files seeding the same tables) both ends are NULL, so a stamp-equality
-    assertion there cannot fail for any code change. Teeth need a test that
-    drives the writers: ml's `ml_engine/store_explain.py`,
-    `ml_engine/store_ld8.py`, `ml_engine/store_rfm.py`, and for the second edge
-    data's `services/api/tests/test_schedule.py`
-    (`test_sync_lineage_stamps_agree`, which asserts a tick's `pipeline_runs`
-    stamps equal the feeding `connector_sync_runs` row's).
-- **Negatives (7):** no visibility obligation; a predicate over their scope
-  column is an ordinary population filter.
-- **Unscoped outputs (3):** shape 1 gates at the reader and abstains at the
-  writer; shape 2 has neither obligation.
+### Unscoped outputs — 3
+Two shapes, split by what the relation stores:
+1. **Holds scope-dependent results with no scope column** — readers must gate, writers must abstain:
+   `rfm_segment_sizes`, `rfm_segment_movement` (031; writer ml). No predicate can distinguish a per-scope row from a
+   global one.
+2. **Holds no results at all** — no obligation either way: `report_runs` (app-only,
+   `../crm-cdp-app/db/migrations/033_report_runs.sql`; data carrying no 033 is the bootstrap-subset rule, not drift) is
+   a scope-free **ledger** with no result column. Grouping it with shape 1 invites the one wrong fix available here:
+   scope columns on a table that carries no computed content.
 
-**The trap in any schema-derived edge list:** enumerating FKs over
-scope-carrying tables yields **25 edges whose two ends both carry a stamp, and
-23 of them point at dimension relations** (`brand_id → brands.id` ×20, plus
-`consents → customers`, `customers → membership_tiers`, `staff → stores`). They
-must be excluded — and not only because equality is unexpressible there: it is
-**wrong by design**, since a brand-scoped row carries `group_id = NULL` while
-its `brands` row carries the owning group, so equality fails on correct data.
-Only **both-stamped** artifact→artifact edges (the 2 above) are candidates.
+**Their pending writer choice.** Nothing links the two 031 aggregates to a scope: the writers `SEGMENT_SIZE_UPSERT_SQL` (`pipelines/snapshot.py:373`) and
+`MOVEMENT_UPSERT_SQL` (`:380`) are `ON CONFLICT … DO NOTHING`, the readers filter `as_of` +
+window/pair only (`:387`, `:394`), so their rows are **global by construction** (first-writer-wins). A scoped
+LD8 run threads scope into its window snapshot but not into these two (`ml_engine/store_ld8.py:256-257`), so it would
+**make** a brand's aggregates the global rows for every unscoped read; the gate
+(`../crm-cdp-app/services/api/routers/analytics_rfm_windows.py:1-24`: scoped sessions 403) closes only reading. **Owner
+choice pending (A / B′ / defer), B′ recommended by app and ml:** a scoped run still writes its scope-stamped
+snapshots/scores and **skips** these two, the skip **reported as skipped** — a bare zero is
+indistinguishable from "nothing changed".
 
-**A third artifact→artifact edge exists, and its invariant is not a stamp:**
-`explain_batches.fit_id → seg_surrogate_fits.id`
-(`030_surrogate_fits.sql:29-30`, `uuid NULL … ON DELETE SET NULL`). Its ends are
-not both stamped — `seg_surrogate_fits` (`:15-24`) carries `segment_run_id` and
-no scope column — so the assertable property is **run identity**, not stamp
-equality: a batch must not reference a fit trained on a different run
-(`explain_batches.segment_run_id IS DISTINCT FROM seg_surrogate_fits.segment_run_id`
-must be empty). Both app readers join it and take only `f.accuracy`
-(`../crm-cdp-app/db/queries/analytics_explain.sql:11-12`, `:33-34`) with the
-scope predicate on the stamped child, so this edge cannot leak scope — it can
-only mismatch a fit to the wrong run, which is the writer disagreeing with
-itself in the same transaction that inserts the batch.
+### Obligations per group, and what a guard can assert
+- **Carriers (15) and inheritors (14)** share one *reader* invariant: a query over an inheritor is safe only when whoever
+  resolved its parent did so **under the scope predicate**. That is a property of code, not data, so a DB test over
+  these rows asserts **nothing** — there is no second column to compare.
+- **The enforcement is not a sweep over the SQL text**: measured (app, 2026-10-17), such a sweep flags 23 of 23 query
+  blocks and every flag is correct code, because the **caller** resolves the parent in scope and passes its id down, so
+  the child query has no parent join by design (`../crm-cdp-app/services/api/routers/analytics_explain.py:54-64` +
+  `../crm-cdp-app/db/queries/analytics_explain.sql:19-25`). The checkable invariant is cross-file: for every child-query
+  call carrying a parent id, the same code path must first scope-guard that parent. That guard is **not built**.
+- **Carriers with a second artifact parent — 2 edges, not the same case.** `explain_batches → segment_runs` (**writer:
+  ml**): equality is structural (the child's stamp is copied from the parent row read in the same call) — live 2026-10-17
+  **7 compared / 0 violations**, the paired run-identity check (`explain_batches.fit_id → seg_surrogate_fits`) **2 / 0**.
+  `pipeline_runs → connector_sync_runs` (**writer: data, both sides**) is **not** one statement: the sync row takes the
+  session's scope (`services/api/repos/connectors.py:218-224`), the run row's stamps come as caller flags
+  (`scripts/run_pipeline.py:113-116`) stored by `pipelines/schedule.py:65-79`, and **the runner never reads the sync
+  row's stamps**. Live **0 rows** — untested, not verified; the harness is data's, because the writer is.
+- **Carriers that also inherit — the row's own stamp governs.** `explain_batches.segment_run_id uuid NOT NULL REFERENCES
+  segment_runs (id)` (`021_explain.sql:18`) sits alongside its own `brand_id`/`group_id` (`:29-30`);
+  `pipeline_runs.sync_run_id` (`023_pipeline_sync_link.sql:12-13`, NULL) is the same shape. **The row's own stamp
+  governs** (app ruling 2026-10-17): it is the only column `row_visible` reads, and the parent FK is lineage, not a
+  second visibility path. A child/parent stamp disagreement is **a write bug**, not a case to define away: guard it at
+  the writer that inserts both in one transaction (`ml_engine/store_explain.py:47`).
+- **Negatives (7)** have no visibility obligation (an ordinary population filter); unscoped shape 1 gates at the reader
+  and abstains at the writer, shape 2 has neither. **Expressible is not enforceable**: seeds with NULL scope at both ends
+  cannot fail a stamp-equality assertion — teeth need writer-driving tests (ml's `store_explain` / `store_ld8` /
+  `store_rfm`, data's `test_schedule.py::test_sync_lineage_stamps_agree`).
 
-**Unscoped outputs — 3**, a real category rather than a leftover bucket, and
-listed so absence cannot read as coverage. It has **two shapes, split by what
-the relation stores, not by how carefully it was written** (app, 2026-10-17):
+**The trap in any schema-derived edge list.** Enumerating FKs over scope-carrying tables yields **25 edges with a stamp
+at both ends, 23 of them into dimension relations** (`brand_id → brands.id` ×20, three into `customers`/`stores`).
+Exclude them: a brand-scoped row carries `group_id = NULL` while its `brands` row carries the owning group, so equality
+there is **wrong by design**. Only the **both-stamped** artifact→artifact edges (the 2 above) count.
 
-1. **Holds scope-dependent results with no scope column** — both obligations:
-   readers must gate, writers must abstain. `rfm_segment_sizes` and
-   `rfm_segment_movement` (031; writer ml). No predicate can distinguish a
-   per-scope row from a global one, which is why the gate is the reader's and
-   why this shape is the one with a failure mode in it (app `7cc4495`).
-2. **Holds no results at all** — neither obligation, and the reason is the
-   table's content, not the writer's discipline: `report_runs` (app-only,
-   `../crm-cdp-app/db/migrations/033_report_runs.sql`; data carrying no 033 is
-   the bootstrap-subset rule, not drift) is a scope-free **ledger** — columns
-   `id, report_id, version, status, requested_by, error, created_at,
-   finished_at`, and nothing anywhere stores a report's output
-   (`../crm-cdp-app/db/queries/reports.sql` has zero `result` hits; the
-   migration's own header says results "are never fabricated"). Grouping it
-   with shape 1 invites the one wrong fix available here: adding scope columns
-   to a table that carries no computed content.
-
-The neighbouring LD11 surface is a third case, and the honest wording is
-narrower than "no scope content": the only scope-bearing thing there is a
-definition's **filters** (`definition jsonb`, `026_report_definitions.sql:18`;
-data's validator vocabulary is `CONTENT_KEYS = ("axes", "metrics", "filters")`,
-`pipelines/reports.py:15`, so a brand pin rides inside `filters` as content) —
-**configuration, not results**, and its visibility is a stated choice rather
-than an oversight: staff-level gating, because "Definitions carry no secrets
-and trigger no execution, so admin-gating … would only block the staff authors
-these reports exist for" (`../crm-cdp-app/services/api/routers/reports.py:9-13`).
-
-**Two shapes a three-list split cannot express.** First, a **carrier that also
-inherits**: `explain_batches.segment_run_id uuid NOT NULL REFERENCES
-segment_runs (id)` (`021_explain.sql:18`) alongside its own `brand_id`/
-`group_id` (`:29-30`, indexed `:34-35`), and `pipeline_runs.sync_run_id`
-(`023_pipeline_sync_link.sql:12-13`, NULL). Ruling (app, 2026-10-17): **the
-row's own stamp governs**, because that is the only column `row_visible` reads
-— the parent FK is lineage, not a second visibility path. A child/parent
-disagreement is therefore **not a case to define away: it is a write bug**, and
-the guard belongs at the writer that inserts both in one transaction (ml's,
-e.g. `ml_engine/store_explain.py:47`), since PG cannot express a cross-table
-CHECK without a trigger. Second, an **unscoped output**.
-
-**Their write path, and the choice about it.** Nothing scoped connects the two
-031 aggregates to anything else. The writers
-`SEGMENT_SIZE_UPSERT_SQL` / `MOVEMENT_UPSERT_SQL` (`pipelines/snapshot.py:373`,
-`:380` — names are the contract, lines illustration) are `ON CONFLICT … DO
-NOTHING`; the readers `SIZES_FOR_WINDOW_SQL` / `MOVEMENT_FOR_PAIR_SQL` (`:387`,
-`:394`) filter `as_of` + window/pair only. Nothing records which session a row
-came from, so these numbers are **global by construction** and first-writer-wins
-for a given `as_of`. A scoped LD8 run is reachable
-(`ml_jobs/run_ld8_snapshot.py:23-28`, `--brand-id`/`--group-id` at `:49-50`)
-while `run_ld8` threads scope into the window snapshot and not into these two
-(`ml_engine/store_ld8.py:256-257`, `:261-263`) — so under a scoped run a brand's
-aggregates would *become* the global rows, and every unscoped session would read
-them as global truth. The read gate
-(`../crm-cdp-app/services/api/routers/analytics_rfm_windows.py:1-24`: scoped
-sessions 403 "until the artifact gains a scope column") closes only the read
-direction; nothing but the writer can close the write one. **Owner choice
-pending (A / B′ / defer), with B′ recommended by app and ml:** a scoped run
-still writes its scope-stamped snapshots/scores and **skips** these two, the
-skip **reported as skipped** rather than left to `DO NOTHING` — a bare zero is
-indistinguishable from "nothing changed", and no later query can recover a
-row's provenance. Under that choice `:669`'s remedy ("a scoped LD8 run") keeps
-its wording: that scope still gets its scoped snapshots; only these two
-aggregates stay HQ-only.
+**A third artifact→artifact edge, whose invariant is not a stamp.** `explain_batches.fit_id → seg_surrogate_fits.id`
+(`030_surrogate_fits.sql:29-30`, `uuid NULL … ON DELETE SET NULL`) is not between two stamped ends —
+`seg_surrogate_fits` (`:15-24`) carries `segment_run_id` and no scope column — so assert **run identity** instead
+(`explain_batches.segment_run_id IS DISTINCT FROM seg_surrogate_fits.segment_run_id` must be empty), not a stamp.
 
 ## Tree ownership & the mirror boundary (app ruling 2026-10-17)
 
-- **The rule:** for any file present in **both** trees, app's checkout is
-the base — copy it byte-for-byte, never fork it, never delete a
-data-only file. Measured at app `4cbf297` / data `f5237fb`: data carried
-9 of app's 25 `db/queries/*.sql` and 77 of 141 `services/api/**/*.py`,
-so data holds a **bootstrap subset**, not a mirror; the 12 data-only
-files (`test_apply.py`, `test_upload.py`, `test_schedule.py`,
-`db/queries/kpi_daily.sql`, …) are harness, not drift, and a sync must
-not touch them.
-- **Harness is out of scope:** `services/api/tests/**` is data's own —
-data's `test_connectors.py` carries 19 cases app's does not (app has 1
-data doesn't), and data's `test_cohort.py` 4 (app has 2). A sync copies
-the runtime, not the tests; when app's runtime changes shape (e.g. a
-connector's cron moved from the create body to `PUT /{id}/schedule`),
-data updates **its** tests to the new API rather than keeping the old
-shape alive.
-- **Closure — learned the hard way:** mirror a module together with the
-files it reads *at import*, or the tree imports and cannot boot. App's
-`services/api/analytics/periods.py` reads
-`db/queries/analytics_comparisons.sql` at module level (`QUERIES_PATH`
-constant), so copying app's `routers/stats.py` + `repos/stats.py`
-without that module **and** that query left the API failing to start —
-`FileNotFoundError` inside every test's client fixture, 40 errors, not
-one of them about stats. Data now carries both files (`analytics/
-periods.py`, `db/queries/analytics_comparisons.sql`); the deficit was
-found by reading the fixture error, not by guessing from the diff.
-- **A mirror can move a writer's layer, and that is not a fork:**
-`note_sync_result` was data's, sitting in data's copy of an app-owned
-file (`services/api/repos/connectors.py`). App's ruling that the sync
-checkpoint is worker-owned moved the truth to data's layer, so the
-writer moved to `pipelines/ingest/connector_sync.py` and the app-owned
-file was left exactly as app has it. Editing an app-owned file to hold
-data's logic is a fork; putting that logic in a data-owned module is
-the fix, and it keeps the documented contract (§019 LD2) true.
-- **Compare blobs, not worktrees** (both repos run `core.autocrlf=true`,
-and a checkout rewrites line endings whenever Git touches a file). Right
-after the 2026-10-17 sync the shared paths read **20 worktree
-mismatches — 16 of them CRLF-only (identical once `\r\n` is normalised)
-and 4 the harness files this scope already excludes** — while the
-**blobs** matched: 25 of 25 synced files are byte-identical at data
-`d9045a4` / app `4cbf297` (`git cat-file blob <rev>:<path>` in each
-tree, or `git -C ../crm-cdp-app show <rev>:<path> | git hash-object
---stdin`). `services/api/repos/stats.py` was 13921 bytes here against
-13598 in app: a +323 delta, exactly its line count, one extra CR per
-line. A worktree diff on a clean mirror therefore manufactures a false
-alarm of the same family as the cite guard's mirror-drift flag — both
-are a real measurement of the wrong object.
-- **The rule both sides converged on (app, ml, 2026-10-17):** *the unit of
-copying — and of distribution — is the **import closure**, not the
-module.* Same sentence from the other direction: app's
-`services/api/analytics/snapshots_serve.py:48-54` pulls `ml_engine` in at
-module level in seven import statements (`btyd`, `clv`, `segmentation`,
-`store_churn`, `store_clv`, `store_segments`, then `rfm.resolve_window`
-and `store_rfm.compute_current`), so an import-time file read anywhere in
-those would fail the whole API's boot rather than raise a missing-file
-error at a call site — the shape of the 40-fixture
-incident one layer over. It is safe today because ml's default is **no
-read** (`ml_engine/features.py:286-287` returns built-in `DEFAULT_ENABLED`
-when `path is None`): keep any spec-file read opt-in through an explicit
-argument, never a module-level constant resolved at import.
-- **A frozen-interface marker names what a copy was taken from, at which
-  level — and neither it nor the test can replace the other** (ml, app,
-  2026-10-17). Where a cross-tree copy must stay equal to its original —
-  ml's four `snapshot.py` statements, app's four `db/queries/*.sql` copies,
-  the `031` schema under both — the form is
-  `frozen: <owning path>:<symbol> @ <rev> -> <consumer site(s)>, level=<token|byte|grain>, guard=<test>`.
-  Each field is there because leaving it out was already tried: the **path
-  plus symbol name** is the pin and the line number is illustration, so a
-  stale line cannot orphan the claim; the **revision** is exactly what app's
-  copies lacked (`already are` the frozen artifact, "with no label saying
-  which revision each was taken from"); the **level** is not decoration,
-  because "verbatim"/"byte-equal" in prose cannot be contradicted by any run
-  while the real level is token-equality under `_norm` (`tests/test_ld8.py:43`,
-  ml); and the **guard** is named so a reader sees which half actually runs.
-  **The marker supplements the skip-if-absent test and cannot replace it**
-  (ml): the test is the half that compares tokens, so it needs both trees and
-  *skips* otherwise — `tests/test_ld8.py:146` (ml `72ae86e`; `:98` when added at
-  `0839d7f`) names the path it looked in,
-  and a green suite with the sibling absent proves nothing — while the marker
-  still reads on a one-tree clone and compares nothing. The converse is why
-  both stay: **a marker is a label, so the cite genres apply to it —
-  resolution and currency of `path:symbol @ rev` are checkable
-  (`scripts/audit_doc_cites.py`), and equality is not.** A green audit run
-  therefore means the marker resolves and is current, never that the copies
-  agree; equality has exactly one judge, the cross-repo test, and it only
-  convenes where the sibling tree is present. **Form only — nothing is
-  declared frozen by this clause:** whether to freeze the four LD8 constants
-  in `pipelines/snapshot.py`, the `031` schema, and app's four copies is the
-  owner's call, not a unilateral one (see the LD8 section above). This
-  paragraph is appended at the tail on purpose: mid-document insertions shift
-  every line number below them, and peers cite this file by line.
-- **The invocation is part of the verdict** (app, ml, 2026-10-17). Every run
-  prints its own universe (`trees:` then `peers: … + absent: …`), because a cite
-  can only be judged against the trees that are checked out and a wrong universe
-  is indistinguishable from a defective document. Measured at app's root with
-  the old default peer list: `unresolved=10`, `pin-unresolved=1`,
-  `unclassified=4` — fifteen findings, all fifteen the invocation, in the same
-  buckets, same wording, `exit 0`. The default is now the sibling
-  `crm-cdp-{app,data,ml}` trees that exist minus the audited root; a declared
-  peer that is absent prints `peer-missing` (hard under `--strict`); and
-  `--require-peer <path>` (repeatable, for CI) makes absence hard always. Read
-  the `peers:` line before believing those three buckets — dropping one tree from
-  the list turned data's clean run into `unresolved=73`,
-  `pin-unresolved=10`, `unclassified=31` **with no document change at all**.
-  `unclassified` is the bucket that misleads hardest: `unresolved` at least says
-  "path in no tree", while `unclassified` reads as a shape defect and would send
-  a reader to rewrite a correct citation. **The pass reads each tree's working
-  tree** (tracked + untracked-not-ignored files), which is what a human reads but
-  means an uncommitted edit moves buckets — app's `ok=35 / pin-ok=1` and data's
-  `ok=34 / pin-ok=2` for the same trees differ by one cite (`79b4eb0`) that an
-  in-flight edit had rewritten into the pin form; one cite moving from
-  `ok`+`repo-ok` to `pin-ok` is a text change, not a disagreement, so compare
-  the two trees' *states* before calling a number difference a defect.
+- **The rule:** for any file in **both** trees app's checkout is the base — copy it byte-for-byte, **never fork it**,
+  **never delete a data-only file**. Data holds a **bootstrap subset**, not a mirror (the data-only `test_apply.py`,
+  `test_upload.py`, `test_schedule.py`, `db/queries/kpi_daily.sql`, … are harness, not drift); `services/api/tests/**`
+  is data's own, so a sync copies the runtime and data updates **its** tests when app's runtime changes shape.
+- **Closure — the unit of copying is the import closure, not the module.** Mirror a module with the files it reads *at
+  import*, or the tree imports and cannot boot: app's `services/api/analytics/periods.py` reads
+  `db/queries/analytics_comparisons.sql` at module level, so copying `routers/stats.py` + `repos/stats.py` without both
+  left the API unable to start (`FileNotFoundError` in every client fixture — 40 errors, none about stats). Same shape
+  where `services/api/analytics/snapshots_serve.py:48-54` imports `ml_engine` at module level: keep any spec-file read
+  **opt-in via an explicit argument, never a module-level constant** (ml's default is no read —
+  `ml_engine/features.py:286-287`, `DEFAULT_ENABLED` when `path is None`).
+- **A moved writer's layer is not a fork:** `note_sync_result` (data's logic in data's copy of the app-owned
+  `services/api/repos/connectors.py`) now lives in the data-owned `pipelines/ingest/connector_sync.py`.
+- **Compare blobs, not worktrees** (`core.autocrlf=true` both sides): after the 2026-10-17 sync the shared paths showed
+  **20 worktree mismatches (16 CRLF-only, 4 already-excluded harness files) against 25 of 25 byte-identical blobs**
+  (`git cat-file blob <rev>:<path>`), so a worktree diff on a clean mirror is a false alarm.
+- **No cross-tree file reads at runtime**: each tree boots from its own copies and what crosses the boundary is declared,
+  not an ad-hoc path read — app's `pip install -e ../crm-cdp-ml` (`ml_engine/__init__.py:10`) and vendored
+  `pipelines/ingest/connectors.py`; data executing ml's checkout as a subprocess on every ml job
+  (`pipelines/schedule.py:13`, `:719`/`:724`); ml's SQL depending on the schema these migrations create.
 
-## Pin half-life, worked (2026-10-17)
+## Pin half-life, and the rule it settled (2026-10-17)
 
-One commit, two genres, and only one of them had to do anything. ml's f132233 is
-comment-only (`1 1`), so it moved the last-changed revision of
-`ml_engine/store_ld8.py` while touching nothing anyone had quoted. **Shas here
-are left unbackticked on purpose**: they are historical values being described,
-not citations being made, and a backticked one is read by the guard as a live
-claim — which is the illustrative-citation genre this doc still lacks.
-
-- data's **pin** of that file (the sibling-read entry above) went pin-stale=1 on
-  the guard's next run: the value it held, 3b20797, was no longer that file's last
-  change (now f132233). It was repinned **without re-reading the file**, because
-  the same line printed `[cited lines untouched (7 cite(s) of this path)]` — that
-  tag is what decides repin (mechanical) versus re-read (a human).
-- app's two ml **labels** (`read at ml <sha>`) were unmoved and needed nothing:
-  a label never claimed to be the file's last-changed revision, so a later commit
-  to that file cannot falsify it. Same file, same edit, one side staled and one
-  did not.
-
-**A label survives any later edit; a pin's half-life is the next commit to that
-file** — which is why a pin's only promise is that the delta gets printed, never
-that the value is fresh. Corollary for the repo that owns a pinned file: its own
-edits stale a peer's pin, so the movement belongs in the same message as the
-change (app pins data's `pipelines/snapshot.py` and `pipelines/model_fits.py`;
-data pins ml's `ml_engine/*.py`).
+**A revision label records a read; a bump is a claim of re-verification.** A label (`read at ml <sha>`) survives any later
+edit to the file it names; a pin's half-life is the next commit to that file, so a pin's only promise is that the delta
+gets printed, never that the value is fresh — and a bump asserts a re-reading: never bump to clear a red.
