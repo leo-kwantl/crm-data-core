@@ -25,6 +25,13 @@ is **markdown only** and `scripts/audit_doc_cites.py` prints that boundary besid
 with neither a path nor a repo name is unjudgeable, reported as `unclassified`, never guessed. A row
 id is not a revision, and one pin never covers several paths or a wrapped pair.
 
+A count, by contrast, is a claim about the invocation that produced it, and the guard prints its
+harness — coverage mode, peer set, tree — beside every bucket. Publish the line, not the number: one
+unchanged tree reports a different `ok` in markdown-only and `--comments` mode, and `--peer`
+**replaces** the defaults, so declaring a single peer turns every other tree's cites into findings
+*about the docs* rather than about the invocation. A count from a superseded invocation is
+**withdrawn, never diffed** against a fresh one.
+
 A grep-unique statement name is the primary cite; a bare `:NN` is legitimate only where the file is
 named in the same sentence, and a bare number with **no referent in scope** clears the checks
 vacuously. **"Your file still says X" is itself a claim that needs its revision**: quote it with
