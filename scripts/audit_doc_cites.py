@@ -764,6 +764,51 @@ def span_blank(roots: list[Path], cited: str, start: int, end: int) -> bool:
     return holders > 0
 
 
+def span_differs(roots: list[Path], cited: str, start: int,
+                 end: int) -> list[str]:
+    """Trees whose cited span is not identical to the first holder's.
+
+    A cited path that exists in more than one repo is ambiguous by
+    construction: the line numbers came from *one* checkout and the
+    sentence carries no repo. When the copies agree at the span the
+    ambiguity is harmless; when they differ -- same path, different words at
+    the cited lines -- whoever opens the other copy reads a different claim,
+    and nothing else here fires: ``disagrees`` needs the range to fall
+    outside the shorter copy (a same-length edit never does) and
+    ``span_blank`` needs an empty span. Reported 2026-10-17 after a cite to a
+    data-only ``services/api/tests/`` file read to app as *their* missing
+    file: the path was ambiguous, every line number exact, and the family --
+    one path, several replicas, no repo in the cite -- was silent in every
+    bucket at once.
+
+    Direct tree-relative resolution only (the rule ``span_blank`` uses): a
+    basename that resolves in several trees is the reported ``pin-ambiguous``
+    shape, not a claim about one file.
+
+    The *weaker* sibling rule was measured and deliberately not shipped: a
+    cite whose parent directory exists in another repo fires on **81 of this
+    doc's 156 citations** (52%) because app also has `pipelines/`,
+    `scripts/` and `db/` -- a rule that fires on half a document is a report,
+    not a linter.
+    """
+    first: str | None = None
+    diff: list[str] = []
+    for tree in roots:
+        f = tree / cited
+        if not f.is_file():
+            continue
+        try:
+            lines = f.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        span = "\n".join(ln.strip() for ln in lines[start - 1:end])
+        if first is None:
+            first = span
+        elif span != first:
+            diff.append(tree.name)
+    return diff
+
+
 def _window(units: list[tuple[int, str]], i: int, start: int, end: int,
             back: int = 120, fwd: int = 120) -> str:
     """Text around a cite: its **own clause**, capped at ~120 characters a side.
@@ -945,7 +990,8 @@ def audit(root: Path, peers: list[Path], strict: bool,
     idx = basename_index(roots)
     universe0 = _peers(roots)
     counts = {"ok": 0, "disagrees": 0, "out-of-range": 0, "unresolved": 0,
-              "cite-symbol": 0, "cite-symbol-unchecked": 0, "cite-blank": 0}
+              "cite-symbol": 0, "cite-symbol-unchecked": 0, "cite-blank": 0,
+              "cite-tree": 0}
     hard: list[str] = list(peer_hard or [])
     info: list[str] = list(peer_notes or [])
 
@@ -978,6 +1024,28 @@ def audit(root: Path, peers: list[Path], strict: bool,
                             n = line_count(h)
                             tree = next((r.name for r in roots if r in h.parents), "?")
                             where.append((tree, n, start <= n and end <= n))
+                    # 2026-10-17: a cite can be accurate and still read as the
+                    # wrong repo's file. Both app and data have
+                    # `services/api/tests/`, so an unqualified cite to a
+                    # data-only test read to app as their own missing file
+                    # (they published "never existed"; the file is data's, and
+                    # every number in the sentence was exact). The decidable
+                    # half of that family is the *mirror*: the path exists in
+                    # two repos and the copies disagree at the cited span, so
+                    # the numbers are true in one checkout and a different
+                    # claim in the other. The shared-directory half is not a
+                    # bucket (measured at 52% of this doc -- see
+                    # ``span_differs``): qualify the cite instead.
+                    differed = span_differs(roots, cited, start, end)
+                    if differed:
+                        holders = sorted({t for t, _, _ in where})
+                        counts["cite-tree"] += 1
+                        info.append(
+                            f"cite-tree  {rel_doc}:{lineno} -> {span} (the two"
+                            f" copies differ at that span: {'/'.join(holders)}"
+                            " -- the numbers came from one checkout and the"
+                            " cite carries no repo, so re-anchor on the copy"
+                            " you read or qualify the path)")
                     if not where:
                         counts["unresolved"] += 1
                         (hard if strict else info).append(
