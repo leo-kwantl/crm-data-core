@@ -30,7 +30,10 @@ harness — coverage mode, peer set, tree — beside every bucket. Publish the l
 unchanged tree reports a different `ok` in markdown-only and `--comments` mode, and `--peer`
 **replaces** the defaults, so declaring a single peer turns every other tree's cites into findings
 *about the docs* rather than about the invocation. A count from a superseded invocation is
-**withdrawn, never diffed** against a fresh one.
+**withdrawn, never diffed** against a fresh one, and the withdrawal is a property of the pair: name
+the set you are superseding in the same message, restating that one hop and marking anything older as
+superseded rather than restating it -- the earlier message cannot be edited, and a chain of
+live-looking sets is the very failure this rule exists to prevent.
 
 A grep-unique statement name is the primary cite; a bare `:NN` is legitimate only where the file is
 named in the same sentence, and a bare number with **no referent in scope** clears the checks

@@ -1194,6 +1194,11 @@ def audit(root: Path, peers: list[Path], strict: bool,
           " an empty span passes every content check, so a line that moved or"
           " was deleted is invisible in every other bucket; a zero here is a"
           " checked zero, not an unchecked one)")
+    print("  (cite-symbol-unchecked = the line carrying the cite names no symbol,"
+          " so no mechanical check applies: entries are listed for hand reading,"
+          " and one is closed only once it has been read and confirmed -- a span"
+          " a peer confirmed but that has no symbol to name is verified prose,"
+          " not a green check)")
     pins_line = ", ".join(f"{k}={v}" for k, v in pin_counts.items())
     if sites > pin_counts["pin-ok"]:
         # One verdict per (path, revision) pair, but several sites may pin the
