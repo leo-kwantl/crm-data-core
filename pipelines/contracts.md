@@ -35,6 +35,12 @@ the set you are superseding in the same message, restating that one hop and mark
 superseded rather than restating it -- the earlier message cannot be edited, and a chain of
 live-looking sets is the very failure this rule exists to prevent.
 
+Every zero is one of three different claims, and they are not interchangeable: a **mechanical green**
+(the tool decided it), a **peer-verified green** (someone read the span at a named revision — the only
+form available where there is no symbol to name), and a **checked skip** (the bucket declined
+knowably: `cite-symbol-unchecked`, `rowid-skipped`). A report that shows only "0 findings" flattens
+exactly the third, which is the one that carries the information for a span with no symbol in it.
+
 A grep-unique statement name is the primary cite; a bare `:NN` is legitimate only where the file is
 named in the same sentence, and a bare number with **no referent in scope** clears the checks
 vacuously. **"Your file still says X" is itself a claim that needs its revision**: quote it with
