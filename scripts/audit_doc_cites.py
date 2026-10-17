@@ -1153,6 +1153,19 @@ def audit(root: Path, peers: list[Path], strict: bool,
     print("  (scope: every count below is decided by the peers printed above"
           " and by the coverage mode below; a number pasted without them is a"
           " claim about the harness, not about the docs)")
+    # Standing in one checkout while auditing another is this harness's most
+    # reproducible self-inflicted failure: from data's root, auditing ml's
+    # tree with app as the only peer omits data itself, so ml's cites into
+    # data read as `label-unknown` / `unresolved` -- invocation-caused, and
+    # shaped exactly like text defects. Not auto-added as a peer: a peer set
+    # that shifts with the caller's working directory is the hidden-context
+    # bug this guard exists to avoid. Said out loud instead.
+    here = Path.cwd().resolve()
+    if here != root and here not in peers and (here / ".git").exists():
+        print("  (note: you are standing in %s, which is not a declared peer --"
+              " cites that live in it cannot resolve, so their buckets read"
+              " as findings; add it to --peer to audit against it)"
+              % here.name)
     n_skipped, outside, outside_note = outside_pass(root, comments)
     in_shape = sum(
         1 for p in audited
