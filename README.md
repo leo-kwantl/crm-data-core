@@ -1,18 +1,10 @@
 # crm-cdp-data — DDL + ingest owner
 
-Owns the core data + **ALL DDL** (`db/migrations/`: `001`→`012` including
-analytics *result* tables, plus future `01x_ingest_*`) and ingestion/ETL
-(`pipelines/ingest/{orders,events,identity}.py` + `pipelines/contracts.md`).
+Owns the core data + **ALL DDL** (`db/migrations/`: `001`→`012` including analytics *result* tables, plus future `01x_ingest_*`) and ingestion/ETL (`pipelines/ingest/{orders,events,identity}.py` + `pipelines/contracts.md`).
 
-- **Owns:** all migrations (additive-only, dbmate plain SQL), seed `demo.sql`,
-  query mirrors in `db/queries/`, ingestion contracts + normalize/load code.
-- **Does NOT own:** analytics/ML features (compute SQL lives in
-  `crm-cdp-ml`'s ml_engine; data keeps DDL for the result tables only),
-  serving (reads happen in `crm-cdp-app`, which consumes this DDL).
-- **No servers, no UI in this repo.** `services/` is a test-harness mirror
-  (boots the API via httpx ASGI so the 4 ingest tests run standalone) —
-  never serve from it. Never run `scripts/bootstrap_db.py` against a live
-  DB (it TRUNCATEs + reseeds demo data; live migrations must be migrate-only).
+- **Owns:** all migrations (additive-only, dbmate plain SQL), seed `demo.sql`, query mirrors in `db/queries/`, ingestion contracts + normalize/load code.
+- **Does NOT own:** analytics/ML features (compute SQL lives in `crm-cdp-ml`'s ml_engine; data keeps DDL for the result tables only), serving (reads happen in `crm-cdp-app`, which consumes this DDL).
+- **No servers, no UI in this repo.** `services/` is a test-harness mirror (boots the API via httpx ASGI so the 4 ingest tests run standalone) — never serve from it. Never run `scripts/bootstrap_db.py` against a live DB (it TRUNCATEs + reseeds demo data; live migrations must be migrate-only).
 
 ## Layout
 
@@ -25,7 +17,7 @@ db/queries/                                   # raw-SQL mirrors (compute SQL liv
 db/seeds/demo.sql                             # demo dataset (never mixed with real rows)
 services/api/                                 # harness mirror: 4 ingest tests boot via ASGI
 scripts/bootstrap_db.py                       # DEV/CI ONLY — migrate + reseed demo (see banner)
-docs/conventions.md                           # data deltas only; canonical cross-repo text is ../crm-cdp-app/docs/conventions.md
+docs/conventions.md                           # data deltas only; cross-repo conventions at ../docs/conventions.md
 openspec/changes/data-pipeline-init/          # pipeline proposal + tasks
 ```
 
