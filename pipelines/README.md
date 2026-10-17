@@ -80,3 +80,26 @@ CDC/outbox from source systems → staging tables → validated upsert. See
   live-safe; re-upload = same job.
 - **`services/api/tests/test_upload.py`** (7 unit + 1 pgembed idempotency).
 - Next: core-table apply of staged `ok` rows (store/customer resolution).
+
+## Status — SHIPPED 2026-10-17: unattended tick (`--watch` / `--once`)
+
+- **`scripts/run_pipeline.py --once [--only a,b]`** — one pass: reads
+  `pipeline_manifests`, fires every row whose stored `schedule` matches
+  the business clock, logs one JSON line per decision, exits 0 (2 = no
+  live DB, 1 = a job failed). **This is the unattended entry point**: point
+  any at-least-once-a-minute trigger at it, e.g. a Windows Task Scheduler
+  entry — `schtasks /create /tn crm-tick /sc minute /mo 1 /tr
+  "python <repo>\scripts\run_pipeline.py --once --ml-repo
+  <repo>\..\crm-cdp-ml"` — or a cron line. A second trigger, a restart or
+  a competing host is safe: a `succeeded` window skips in the runner.
+- **`--watch [--interval 60]`** — the same pass in a loop until Ctrl-C
+  (exit 130; an in-flight job's row stays `running` and the next tick
+  retries it). Use it when supervision is external (pm2 / nssm /
+  systemd); use `--once` when the host owns the cadence.
+- Rows written by a tick carry `upstream.tick` (one id per fire); rows
+  from `--pipeline` hand-runs do not. contracts.md §015 states the
+  evaluator's cron semantics and why the table is a declaration, not the
+  authority.
+- Tests: `services/api/tests/test_schedule.py` — cron match/reject, due
+  selection, live manifest rows reachable by the tick, `upstream.tick`
+  stamping, the CLI's `--once` line + exit code, and Ctrl-C exit 130.

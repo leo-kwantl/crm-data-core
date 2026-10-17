@@ -123,14 +123,14 @@ Scope columns (`brand_id`, `group_id`, NULL = group-wide) match 012.
 | source (default when `as_of` is omitted) | resolves to |
 |---|---|
 | data `pipelines/snapshot.py:245 business_today()` (+08 fixed offset), used by `scripts/run_daily_snapshot.py:70`, `scripts/run_pipeline.py:144` | +08 business date |
-| data scheduler `pipelines/schedule.py:293` in `_with_common` | passes `--as-of ctx.as_of`; `explain_batch` / `assoc_batch` / `matrix_batch` / `recs_batch` declare no `--as-of` (argparse rejects it, `pipelines/schedule.py:441`) — always explicit or absent |
+| data scheduler `pipelines/schedule.py:410` in `_with_common` | passes `--as-of ctx.as_of`; `explain_batch` / `assoc_batch` / `matrix_batch` / `recs_batch` declare no `--as-of` (argparse rejects it, `pipelines/schedule.py:558`) — always explicit or absent |
 | ml `ml_engine/rfm.py:79 business_today()` (`ZoneInfo("Asia/Hong_Kong")`), applied by `ml_engine/rfm.py:123` in `resolve_window(...)` (`:101` def), `ml_engine/store_ld8.py:240 run_ld8(...)`, `_coerce_as_of` of `store_churn.py:217`, `store_clv.py:189`, `store_forecast.py:50`, `store_segments.py:419` | +08 business date |
 
 Guard `tests/test_engine.py:382-408` pins an in-band instant 17:37Z = 01:37 HKT.
 
 **`--as-of` labels a run; it does not anchor a fit.** The OVERALL/current segments fit is always the current rolling-365 business window (`_fit_overall`, `ml_engine/store_segments.py:174-181`; same at `store_explain.py:97-98`), so a run row's `as_of` is an idempotency/version key, not a window key. For a backfill only `forecast` (`as_of` → `forecast_demand`, `store_forecast.py:80-81`) and `ld8` (`resolve_ld8_window(key, as_of)`) derive a window from `--as-of`; churn/clv fit against `datetime.now(timezone.utc)` and segments-overall fits the current window, so re-running an old `as_of` there **relabels** today's fit.
 
-**Name collision — `resolve_window` is two different functions.** data `pipelines/schedule.py:130 resolve_window(mode, n, unit, ...)` = cohort/period window; ml `ml_engine/rfm.py:96 resolve_window(mode, as_of, date_from, date_to, *, max_span_days=731)` = RFM snapshot window (tz-aware `+08`; `max_span_days=None` is the caller asserting a deliberate full-history span, not a clamp). Check the repo before reading either as the other's contract.
+**Name collision — `resolve_window` is two different functions.** data `pipelines/schedule.py:140 resolve_window(mode, n, unit, ...)` = cohort/period window; ml `ml_engine/rfm.py:96 resolve_window(mode, as_of, date_from, date_to, *, max_span_days=731)` = RFM snapshot window (tz-aware `+08`; `max_span_days=None` is the caller asserting a deliberate full-history span, not a clamp). Check the repo before reading either as the other's contract.
 
 ## Daily RFM writer: `ld8_snapshot` (v2) vs `rfm_snapshot` (v1)
 
@@ -157,14 +157,14 @@ Guard `tests/test_engine.py:382-408` pins an in-band instant 17:37Z = 01:37 HKT.
       params: {}          # drop `mode: rolling_365`: the LD8 CLI has no --mode
 The builder rejects the legacy param with a named `ManifestError` rather than letting the CLI exit 2 on every tick (`pipelines/schedule.py` `_build_ld8`).
 
-**First-tick triage.** The argv's positional DB URL is the runner's resolved `ctx.db_url` (`pipelines/schedule.py:281` emits `[python, -m, <module>, ctx.db_url]`, sourced from `scripts/run_pipeline.py:96-116` via `_connect_resolved`), **never** a manifest `params` value: a wrong row fails at dispatch as a `ManifestError` with a message *above* the spawn, a bad URL is a runner/env fault that takes every ml job in the tick down, and an unset one is caught pre-spawn (`pipelines/schedule.py:278-280`, `UnknownEngineError`). The ml CLI connects *before* validating its own args (`ml_jobs/run_ld8_snapshot.py:20-27`), so a malformed `--as-of` or scope UUID surfaces as `ValueError` only after a successful connect while a bad URL is a driver error (`exit 1`, e.g. `socket.gaierror` / `ConnectionRefusedError`) that reads as a connectivity incident — that ordering bites **hand-runs** only, since the tick always passes `ctx.as_of.isoformat()` (`pipelines/schedule.py:293`, a `date`).
+**First-tick triage.** The argv's positional DB URL is the runner's resolved `ctx.db_url` (`pipelines/schedule.py:398` emits `[python, -m, <module>, ctx.db_url]`, sourced from `scripts/run_pipeline.py:106-127` via `_connect_resolved`), **never** a manifest `params` value: a wrong row fails at dispatch as a `ManifestError` with a message *above* the spawn, a bad URL is a runner/env fault that takes every ml job in the tick down, and an unset one is caught pre-spawn (`pipelines/schedule.py:395-397`, `UnknownEngineError`). The ml CLI connects *before* validating its own args (`ml_jobs/run_ld8_snapshot.py:20-27`), so a malformed `--as-of` or scope UUID surfaces as `ValueError` only after a successful connect while a bad URL is a driver error (`exit 1`, e.g. `socket.gaierror` / `ConnectionRefusedError`) that reads as a connectivity incident — that ordering bites **hand-runs** only, since the tick always passes `ctx.as_of.isoformat()` (`pipelines/schedule.py:410`, a `date`).
 
-**`--as-of` is a silent no-op knob on a window that already exists.** On the tick it is always explicit (`_build_ld8` → `_with_common`, `pipelines/schedule.py:340`/`:286-293`). `ld8_snapshot` find-or-creates on `(mode, window_from, window_to, v2, window_key, scope)` (`ml_engine/store_ld8.py:63-66`, the `SNAPSHOT_FIND_V2_SQL` predicate), so an `--as-of` whose `current` window is already stored (e.g. `--as-of 2026-10-16` while the v2 row for `2025-10-16 → 2026-10-16` exists) exits 0 having written nothing: the tick is green, no row is wrong, and a consumer needing a newer period stays on `need_two_snapshots` with nothing to point at. Rule: omit `--as-of` unless you intend a new period; never reuse a date whose window is on disk.
+**`--as-of` is a silent no-op knob on a window that already exists.** On the tick it is always explicit (`_build_ld8` → `_with_common`, `pipelines/schedule.py:457`/`:402-410`). `ld8_snapshot` find-or-creates on `(mode, window_from, window_to, v2, window_key, scope)` (`ml_engine/store_ld8.py:63-66`, the `SNAPSHOT_FIND_V2_SQL` predicate), so an `--as-of` whose `current` window is already stored (e.g. `--as-of 2026-10-16` while the v2 row for `2025-10-16 → 2026-10-16` exists) exits 0 having written nothing: the tick is green, no row is wrong, and a consumer needing a newer period stays on `need_two_snapshots` with nothing to point at. Rule: omit `--as-of` unless you intend a new period; never reuse a date whose window is on disk.
 
 **Serving-side freshness.** The app's `POST /analytics/{churn,clv,segments}/snapshots` calls `store_*.create_snapshot` **in-process with `as_of` omitted** (app `services/api/analytics/snapshots_serve.py:48-54`), so an `ml_engine/` change is live for `ml_jobs/` immediately but **live in the API only after that process restarts** — compare the changed file's mtime against the serving process's start time, not `git log`.
 
-**`created_by` provenance.** `--created-by` is passed through (`scripts/run_pipeline.py:132` default `scheduler`), so via the runner a NULL is **unreachable**. Of the 12 `ml_jobs/run_*.py` entry points, 10 declare `add_argument("--created-by"` and 9 reference a `created_by` column; the 2 that declare nothing (`run_alive_path.py`, `run_matrix_batch.py`) reference none; `run_churn_predict.py:50-52` is **inert** — it accepts the flag and never passes it (`:26` calls `store_churn.predict_one`, `:54` prints JSON) — and no tick can reach it: `churn_predict` is not an `ENGINE_BUILDERS` key (`pipelines/schedule.py:464-477`, ten engines) and dispatch raises `UnknownEngineError` (`:179`, `:683-686`). app settled the other half: `churn_customer_scores` **is** read by app (`db/queries/analytics_customer.sql:26-33`, `analytics_snapshots.sql:31`), but those rows come from `store_churn.create_snapshot` (`:478`; `SNAPSHOT_INSERT_SQL` `:538`, `SCORES_INSERT_SQL` via `executemany` `:548`)
-driven by the churn snapshot writer `ml_jobs/run_churn_snapshot.py:23`, while `predict_one` (`:411`) writes nothing (`return out` at `:428`/`:475`) — so removing the dead flag is app-safe as well as scheduler-safe. A NULL in the column therefore dates the row to a **direct ml-CLI hand-run** of one of the 9 writers, or to a tick handed an explicitly falsy stamp: `--created-by ""` is dropped by the truthiness guard at `pipelines/schedule.py:261-262` (again at `:296-297`) before `scripts/run_pipeline.py:132`'s non-empty default applies.
+**`created_by` provenance.** `--created-by` is passed through (`scripts/run_pipeline.py:269` default `scheduler`), so via the runner a NULL is **unreachable**. Of the 12 `ml_jobs/run_*.py` entry points, 10 declare `add_argument("--created-by"` and 9 reference a `created_by` column; the 2 that declare nothing (`run_alive_path.py`, `run_matrix_batch.py`) reference none; `run_churn_predict.py:50-52` is **inert** — it accepts the flag and never passes it (`:26` calls `store_churn.predict_one`, `:54` prints JSON) — and no tick can reach it: `churn_predict` is not an `ENGINE_BUILDERS` key (`pipelines/schedule.py:581-594`, ten engines) and dispatch raises `UnknownEngineError` (`:190`, `:800-803`). app settled the other half: `churn_customer_scores` **is** read by app (`db/queries/analytics_customer.sql:26-33`, `analytics_snapshots.sql:31`), but those rows come from `store_churn.create_snapshot` (`:478`; `SNAPSHOT_INSERT_SQL` `:538`, `SCORES_INSERT_SQL` via `executemany` `:548`)
+driven by the churn snapshot writer `ml_jobs/run_churn_snapshot.py:23`, while `predict_one` (`:411`) writes nothing (`return out` at `:428`/`:475`) — so removing the dead flag is app-safe as well as scheduler-safe. A NULL in the column therefore dates the row to a **direct ml-CLI hand-run** of one of the 9 writers, or to a tick handed an explicitly falsy stamp: `--created-by ""` is dropped by the truthiness guard at `pipelines/schedule.py:378-379` (again at `:413-414`) before `scripts/run_pipeline.py:132`'s non-empty default applies.
 `JobCtx` is constructed only at `scripts/run_pipeline.py:113`. **Pass a staff code wherever a job writes.**
 - The hole is **structural, not incidental**: all 12 `created_by` columns in this repo's DDL are `text NULL` with no `DEFAULT` (`db/migrations/007_customer_events.sql:14`, `010_analytics_rfm.sql:15`, `011_recommendations.sql:14`, `013_analytics_history.sql:24,57,115`, `014_upload_staging.sql:39`, `015_segments_pipelines.sql:37`, `018_assoc_rules.sql:25`, `019_connectors.sql:27`, `021_explain.sql:27`, `022_forecast.sql:30`), so an unstamped hand-run **cannot fail anywhere**. Data's own CLI follows the convention (`scripts/run_upload.py:124` `default=None`; the API stamps the session, `services/api/routers/customer_events.py:73`). Making `--created-by` **required** in the 10 ml CLIs was considered and **declined**: a 10-file argv change (`[BREAKING @both]`) that forces every dev/one-off invocation to pass a value, so the rule above closes the hole operationally.
 
@@ -181,14 +181,14 @@ driven by the churn snapshot writer `ml_jobs/run_churn_snapshot.py:23`, while `p
 - Edge 1: the cap is consulted **only on the quintile path** — `score_rfm` validates and applies it in the `else` branch alone (`:292-295`, reported `:317`), so a population below `QUINTILE_MIN_POPULATION` (`:25`, 25 rows) takes `_fallback_scores` (`:289`) and is stamped `method="threshold_fallback"` (`:290`): the cap is never read, and that path's `m` boundaries are median-relative with no `m_cap_pct` key. **Scope caveat:** the cap statement above is therefore honest only on the quintile path — irrelevant at **920 customers** (the live population), but it bounds the app refusals too, which guard a parameter the engine may not consult.
 - Edge 2: `DEFAULT_M_CAP_PCT` (`:26`) is covered by **no version string** — `RULES_VERSION = "v1"` (`:24`) and `RULES_V2 = "v2"` (`store_ld8.py:36`) version the segmentation ruleset, not the cap — so changing that constant is a **contract event (@both)**, not a refactor: every stored row's M cuts would lose their stated derivation and no column records it.
 
-**Scope is a run-level dimension, so no brand-scoped snapshot row exists.** `--brand-id`/`--group-id` (`scripts/run_pipeline.py:130-131` → `JobCtx`, `:113-114`) reach **every** job of a tick via `_scope_args(ctx)` (`pipelines/schedule.py:255-263`) and `_with_common` (`:284-299`, `with_scope` default True): per-brand rows require **one runner invocation per brand**, and that invocation scopes the *whole* pipeline, not one job. The nightly cron passes neither flag, so every stored row is hq-scoped (`brand_id IS NULL`) — correct. A brand-scoped session then gets live RFM at `n=435` while `GET /analytics/rfm/snapshots` returns **0 rows** and `movement` a **404 `need_two_snapshots`** — **not a platform limit: nothing writes scoped rows and no UI action calls the POST**, while a scoped POST works (`services/api/tests/test_rfm.py:380` asserts `201`). Find-or-create is scope-aware (`ml_engine/store_ld8.py:65-66`), so a per-brand fan-out would add rows beside the hq row; its price on the demo dataset is **6 ticks**, one per brand (`DEMO`/`SUNHING`/`KVLN`/`VICEW`/`HARBOR`/`PEAKLENS`), because the single group makes a `--group-id` run customer-identical to hq. No ML change is needed (`ml_engine/store_rfm.py:29-31`; `run_ld8` already threads `brand_id`/`group_id`), so per-brand writes are a **runner** decision — and they do not fix the scoped role that night: the band pairs **two** `current` rows of the newest `rules_version` in scope, so each scope needs a second scoped night, and the accurate copy is scope-neutral (*"no movement for this scope yet — movement appears once two snapshots of this window exist for this scope"*), because "the view needs a second night" is false of a scope whose own row count never moves.
+**Scope is a run-level dimension, so no brand-scoped snapshot row exists.** `--brand-id`/`--group-id` (`scripts/run_pipeline.py:267-268` → `JobCtx`, `:124-125`) reach **every** job of a tick via `_scope_args(ctx)` (`pipelines/schedule.py:372-380`) and `_with_common` (`pipelines/schedule.py:402-415`, `with_scope` default True): per-brand rows require **one runner invocation per brand**, and that invocation scopes the *whole* pipeline, not one job. The nightly cron passes neither flag, so every stored row is hq-scoped (`brand_id IS NULL`) — correct. A brand-scoped session then gets live RFM at `n=435` while `GET /analytics/rfm/snapshots` returns **0 rows** and `movement` a **404 `need_two_snapshots`** — **not a platform limit: nothing writes scoped rows and no UI action calls the POST**, while a scoped POST works (`services/api/tests/test_rfm.py:380` asserts `201`). Find-or-create is scope-aware (`ml_engine/store_ld8.py:65-66`), so a per-brand fan-out would add rows beside the hq row; its price on the demo dataset is **6 ticks**, one per brand (`DEMO`/`SUNHING`/`KVLN`/`VICEW`/`HARBOR`/`PEAKLENS`), because the single group makes a `--group-id` run customer-identical to hq. No ML change is needed (`ml_engine/store_rfm.py:29-31`; `run_ld8` already threads `brand_id`/`group_id`), so per-brand writes are a **runner** decision — and they do not fix the scoped role that night: the band pairs **two** `current` rows of the newest `rules_version` in scope, so each scope needs a second scoped night, and the accurate copy is scope-neutral (*"no movement for this scope yet — movement appears once two snapshots of this window exist for this scope"*), because "the view needs a second night" is false of a scope whose own row count never moves.
 
 **Group scope is conjunctive by design, and its only silent exclusion is pre-group customers.** A group run requires `customers.group_id = g` **and** `brands.group_id = g` (`db/migrations/011_groups.sql:6` — customers shared within a group with NO linkage across clients, a hard silo). `brands.group_id` is NOT NULL (`:23`); `customers.group_id` is NULLABLE on purpose (`:86`, the same legacy pattern as `consents.brand_id` / `NULL = pre-brand`, `:95-99`), so a group-scoped run **excludes** those rows silently. On the live demo that half is a no-op (1 group `DEMO`, 6 brands, **0 of 1208 customers with a NULL `group_id`**), so it is a contract property, not a testable one, and it has **no coverage in either suite** (app's group tests at `services/api/tests/test_groups.py:90`, `:133`, `:155`, `:217`, `:287`, `:331` never put a NULL-`group_id` customer under a group run). The switch that would **include** those rows instead of dropping them is the `IS NOT DISTINCT FROM` form — **declined on purpose, not missed**: 011's design is exclusion, and a group run means the group's pool, not "the pool plus unassigned rows".
 
 **`IS NOT DISTINCT FROM` locates a stored artifact by its recorded scope; the `IS NULL OR` guard scopes a live population.** The two forms must not be confused, and they fail in opposite directions. The population form's NULL test is on the *parameter* (`$3::uuid IS NULL OR …` = "no restriction on this column"), so a **stamped** surface using it would **disclose** `NULL/NULL` rows into a brand session — a visibility bug; the artifact form compares *column to parameter* NULL-safely (`IS NOT DISTINCT FROM …` = "only rows whose stamp is NULL here") and can only **hide**, which is this system's quarantine default. The rule is **two-step**: locate the row whose visibility the predicate decides — a **stamped** row takes stamp-equality on its scope stamp, a live or joined source row takes the population form even when the column in hand is called `brand_id` — then ask what the column *is on that row*: a scope-stamp column of the located row takes `IS NOT DISTINCT FROM` (a NULL there means "computed globally" and must fail closed), a non-scope attribute of that row or a dimension of a joined row takes `IS NULL OR` (a NULL there means "no restriction").
 - One statement, one row, both forms: `SNAPSHOTS_LIST_SQL` `store_rfm.py:57 WHERE ($1::text IS NULL OR mode = $1)` is the population form for `mode` (NULL = every mode), `:58-59` the artifact form for the scope stamp (`:56` is only `FROM rfm_snapshots`). One file, the same two scope columns, opposite operators: `store_churn.py:193-198` (`SNAPSHOT_FIND_SQL`, artifact, guarding `:196-197`) vs `:253-261` (`CUSTOMER_TX_ORDERS_SQL` / `CUSTOMER_TX_ACTIVITY_SQL`, population, guarding `:258-259`, `:263-281`). File-level: `analytics_snapshots.sql:22-23` (artifact, stamped row) vs `:110-111` (population, joined `b.id`/`g.id` dimensions) — which kills a per-file label.
 - All **11** `IS NOT DISTINCT FROM` predicate pairs in `ml_engine/` are the artifact form (`store_churn.py:193-198`, `:301-302`, `:311-312`, `:323-324`, `store_clv.py:168-169`, `store_forecast.py:31-32`, `store_ld8.py:65-66`, `store_recs.py:88-89`, `:103-104`, `store_rfm.py:58-59`, `store_segments.py:388-389`); the guard's *reads* are the population form (`store_churn.py:253-261`). The aggregate filter is population form — `AND ($4::uuid IS NULL OR c.group_id = $4::uuid)` (`ml_engine/store_rfm.py:30`; the guard form is three lines `:29-31`, and the last two guard the **same** `$4`, so a customer whose own group differs from their store brand's group is dropped by the brand line) — whereas the *listing* query uses `brand_id IS NOT DISTINCT FROM $3::uuid` / `group_id IS NOT DISTINCT FROM $4::uuid` (`store_rfm.py:58-59`). Both shorthands are wrong alone: the column *name* is not the rule (`brand_id` sits under both operators at `store_rfm.py:29` vs `:58`), and the row's *kind* is not the rule (one row can carry both forms).
-- App's reference decision is `../crm-cdp-app/services/api/analytics/scope.py:1-51`: a stamped row is visible iff `row.brand == session.brand AND row.group == session.group`, NULL-safe on both sides, with **quarantine-by-default** — `NULL/NULL` legacy and global rows are **HQ-only**, so an unstamped write is not an error but a row only HQ can see (`row_visible`, `scope.py:72-76`). Because the predicate is **mutual**, a brand-less HQ session `(None, None)` matches only `NULL/NULL` rows, so brand- and group-stamped rows are invisible to HQ **by construction** (`scope.py:18-19`) — deliberate, not a defect. Where the intent really is "this session's rows *or* the global ones", the population form cannot express it; app writes the disjunction out explicitly as an **added term**, never a relaxed operator (`scope.py:29-37`). `session_scope` returns `(brand, None)` or `(None, group)`, which keeps a group-stamped `(NULL, G)` row out of a brand session. App's population-form hits are all source-row filters over `orders`/`customers`/`brands`/`groups` (`analytics_snapshots.sql:110-111`, `analytics_simulate.sql:16-18`, `analytics_recs_fallback.sql`, `stats.py:23-29` `_ORDER_SCOPE`/`_CUST_SCOPE`) — none is a stamped surface, so no leak. So "admin can't see the brand runs" is a **visibility-policy** question for the contract and the owner, never a WHERE-clause tweak in a migration.
+- App's reference decision is `../crm-cdp-app/services/api/analytics/scope.py:1-51`: a stamped row is visible iff `row.brand == session.brand AND row.group == session.group`, NULL-safe on both sides, with **quarantine-by-default** — `NULL/NULL` legacy and global rows are **HQ-only**, so an unstamped write is not an error but a row only HQ can see (`row_visible`, `scope.py:62-67`). Because the predicate is **mutual**, a brand-less HQ session `(None, None)` matches only `NULL/NULL` rows, so brand- and group-stamped rows are invisible to HQ **by construction** (`scope.py:21-25`) — deliberate, not a defect. Where the intent really is "this session's rows *or* the global ones", the population form cannot express it; app writes the disjunction out explicitly as an **added term**, never a relaxed operator (`scope.py:27-30`). `session_scope` returns `(brand, None)` or `(None, group)`, which keeps a group-stamped `(NULL, G)` row out of a brand session. App's population-form hits are all source-row filters over `orders`/`customers`/`brands`/`groups` (`analytics_snapshots.sql:110-111`, `analytics_simulate.sql:16-18`, `analytics_recs_fallback.sql`, `stats.py:23-29` `_ORDER_SCOPE`/`_CUST_SCOPE`) — none is a stamped surface, so no leak. So "admin can't see the brand runs" is a **visibility-policy** question for the contract and the owner, never a WHERE-clause tweak in a migration.
 
 **Third writer, non-scheduled:** `POST /analytics/rfm/snapshots` writes **v1** through the same `store_rfm.create_snapshot`, stamped `created_by=user.staff_code` (`analytics_rfm.py:132-142`). It is an ordinary v1 append: it changes the v1 row inventory, not the pairing rule above, and with the cap pinned it cannot store a fit the v1 engine path could not express.
 ## Batch upload ETL (frontend files land here)
@@ -293,13 +293,64 @@ cron shape check. The runner owns full parsing.", called only at
 `:189-190`/`:218-219`) and never evaluates, and ml has no scheduler entry
 point at all (every entry is a one-shot `python -m ml_jobs.run_*` that
 connects, writes, exits — no loop, no daemon). So wiring a trigger is a
-change to **this repo's runner only, zero ML change**. Two halves are
-open and they are different problems: the **feature** (015 gives
-manifests + `pipeline_runs`, but nothing in the product schedules a tick
-or shows one — app, after 015) and the **infrastructure** (nothing fires
-the tick at all: no cron entry on any host, no in-repo loop; verified
-2026-10-17). Do not read a green `pipeline_runs` row as proof a scheduler
-exists — those rows are hand-runs.
+change to **this repo's runner only, zero ML change**. The **feature**
+half is still open (015 gives manifests + `pipeline_runs`, but nothing in
+the product schedules a tick or shows one — app, after 015). The
+**infrastructure** half shipped 2026-10-17 as `[ADDITIVE]`:
+
+### The in-repo tick: `--watch` / `--once` `[ADDITIVE]`
+
+`scripts/run_pipeline.py --once` (one pass — the unattended entry point)
+and `--watch [--interval 60]` (that pass in a loop): each pass reads
+`pipeline_manifests` and fires every row whose `schedule` matches the
+business clock (`pipelines/schedule.py` `cron_matches` — 5-field Light
+cron; Sunday `0` or `7`; `dom`/`dow` **ORed** when both are restricted,
+Vixie semantics; a field it cannot read raises `ManifestError`, logged
+per row, never skipped silently). `--only a,b` filters rows; `--now` pins
+the clock (dev/verification; naive = `Asia/Hong_Kong`).
+
+- **The stored cron is a declaration and the tick is one evaluator of
+  it, never the authority.** Any trigger calling `--once` at least once a
+  minute is equivalent (Task Scheduler, cron, systemd timer), and a
+  competing trigger is safe — the runner skips, below. A host cron that
+  bypasses the table (the `--pipeline <name>` entrypoint) is still a
+  **hand-run**, not a tick: its rows carry no `upstream.tick`.
+- **Attribution.** Each fire gets one id (`uuid4().hex[:12]`) stamped on
+  every row it writes as `upstream.tick`. 015 `pipeline_runs` has no
+  actor column, so this is what the table can hold: tick-written rows are
+  distinguishable from hand-runs, rows within one fire are not. The stamp
+  is opt-in on `JobCtx.tick` (default `None`), so `--pipeline` rows are
+  byte-identical to what they were before this change.
+- **Idempotence is the runner's, not the loop's.** `pipeline_runs` is
+  unique per (pipeline, job, `as_of`, scope) and a `succeeded` row skips
+  unless `--force`, so a second tick for a window already succeeded writes
+  nothing new — overlapping triggers, a restart and two hosts converge.
+  The loop's `fired` set only stops one process from re-entering the same
+  window inside one `as_of`; a `failed` row is retried once per process
+  start, not every interval (a failure is a row carrying `error`, not
+  something to hammer).
+- **Every pass is one JSON line on stdout** (`event`: `pass`, `fired`,
+  `fire failed`, `bad manifest`, `row name differs from its yaml`, `no
+  database`, `once: done`): the log is the loop's only record, and a loop
+  that logs only its fires is indistinguishable from one that died.
+  SIGINT stops the loop, logs it, exits `130`, and leaves an in-flight
+  job's row `running` with no `finished_at` — the next tick retries it
+  (skip needs `succeeded`), so an interrupted window self-heals and that
+  row is the evidence.
+- **Not built:** no daemon or supervisor, no catch-up for windows the
+  process missed while down (a missed `as_of` is a gap, not a backfill —
+  re-run it explicitly), and one namespace per invocation (scopes still
+  fan out as one run per `--brand-id`/`--group-id`).
+
+- **Cites into this file move when the file grows.** The numbers above were
+  repinned 2026-10-17 (+117 before `:752`, +122 after): the job's dispatch
+  `try`/`except` was cited `:634-641`/`:658` from `5f91e16` (right then) and
+  was still *in bounds* after `4ff0910`/`fb2f0a7` shifted it -- a range cite
+  that names no symbol on its own line is invisible to every check we have,
+  so derive the number, never inherit it.
+
+Do not read a green `pipeline_runs` row as proof a scheduler exists; that
+holds for rows without `upstream.tick`, which are hand-runs.
 
 **Run provenance** (ADDITIVE, no migration): a job that ran as an ml
 subprocess carries `ml_repo_sha` (full 40-char HEAD of the `--ml-repo`
@@ -323,7 +374,7 @@ change. The sha is the checkout's HEAD **at run time**, never the last
 commit to touch some file (`git log -1 --format=%h` over a path answers a
 different question and is not a substitute for it), and it is written on the
 **failure** path too: the label is resolved before the engine is invoked and
-both finish paths persist it (`pipelines/schedule.py:706`, `:734-741`, with
+both finish paths persist it (`pipelines/schedule.py:828`, `:852-863`, with
 `error` carrying the other half), because a failing run is exactly when the
 revision is worth knowing — `test_runner_labels_a_failed_job_too`
 (`services/api/tests/test_schedule.py`) pins that alongside the resolved,
@@ -575,10 +626,10 @@ ManifestError and downstream jobs `skipped`.
 
 That containment is the whole dispatch, not just the resolver: the
 resolve call and `ENGINE_BUILDERS[engine](...)` both sit inside the job's
-`try` (`pipelines/schedule.py:634-641`), so a malformed manifest
+`try` (`pipelines/schedule.py:829-846`), so a malformed manifest
 (a wrong `params` key raising in `_build_matrix`, an `argv` builder
 refusing its input) also lands as `status = 'failed'` with
-`type(exc).__name__: exc` on that job's `pipeline_runs` row (`:658`)
+`type(exc).__name__: exc` on that job's `pipeline_runs` row (`pipelines/schedule.py:858`)
 and the tick carries on with the remaining jobs. Consequence for
 debugging: a wrong key is **discoverable, not dark** — the reason is on
 the run row and in the tick's `outcomes[<job>]['error']`, it just has
@@ -597,13 +648,13 @@ the second only.)
 
 **What a job's argv may carry is per-engine, and the split is what a
 *row* can carry.** On a scoped tick
-(`services/api/tests/test_schedule.py:415-424` pins all three):
+(`services/api/tests/test_schedule.py:495-504` pins all three):
 
 | engine | receives `--brand-id`/`--group-id`? | receives `--created-by`? |
 |---|---|---|
-| `explain_batch` | **no** — scope rides the resolved segment run (`pipelines/schedule.py:426-444`, `_with_common(..., with_as_of=False, with_scope=False)`) | yes |
+| `explain_batch` | **no** — scope rides the resolved segment run (`pipelines/schedule.py:543-561`, `_with_common(..., with_as_of=False, with_scope=False)`) | yes |
 | `matrix_batch` | **no** — same reason | **no** (argparse declares none) |
-| `assoc_batch` | **yes** — reads the catalog directly and no row carries a scope for it (`pipelines/schedule.py:410-423`, `with_scope` default) | yes |
+| `assoc_batch` | **yes** — reads the catalog directly and no row carries a scope for it (`pipelines/schedule.py:527-540`, `with_scope` default) | yes |
 
 Rule, and the reason a blanket sentence about it would be wrong: scope
 arrives as argv only for a job that reads the catalog directly; a job
@@ -762,7 +813,7 @@ indistinguishable from "nothing changed".
   **7 compared / 0 violations**, the paired run-identity check (`explain_batches.fit_id → seg_surrogate_fits`) **2 / 0**.
   `pipeline_runs → connector_sync_runs` (**writer: data, both sides**) is **not** one statement: the sync row takes the
   session's scope (`services/api/repos/connectors.py:218-224`), the run row's stamps come as caller flags
-  (`scripts/run_pipeline.py:113-116`) stored by `pipelines/schedule.py:65-79`, and **the runner never reads the sync
+  (`scripts/run_pipeline.py:113-116`) stored by `pipelines/schedule.py:75-89`, and **the runner never reads the sync
   row's stamps**. Live **0 rows** — untested, not verified; the harness is data's, because the writer is.
 - **Carriers that also inherit — the row's own stamp governs.** `explain_batches.segment_run_id uuid NOT NULL REFERENCES
   segment_runs (id)` (`021_explain.sql:18`) sits alongside its own `brand_id`/`group_id` (`:29-30`);
@@ -806,7 +857,7 @@ there is **wrong by design**. Only the **both-stamped** artifact→artifact edge
 - **No cross-tree file reads at runtime**: each tree boots from its own copies and what crosses the boundary is declared,
   not an ad-hoc path read — app's `pip install -e ../crm-cdp-ml` (`ml_engine/__init__.py:10`) and vendored
   `pipelines/ingest/connectors.py`; data executing ml's checkout as a subprocess on every ml job
-  (`pipelines/schedule.py:13`, `:719`/`:724`); ml's SQL depending on the schema these migrations create.
+  (`pipelines/schedule.py:13`, `:841`/`:846`); ml's SQL depending on the schema these migrations create.
 
 ## Pin half-life, and the rule it settled (2026-10-17)
 

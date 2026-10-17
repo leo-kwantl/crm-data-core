@@ -6,8 +6,17 @@ in-memory and NEVER writes the table.
 
   python scripts/run_pipeline.py --pipeline nightly --ml-repo ../crm-cdp-ml
   python scripts/run_pipeline.py --pipeline nightly --as-of 2026-10-08 --force
+  python scripts/run_pipeline.py --watch --ml-repo ../crm-cdp-ml
+  python scripts/run_pipeline.py --watch --once --now 2026-10-17T01:00
 
 Exit 0 when every job succeeded or skipped; exit 1 otherwise.
+
+`--watch` is the in-repo trigger: nothing else fires a tick today (no cron
+entry on any host), so this loop re-reads `pipeline_manifests` every
+`--interval` seconds and runs each row whose declared 5-field `schedule`
+matches the **business** clock (Asia/Hong_Kong) once per window. Killing it
+with SIGINT is a clean stop (exit 130): the runner is re-entrant, so a
+window it was interrupted in is simply re-run by the next tick.
 """
 from __future__ import annotations
 
@@ -16,14 +25,15 @@ import asyncio
 import json
 import sys
 import uuid
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
 from pipelines import schedule as sched  # noqa: E402
-from pipelines.snapshot import business_today  # noqa: E402
+from pipelines.snapshot import (  # noqa: E402
+    BUSINESS_TZ_OFFSET_HOURS, business_now, business_today)
 
 
 def _uuid_or_none(v: str | None):
@@ -93,7 +103,8 @@ async def _connect_resolved(cli_url: str | None):
 async def run(pipeline: str, as_of: date, ml_repo: Path | None,
               brand_id, group_id, created_by: str | None,
               force: bool, manifest_file: Path | None,
-              db_url: str | None, sync_run_id: str | None = None) -> dict:
+              db_url: str | None, sync_run_id: str | None = None,
+              tick: str | None = None) -> dict:
     conn, live_url = await _connect_resolved(db_url)
     try:
         if manifest_file is not None:
@@ -113,16 +124,142 @@ async def run(pipeline: str, as_of: date, ml_repo: Path | None,
         ctx = sched.JobCtx(pipeline=pipeline, as_of=as_of,
                            brand_id=brand_id, group_id=group_id,
                            created_by=created_by, ml_repo=ml_repo,
-                           db_url=live_url, sync_run_id=sync_run_id)
+                           db_url=live_url, sync_run_id=sync_run_id,
+                           tick=tick)
         return await sched.run_pipeline(conn, pipeline, jobs, ctx,
                                         force=force)
     finally:
         await conn.close()
 
 
+def _tick_clock(raw: str | None) -> datetime:
+    """The business clock for a due check (`--now` for dev/verification).
+
+    Naive input is read as business time (Asia/Hong_Kong), never host
+    time, so `--now 2026-10-17T01:00` means the nightly window on a box
+    in any timezone.
+    """
+    if not raw:
+        return business_now()
+    when = datetime.fromisoformat(raw)
+    if when.tzinfo is None:
+        when = when.replace(
+            tzinfo=timezone(timedelta(hours=BUSINESS_TZ_OFFSET_HOURS)))
+    return when
+
+
+def _log(event: dict) -> None:
+    """One JSON line per decision (flushed: this runs for days)."""
+    print(json.dumps(event, default=str), flush=True)
+
+
+async def watch(interval: int, ml_repo, brand_id, group_id,
+                created_by: str | None, force: bool, db_url: str | None,
+                once: bool, now: datetime | None,
+                only: list[str] | None = None) -> int:
+    """Wait for the next due window, run what is due, forever.
+
+    Every decision is one JSON line on stdout -- which manifests were due,
+    which fired, and each fire's per-job statuses -- because a tick that
+    runs for days has no other record. A database that is not live is a
+    logged failure and another wait, never a fresh empty boot.
+
+    Idempotence is the RUNNER's, not the loop's: `pipeline_runs` is unique
+    per (pipeline, job, as_of, scope) and a succeeded row skips, so a
+    second tick -- another process, a restart, a duplicate cron entry --
+    for a window already succeeded writes nothing new. `fired` only stops
+    a loop checking more often than once a minute from re-entering the
+    same window in one process; a *failed* window is retried once per
+    process start instead of every `--interval` seconds, since a failure
+    is a row carrying `error`, not something to hammer.
+
+    Rows carry `upstream.tick` (one id per fire): 015 `pipeline_runs` has
+    no actor column, so this is the attribution the table can hold --
+    tick-written rows are distinguishable from hand-runs, rows within one
+    fire are not. SIGINT leaves an in-flight job's row `running` with no
+    `finished_at`; the next tick retries it (skip needs `succeeded`), so an
+    interrupted window self-heals and that row is the evidence.
+    """
+    fired: set[tuple[str, date]] = set()
+    failures = 0
+    while True:
+        when = now if now is not None else business_now()
+        as_of = when.date()
+        try:
+            conn, _live = await _connect_resolved(db_url)
+        except (ValueError, OSError) as exc:
+            _log({"tick": when.isoformat(), "event": "no database",
+                  "error": str(exc)})
+            if once:
+                return 2
+            await asyncio.sleep(interval)
+            continue
+        try:
+            rows = [(r["pipeline"], r["yaml"])
+                    for r in await conn.fetch(sched.FETCH_MANIFESTS_SQL)]
+        finally:
+            await conn.close()
+        due_now: list[str] = []
+        for pipeline, yaml_text in rows:
+            if only and pipeline not in only:
+                continue
+            try:
+                names = sched.due_pipelines(yaml_text, when)
+            except sched.ManifestError as exc:
+                _log({"tick": when.isoformat(), "pipeline": pipeline,
+                      "event": "bad manifest", "error": str(exc)})
+                continue                       # one bad row, keep ticking
+            if not names:
+                continue
+            if pipeline not in names:
+                _log({"tick": when.isoformat(), "pipeline": pipeline,
+                      "event": "row name differs from its yaml",
+                      "declared": names})
+                continue
+            key = (pipeline, as_of)
+            if key in fired:
+                _log({"tick": when.isoformat(), "pipeline": pipeline,
+                      "as_of": as_of.isoformat(),
+                      "event": "already fired for this window"})
+                continue
+            fired.add(key)
+            due_now.append(pipeline)
+            tick_id = uuid.uuid4().hex[:12]
+            try:
+                out = await run(pipeline, as_of, ml_repo, brand_id,
+                                group_id, created_by, force, None, db_url,
+                                None, tick_id)
+            except Exception as exc:              # unattended: keep going
+                failures += 1
+                _log({"tick": when.isoformat(), "pipeline": pipeline,
+                      "as_of": as_of.isoformat(), "tick_id": tick_id,
+                      "event": "fire failed",
+                      "error": f"{type(exc).__name__}: {exc}"})
+                continue
+            bad = {n: o["status"] for n, o in out["outcomes"].items()
+                   if o["status"] not in ("succeeded", "skipped")}
+            failures += len(bad)
+            _log({"tick": when.isoformat(), "pipeline": pipeline,
+                  "as_of": as_of.isoformat(), "tick_id": tick_id,
+                  "event": "fired", "jobs": len(out["outcomes"]),
+                  "failed": bad or None})
+        if once:
+            _log({"tick": when.isoformat(), "event": "once: done",
+                  "fired": sorted(f"{p}@{d}" for p, d in fired),
+                  "failures": failures})
+            return 1 if failures else 0
+        # one line per pass, even when nothing is due: a loop that logs only
+        # its fires is indistinguishable from a loop that died
+        _log({"tick": when.isoformat(), "event": "pass",
+              "rows": len(rows), "due": due_now or None})
+        await asyncio.sleep(interval)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Run one scheduled pipeline")
-    ap.add_argument("--pipeline", required=True)
+    ap.add_argument("--pipeline", default=None,
+                    help="one-shot: the manifest row to run (in --watch the"
+                         " stored schedules decide instead)")
     ap.add_argument("--as-of", default=None,
                     help="YYYY-MM-DD (default: business today, Asia/Hong_Kong)")
     ap.add_argument("--ml-repo", type=Path, default=None,
@@ -139,7 +276,49 @@ def main() -> None:
                     " else live pgembed pidfile at tick time)")
     ap.add_argument("--sync-run-id", default=None,
                     help="LD3: feeding connector_sync_runs id (lineage)")
+    ap.add_argument("--watch", action="store_true",
+                    help="loop: fire each manifest whose schedule matches the"
+                         " business clock (the in-repo tick)")
+    ap.add_argument("--interval", type=int, default=60,
+                    help="seconds between due checks in --watch (default 60)")
+    ap.add_argument("--once", action="store_true",
+                    help="one due check against the stored schedules, then"
+                         " exit (the unattended tick entry point)")
+    ap.add_argument("--only", default=None,
+                    help="with --watch/--once: comma-separated manifest rows"
+                         " to consider (default: all)")
+    ap.add_argument("--now", default=None,
+                    help="ISO datetime pinning the tick clock (dev/"
+                         "verification; naive = Asia/Hong_Kong)")
     args = ap.parse_args()
+    if args.watch and args.pipeline:
+        ap.error("--pipeline is one-shot; --watch uses the manifests'"
+                 " schedules (filter with --only)")
+    if args.once and args.pipeline:
+        ap.error("--pipeline is one-shot; --once runs every due pipeline"
+                 " from the manifests (filter with --only)")
+    if not args.watch and not args.once and not args.pipeline:
+        ap.error("--pipeline is required (or --watch / --once for the loop)")
+    if args.watch and args.interval < 1:
+        ap.error("--interval must be >= 1 second")
+    if args.watch or args.once:          # --once is one pass of this loop
+        only = ([p.strip() for p in args.only.split(",") if p.strip()]
+                if args.only else None)
+        pinned = _tick_clock(args.now) if args.now else None
+        if pinned is not None and not args.once:
+            print("warning: --now pins the tick clock; every pass sees the"
+                  " same window", file=sys.stderr)
+        try:
+            rc = asyncio.run(watch(args.interval, args.ml_repo,
+                                   _uuid_or_none(args.brand_id),
+                                   _uuid_or_none(args.group_id),
+                                   args.created_by, args.force, args.db_url,
+                                   args.once, pinned, only))
+        except KeyboardInterrupt:
+            print("interrupted: exiting (an in-flight job's row stays"
+                  " 'running' and the next tick retries it)", flush=True)
+            raise SystemExit(130)
+        raise SystemExit(rc)
     as_of = (date.fromisoformat(args.as_of) if args.as_of
              else business_today())
     try:

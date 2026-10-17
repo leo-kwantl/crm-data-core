@@ -253,6 +253,18 @@ def business_today() -> _date:
         _timezone(_timedelta(hours=BUSINESS_TZ_OFFSET_HOURS))).date()
 
 
+def business_now() -> _datetime:
+    """Now on the business calendar (Asia/Hong_Kong, +08).
+
+    The scheduler tick's clock: a manifest's cron says "01:00" in
+    *business* time, so a host in another timezone must not shift which
+    window fires (offsets from UTC, no zoneinfo lookup -- same reason as
+    `business_today`).
+    """
+    return _datetime.now(
+        _timezone(_timedelta(hours=BUSINESS_TZ_OFFSET_HOURS)))
+
+
 def resolve_asof(mode: str, latest_in_data: _date,
                  today: _date) -> _date:
     """Resolve an as-of cutoff date for a snapshot read.

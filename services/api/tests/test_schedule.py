@@ -15,7 +15,7 @@ import subprocess
 import sys
 import uuid
 from contextlib import asynccontextmanager
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -110,6 +110,86 @@ def test_parse_skips_disabled():
         "      job_on: {engine: e}\n"
         "      job_off: {engine: e, enabled: false}\n")
     assert set(jobs["p"]) == {"job_on"}
+
+
+# ---- due-window decision (the tick's cron) ----
+
+HK = timezone(timedelta(hours=8))   # business clock, as business_now()
+LIVE_NIGHTLY = "0 1 * * *"          # live row, nightly v3
+LIVE_WEEKLY = "0 2 * * 1"           # live row, weekly v3
+
+
+def test_cron_matches_the_live_schedules():
+    assert sched.cron_matches(LIVE_NIGHTLY,
+                              datetime(2026, 10, 17, 1, 0, tzinfo=HK))
+    assert not sched.cron_matches(LIVE_NIGHTLY,
+                                  datetime(2026, 10, 17, 1, 1, tzinfo=HK))
+    monday = datetime(2026, 10, 19, 2, 0, tzinfo=HK)
+    assert monday.weekday() == 0                    # 0 = Sunday in cron
+    assert sched.cron_matches(LIVE_WEEKLY, monday)
+    assert not sched.cron_matches(LIVE_WEEKLY,
+                                  datetime(2026, 10, 20, 2, 0, tzinfo=HK))
+    assert not sched.cron_matches(LIVE_WEEKLY,
+                                  datetime(2026, 10, 19, 3, 0, tzinfo=HK))
+    sunday = datetime(2026, 10, 18, 2, 0, tzinfo=HK)
+    assert sunday.weekday() == 6
+    assert sched.cron_matches("0 2 * * 0", sunday)
+    assert sched.cron_matches("0 2 * * 7", sunday)  # 7 is Sunday too
+
+
+def test_cron_field_shapes():
+    when = datetime(2026, 10, 17, 1, 15, tzinfo=HK)
+    assert sched.cron_matches("*/15 * * * *", when)
+    assert sched.cron_matches("15 * * * *", when)
+    assert sched.cron_matches("0-29 * * * *", when)
+    assert sched.cron_matches("0,15,30 * * * *", when)
+    assert not sched.cron_matches("*/20 * * * *", when)   # 15 off-step
+    assert sched.cron_matches("* * * * *", when)
+    # dom/dow are ORed when both are restricted (Vixie), never ANDed: a
+    # manifest needing both must say so in a job param, not in the cron
+    first_sunday = datetime(2026, 11, 1, 0, 0, tzinfo=HK)
+    assert first_sunday.weekday() == 6 and first_sunday.day == 1
+    assert sched.cron_matches("0 0 1 * 1", first_sunday)
+    # Tuesday the 2nd: neither the 1st nor a Monday, so the OR fails
+    assert not sched.cron_matches("0 0 1 * 1",
+                                  datetime(2026, 12, 2, 0, 0, tzinfo=HK))
+
+
+def test_cron_rejects_a_schedule_it_cannot_read():
+    when = datetime(2026, 10, 17, 1, 0, tzinfo=HK)
+    for bad in ("0 1 * *", "0 1 * * * *", "99 1 * * *", "0 25 * * *",
+                "0 1 0 * *", "0 1 * 13 *", "0 1 * * 8", "daily",
+                "0 1 * * mon", "*/0 * * * *"):
+        with pytest.raises(sched.ManifestError):
+            sched.cron_matches(bad, when)
+
+
+MANIFEST_WITH_SCHEDULE = (
+    "version: 1\n"
+    "pipelines:\n"
+    "  nightly:\n"
+    "    schedule: 0 1 * * *\n"
+    "    jobs:\n"
+    "      apply: {engine: upload_apply}\n")
+
+
+def test_due_pipelines_reads_the_declared_schedule():
+    assert sched.due_pipelines(
+        MANIFEST_WITH_SCHEDULE,
+        datetime(2026, 10, 17, 1, 0, tzinfo=HK)) == ["nightly"]
+    assert sched.due_pipelines(
+        MANIFEST_WITH_SCHEDULE,
+        datetime(2026, 10, 17, 1, 1, tzinfo=HK)) == []
+    # no schedule = manual only: the tick must not invent a cadence
+    manual = MANIFEST_WITH_SCHEDULE.replace("    schedule: 0 1 * * *\n", "")
+    assert sched.due_pipelines(
+        manual, datetime(2026, 10, 17, 1, 0, tzinfo=HK)) == []
+
+
+def test_due_pipelines_reports_a_bad_schedule_per_manifest():
+    bad = MANIFEST_WITH_SCHEDULE.replace("0 1 * * *", "0 1 * *")
+    with pytest.raises(sched.ManifestError):
+        sched.due_pipelines(bad, datetime(2026, 10, 17, 1, 0, tzinfo=HK))
 
 
 # ---- ml argv builders (exact contract) ----
@@ -646,3 +726,94 @@ async def test_sync_lineage_stamps_agree(database_url: str, monkeypatch):
             assert (run["brand_id"], run["group_id"]) == (
                 sync["brand_id"], sync["group_id"])
             assert str(run["sync_run_id"]) == str(sid)
+
+
+@pytest.mark.asyncio
+async def test_runner_labels_a_ticked_row(database_url: str, monkeypatch):
+    """`upstream.tick` is the tick's only attribution.
+
+    015 `pipeline_runs` has no actor column, so the loop puts one id per
+    fire in `upstream`; a hand-run row keeps exactly `{"engine": ...}`
+    (asserted above by test_runner_data_rows_carry_no_ml_revision).
+    """
+    monkeypatch.setitem(sched.ENGINE_BUILDERS, "fake_ok", _fake_ok)
+    jobs = {"j1": {"engine": "fake_ok", "depends_on": [], "params": {}}}
+    ctx = _ctx(pipeline="test_pipe_ticklabel", as_of=date(2026, 10, 7),
+               tick="deadbeefcafe")
+    async with _pool(database_url) as pool:
+        async with pool.acquire() as conn:
+            await sched.run_pipeline(conn, "test_pipe_ticklabel", jobs, ctx)
+            raw = await conn.fetchval(
+                "SELECT upstream FROM pipeline_runs"
+                " WHERE pipeline = 'test_pipe_ticklabel' AND job = 'j1'")
+    up = json.loads(raw) if isinstance(raw, str) else raw
+    assert up["tick"] == "deadbeefcafe"
+    assert up["engine"] == "fake_ok"
+
+
+@pytest.mark.asyncio
+async def test_live_manifest_rows_are_reachable_by_the_tick(database_url: str):
+    """Every stored manifest has a minute that fires it under its own name.
+
+    A schedule the loop cannot parse, or one that matches no minute in a
+    week, is a pipeline that silently never runs -- and nothing else reads
+    `pipeline_manifests` as a *schedule* (the app edits it, ml validates its
+    shape). Brute-forces a week of business minutes per row (pure
+    predicate, no YAML re-parse) and then asks the loop's own decision
+    function about the first hit, so the row and the tick are compared
+    through `due_pipelines`, not through a hand-copied cron string.
+    """
+    import yaml
+
+    async with _pool(database_url) as pool:
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(sched.FETCH_MANIFESTS_SQL)
+    if not rows:
+        pytest.skip("no manifest rows in this database")
+    start = datetime(2026, 10, 12, 0, 0, tzinfo=HK)      # a Monday
+    week = [start + timedelta(minutes=m) for m in range(7 * 24 * 60)]
+    for row in rows:
+        pipeline, yaml_text = row["pipeline"], row["yaml"]
+        spec = ((yaml.safe_load(yaml_text).get("pipelines") or {})
+                .get(pipeline) or {}).get("schedule")
+        assert spec, f"{pipeline}: stored manifest declares no schedule"
+        hits = [w for w in week if sched.cron_matches(str(spec), w)]
+        assert hits, f"{pipeline}: schedule {spec!r} never fires in a week"
+        assert sched.due_pipelines(yaml_text, hits[0]) == [pipeline]
+
+
+def test_once_logs_the_decision_and_exits_0_when_nothing_is_due(database_url):
+    """The unattended path is the CLI, so `--once` is what a Task Scheduler
+    entry loops: exit 0 when nothing is due, one JSON line carrying the
+    decision, no engine spawned.
+    """
+    out = subprocess.run(
+        [sys.executable, str(REPO / "scripts" / "run_pipeline.py"),
+         "--once", "--now", "2026-10-17T02:00", "--db-url", database_url],
+        cwd=REPO, capture_output=True, text=True, timeout=300)
+    assert out.returncode == 0, out.stderr
+    line = json.loads(out.stdout.strip().splitlines()[-1])
+    assert line["event"] == "once: done"
+    assert line["fired"] == [] and line["failures"] == 0
+
+
+def test_watch_interrupt_stops_the_loop(database_url, monkeypatch, capsys):
+    """Ctrl-C inside the wait must stop the loop, log it, and leave 130 --
+    a loop that swallows the interrupt is a process nothing can stop.
+    """
+    sys.path.insert(0, str(REPO / "scripts"))
+    import run_pipeline                                     # noqa: E402
+
+    async def _interrupt(_seconds):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(run_pipeline.asyncio, "sleep", _interrupt)
+    monkeypatch.setattr(sys, "argv", [
+        "run_pipeline.py", "--watch", "--interval", "1",
+        "--now", "2026-10-17T02:00", "--db-url", database_url])
+    with pytest.raises(SystemExit) as exc:
+        run_pipeline.main()
+    assert exc.value.code == 130
+    printed = capsys.readouterr().out
+    assert '"event": "pass"' in printed
+    assert "interrupted" in printed

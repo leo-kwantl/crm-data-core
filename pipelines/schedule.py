@@ -29,6 +29,14 @@ Execution model (zero import coupling to the ml repo):
 Full manifest validation belongs to ml (`ml_jobs/manifest.py`
 validate()); the runner does structural parsing only and trusts stored
 rows (the app config API validates at write).
+
+Nothing in the product fires a tick by itself: `cron_matches` /
+`due_pipelines` are the pure "is this manifest due at <business
+wall-clock>" decision, and `scripts/run_pipeline.py --watch` is the
+in-repo loop that uses them (cron may drive the same entrypoint
+one-shot instead). Idempotence stays the runner's, never the loop's:
+the window key is (pipeline, job, as_of, scope) and a succeeded row
+skips, so a second tick for a window writes nothing new.
 """
 
 from __future__ import annotations
@@ -38,7 +46,7 @@ import os
 import sys
 import uuid
 from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
@@ -62,6 +70,8 @@ DATA_ENGINES = ("upload_apply", "kpi_daily", "cohort_snapshot")
 COHORT_DEFAULT_MAX_OFFSETS = {"week": 12, "month": 12, "year": 5}
 
 FETCH_MANIFEST_SQL = "SELECT yaml FROM pipeline_manifests WHERE pipeline = $1"
+FETCH_MANIFESTS_SQL = ("SELECT pipeline, yaml FROM pipeline_manifests"
+                       " ORDER BY pipeline")
 
 UPSERT_RUN_SQL = """
 INSERT INTO pipeline_runs
@@ -188,6 +198,7 @@ class JobCtx:
     group_id: Any
     created_by: str | None
     sync_run_id: str | None = None  # LD3: feeding 019 connector_sync_runs row
+    tick: str | None = None  # unattended loop's fire id; hand-runs leave it None
     ml_repo: Path | None = None
     db_url: str | None = None
     timeout_s: float = 1800.0
@@ -225,6 +236,112 @@ def parse_manifest(yaml_text: str) -> dict[str, dict[str, dict]]:
                            "params": jdef.get("params") or {}}
         out[pname] = jobs
     return out
+
+
+def _cron_field(spec: str, lo: int, hi: int, name: str) -> set[int]:
+    """One cron field -> the values it matches.
+
+    Supported: `*`, `n`, `a-b`, `*/n`, `a-b/n` and comma lists of those.
+    Names (`mon`) and shortcuts (`@daily`) are rejected rather than
+    guessed: the stored manifests are numbers, and silently reading
+    `mon` as "never" would turn a typo into a pipeline that never runs.
+    """
+    values: set[int] = set()
+    for raw in spec.split(","):
+        part = raw.strip()
+        step = 1
+        if "/" in part:
+            part, _, raw_step = part.partition("/")
+            if not raw_step.isdigit() or int(raw_step) < 1:
+                raise ManifestError(
+                    f"schedule {name} step {spec!r} must be */n with n >= 1")
+            step = int(raw_step)
+        if part == "*":
+            start, end = lo, hi
+        elif "-" in part[1:]:   # `-3` is not a range, `1-3` is
+            a, _, b = part.partition("-")
+            if not (a.isdigit() and b.isdigit()):
+                raise ManifestError(
+                    f"schedule {name} range {spec!r} is not a-b")
+            start, end = int(a), int(b)
+        elif part.isdigit():
+            start = end = int(part)
+        else:
+            raise ManifestError(
+                f"schedule {name} {spec!r} must be *, n, a-b, */n or a list"
+                " (names and @shortcuts are not supported)")
+        if not (lo <= start <= end <= hi):
+            raise ManifestError(
+                f"schedule {name} {spec!r} is outside {lo}-{hi}")
+        values.update(range(start, end + 1, step))
+    return values
+
+
+def cron_matches(expr: str, when: datetime) -> bool:
+    """5-field cron (min hour dom month dow) against a wall-clock `when`.
+
+    Day-of-week is 0 = Sunday, so `datetime.weekday()` shifts by one;
+    7 is accepted as Sunday too. When BOTH day fields are restricted the
+    classic Vixie rule applies -- the day matches if EITHER does -- so
+    `0 2 * * 1` is "Monday 02:00" and `0 2 1 * *` is "the 1st, 02:00"
+    (a manifest needing both must express it in a job param, not here).
+
+    `when` is taken as given: the caller supplies the *business* clock
+    (`business_now()`, Asia/Hong_Kong), never the host's, so which window
+    is due does not depend on where the process happens to run.
+    """
+    fields = expr.split()
+    if len(fields) != 5:
+        raise ManifestError(
+            f"schedule {expr!r} must have 5 fields"
+            " (min hour day-of-month month day-of-week)")
+    minutes = _cron_field(fields[0], 0, 59, "minute")
+    hours = _cron_field(fields[1], 0, 23, "hour")
+    doms = _cron_field(fields[2], 1, 31, "day-of-month")
+    months = _cron_field(fields[3], 1, 12, "month")
+    dows = _cron_field(fields[4], 0, 7, "day-of-week")
+    if 7 in dows:
+        dows = (dows - {7}) | {0}
+    if (when.minute not in minutes or when.hour not in hours
+            or when.month not in months):
+        return False
+    dom_any = fields[2] == "*"
+    dow_any = fields[4] == "*"
+    dom_ok = when.day in doms
+    dow_ok = ((when.weekday() + 1) % 7) in dows
+    if dom_any:
+        return dow_ok if not dow_any else True
+    if dow_any:
+        return dom_ok
+    return dom_ok or dow_ok
+
+
+def due_pipelines(yaml_text: str, when: datetime) -> list[str]:
+    """Names inside ONE manifest whose declared schedule fires at `when`.
+
+    A pipeline with no `schedule` is manual-only: the tick must not
+    invent a cadence for it. A malformed one raises `ManifestError` for
+    that manifest alone -- the loop logs it and keeps ticking rather
+    than letting one bad row stop the schedule. The caller runs the row
+    `pipeline_manifests.pipeline` key; a YAML whose inner name differs
+    from it fails loudly in `run_pipeline` ("defines no jobs").
+    """
+    import yaml
+
+    try:
+        doc = yaml.safe_load(yaml_text)
+    except Exception as exc:
+        raise ManifestError(f"manifest is not valid YAML: {exc}") from exc
+    if not isinstance(doc, dict):
+        raise ManifestError("manifest needs a top-level 'pipelines' map")
+    out: list[str] = []
+    for pname, pdef in (doc.get("pipelines") or {}).items():
+        spec = (pdef or {}).get("schedule") if isinstance(pdef, dict) else None
+        if not spec:
+            continue
+        if cron_matches(str(spec), when):
+            out.append(str(pname))
+    return sorted(out)
 
 
 def topo_sort(jobs: dict[str, dict]) -> list[str]:
@@ -663,11 +780,16 @@ def _upstream_payload(engine: str, ctx: JobCtx, cache: dict) -> str:
 
     The revision is resolved once per run (first ml-engine job) and rides
     only on jobs that executed as a subprocess: a sha on a row whose
-    numbers came from in-process data code would be a mislabel.
+    numbers came from in-process data code would be a mislabel. A row a
+    tick wrote also carries `tick` -- the same id on every row of one
+    loop fire, absent on hand-runs, which is as close to "who wrote this"
+    as the table gets (015 has no actor column).
     """
     import json
 
     payload: dict[str, Any] = {"engine": engine}
+    if ctx.tick:
+        payload["tick"] = ctx.tick
     if engine not in DATA_ENGINES and ctx.ml_repo is not None:
         if not cache:
             cache.update(_ml_repo_revision(ctx.ml_repo))
