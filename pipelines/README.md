@@ -8,7 +8,9 @@ and ML (`crm-cdp-ml`) consume; they never write ingestion logic.
 - `customers.member_id` must match `^M-[0-9]{6}$` (CHECK). Reject, don't coerce.
 - `orders.store_id` NOT NULL — resolve/create the store before the order.
 - Identity: `external_member_id` + `member_id` substring fallback (escaped
-  ILIKE, LIMIT 20); phone/email are exact-only (PII policy, `docs/conventions.md`).
+  ILIKE, LIMIT 20); phone/email are exact-first — after an exact miss a bounded
+  substring fallback applies to POST search only (min 3 digits / 3 chars,
+  LIMIT 20, criteria-type-only audit; `docs/conventions.md`).
 - Events: append-only (`customer_events`, `consents`); never UPDATE/DELETE.
 - All migrations additive-only (`db/migrations`, dbmate plain SQL).
 

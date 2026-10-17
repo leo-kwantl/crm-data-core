@@ -71,7 +71,7 @@ re-derived afterwards.
 |---|---|---|
 | member code | `member_id` | must match `^M-[0-9]{6}$`, else reject row + quarantine |
 | source key | `external_member_id` | unique per source; second-see is update, not insert |
-| phone/email | `phone`, `email` | exact-only matching (PII: no partial/substring search) |
+| phone/email | `phone`, `email` | exact-first matching; on an exact miss a bounded substring fallback (min 3 digits / 3 chars, LIMIT 20, POST body, criteria-type-only audit) |
 
 ## orders
 

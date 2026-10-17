@@ -4,7 +4,8 @@ Contract (mirrors crm-cdp-app identity):
 - `customers.member_id` format `^M-[0-9]{6}$`; `external_member_id` unique per source.
 - Lookup order: `member_id` exact-first, then escaped ILIKE-substring over
   `member_id` + `external_member_id` (LIMIT 20). GET stays exact.
-- Phone/email: exact match only (PII policy — never partial).
+- Phone/email: exact-first; a POST search may fall back to a bounded substring
+  (min 3 digits / 3 chars, LIMIT 20, criteria-type-only audit). GET stays exact.
 """
 from __future__ import annotations
 
