@@ -29,7 +29,12 @@ A count, by contrast, is a claim about the invocation that produced it, and the 
 harness — coverage mode, peer set, tree — beside every bucket. Publish the line, not the number: one
 unchanged tree reports a different `ok` in markdown-only and `--comments` mode, and `--peer`
 **replaces** the defaults, so declaring a single peer turns every other tree's cites into findings
-*about the docs* rather than about the invocation. A count from a superseded invocation is
+*about the docs* rather than about the invocation. The same trap once covered the peer set, which
+appeared nowhere in the output, so the invocation had to travel with the line for `cite-blank` and
+`cite-tree` to be re-derivable at all; every printed line now names its peers (`d61978b`, `ef94a56`),
+and that half of the rule is **retired by the line itself** rather than demanded of authors -- prefer
+the mechanism over the discipline wherever the mechanism can be built. A count from a superseded
+invocation is
 **withdrawn, never diffed** against a fresh one, and the withdrawal is a property of the pair: name
 the set you are superseding in the same message, restating that one hop and marking anything older as
 superseded rather than restating it -- the earlier message cannot be edited, and a chain of
