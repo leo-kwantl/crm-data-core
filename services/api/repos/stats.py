@@ -32,7 +32,7 @@ _CUST_SCOPE = """($2::uuid IS NULL OR c.group_id = $2::uuid)
 # are HK calendar periods, NOT DB-session-zone periods: a 16:00Z+ instant
 # is the NEXT business day in Asia/Hong_Kong, and the snapshot tables
 # (cohort_snapshots, rfm_*) are written on that same business day. Must
-# stay in lockstep with ../crm-cdp-data `pipelines/snapshot.py` `f889386`
+# stay in lockstep with ../crm-cdp-data `pipelines/snapshot.py` `ac39625`
 # (that file's last change, where `BUSINESS_TZ_*` sits at `:142-145`). pgembed
 # ships NO PG tzdata, so the NAMED zone cannot appear in SQL ("time zone
 # \"Asia/Hong_Kong\" not recognized"); Hong Kong has no DST, so the fixed
