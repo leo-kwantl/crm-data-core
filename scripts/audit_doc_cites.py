@@ -2,14 +2,16 @@
 
 Why this exists (2026-10-17): the cheap "is the cite out of range" guard has a
 false-positive mode that is *mirror drift, not documentation*. ``pipelines/
-contracts.md`` cites ``scope.py:72-76`` *"at app 509c56e"* — exactly right in
-app's tree, while data's mirrored copy of that same path is 26 lines shorter, so
-a resolver that only looks in-repo reports a correct cross-tree citation as
-stale. So a cite that resolves in *some* checked-out tree is reported as
-``disagrees`` (info, not failure), and only a cite out of range in *every* tree
-holding that path is a hard failure. The rule the guard encodes: resolve against
-the tree the cite names; ``services/api/...`` and ``db/queries/...`` refer to
-app's checkout, data's copies being CI/harness targets.
+contracts.md`` cites line ranges in app's ``services/api/analytics/scope.py``,
+which data also carries as a sync target: the two copies differed by 10 lines
+(app condensed its docstring in ``763c8ae`` while the mirror kept the older
+prose), so a resolver that only looks in-repo reports a correct cross-tree
+citation as stale -- or, read the other way, accepts a stale one. So a cite
+that resolves in *some* checked-out tree is reported as ``disagrees`` (info,
+not failure), and only a cite out of range in *every* tree holding that path is
+a hard failure. The rule the guard encodes: resolve against the tree the cite
+names; ``services/api/...`` and ``db/queries/...`` refer to app's checkout,
+data's copies being CI/harness targets.
 
 It also checks **pins**. ``contracts.md`` states a per-file anchor as
 `` `path` `sha` `` — "that file's last-changed revision" — and a line range
@@ -1145,6 +1147,9 @@ def audit(root: Path, peers: list[Path], strict: bool,
     # `--stat` the revision the reader had, and a guard run which files it
     # looked at. Every verdict here is scoped by a state of the runner, and the
     # scope belongs beside the number it bounds -- including when it is zero.
+    # It rides on `coverage:` and on the counts line alike: either line may be
+    # the one pasted, and the two coverage buckets (`cite-blank`, `cite-tree`)
+    # are re-derivable from a pasted line plus this peer list, nothing else.
     print("  (scope: every count below is decided by the peers printed above"
           " and by the coverage mode below; a number pasted without them is a"
           " claim about the harness, not about the docs)")
@@ -1158,12 +1163,13 @@ def audit(root: Path, peers: list[Path], strict: bool,
     else:
         out_txt = "; %d file(s) outside this pass (%d contain citations)" % (
             n_skipped, len(outside))
-    print("coverage: %d file(s) in pass (%d contain citations)%s -- %s" % (
+    print("coverage: %d file(s) in pass (%d contain citations)%s -- %s"
+          "  [peers: %s]" % (
         len(audited), in_shape, out_txt,
         "markdown + comment lines/docstrings in .py/.sql" if comments
         else "markdown only: cites in Python docstrings and SQL comments are"
         " outside this pass, so green means green over one file type (add"
-        " --comments)"))
+        " --comments)", universe))
     # The scope rides on the counts line as well as on `coverage:`, because the
     # counts line is the one that gets pasted into a chat -- and a clean run is
     # pasted alone far more often than a dirty one.
