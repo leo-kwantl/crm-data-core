@@ -68,3 +68,21 @@ def test_declaring_the_caller_tree_silences_the_note(trees: dict[str, Path]) -> 
 def test_auditing_from_the_audited_tree_has_no_note(trees: dict[str, Path]) -> None:
     out = run(trees["proj"], "--repo", ".", "--peer", "../peer")
     assert "note: you are standing" not in out
+
+
+def test_every_verdict_line_carries_the_harness(trees: dict[str, Path]) -> None:
+    """`coverage:`, `citations:` and `pins:` each name the mode and the peer set.
+
+    `pins:` was the line missing it, and it is the one with the most
+    peer-dependent buckets: a label that does not resolve in a declared peer is
+    reported as `label-bad`, i.e. as a defect of the docs rather than of the
+    invocation, so a pasted `pins:` line without the peer set is exactly the
+    under-specification the rule forbids.
+    """
+    out = run(trees["other"], "--repo", "../proj", "--peer", "../peer", "--peer", ".")
+    lines = {line.split(":", 1)[0]: line for line in out.splitlines()
+             if line[:1].isalpha()}
+    for name in ("coverage", "citations", "pins"):
+        assert name in lines, out
+        assert "pass: " in lines[name], lines[name]
+        assert "peers: peer" in lines[name], lines[name]

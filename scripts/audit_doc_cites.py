@@ -1176,20 +1176,26 @@ def audit(root: Path, peers: list[Path], strict: bool,
     else:
         out_txt = "; %d file(s) outside this pass (%d contain citations)" % (
             n_skipped, len(outside))
-    print("coverage: %d file(s) in pass (%d contain citations)%s -- %s"
-          "  [peers: %s]" % (
+    mode = "markdown + comments" if comments else "markdown only"
+    # One suffix, one definition: three lines are printed and three chances
+    # exist to drift apart on the two facts that decide every bucket below
+    # (the coverage mode and the peer set), so the harness is built once and
+    # rides on all three. `pin-stale` and `label-*` are peer-dependent exactly
+    # as `cite-blank` and `cite-tree` are -- a label that does not resolve in a
+    # declared peer reads as `label-bad`, i.e. as a defect of the docs -- so
+    # the pins line needs the peer set at least as much as the counts line.
+    harness = "[pass: %d file(s), %s; peers: %s]" % (len(audited), mode, universe)
+    print("coverage: %d file(s) in pass (%d contain citations)%s -- %s  %s" % (
         len(audited), in_shape, out_txt,
         "markdown + comment lines/docstrings in .py/.sql" if comments
         else "markdown only: cites in Python docstrings and SQL comments are"
         " outside this pass, so green means green over one file type (add"
-        " --comments)", universe))
+        " --comments)", harness))
     # The scope rides on the counts line as well as on `coverage:`, because the
     # counts line is the one that gets pasted into a chat -- and a clean run is
     # pasted alone far more often than a dirty one.
-    mode = "markdown + comments" if comments else "markdown only"
     print("citations: " + ", ".join(f"{k}={v}" for k, v in counts.items())
-          + "  [pass: %d file(s), %s; peers: %s]" % (len(audited), mode,
-                                                      universe))
+          + "  " + harness)
     print("  (cite-blank = the cited span is empty in every tree holding it --"
           " an empty span passes every content check, so a line that moved or"
           " was deleted is invisible in every other bucket; a zero here is a"
@@ -1210,7 +1216,7 @@ def audit(root: Path, peers: list[Path], strict: bool,
         # `pin-ok=0` reads like "no pins here" while the anchors may all live in
         # comments this pass never opened, so the scope rides on the number.
         pins_line += "  [markdown only: .py/.sql comment anchors need --comments]"
-    print("pins: " + pins_line)
+    print("pins: " + pins_line + "  " + harness)
     print("  (a pin asserts equality with the file's last-changed revision; a"
           " label proves existence + ancestry, and with a path that the path was"
           " there at that sha -- never that the quoted words are)")
