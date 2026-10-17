@@ -168,7 +168,7 @@ Guard `tests/test_engine.py:382-408` pins an in-band instant 17:37Z = 01:37 HKT.
 **Never pair v1 with v2 for movement.** Same maths both ways (`store_ld8.compute_window` calls `store_rfm.compute_current` verbatim, `ml_engine/store_ld8.py:141-175`), but v1 is an append-only single-window write and v2 a four-window find-or-create, and the *engine dict* decides the version, not the caller. The v1 INSERT takes `rules_version` as a parameter (`SNAPSHOT_INSERT_SQL`, `store_rfm.py:35`; column at `:37`, `computed["rules_version"]` passed at `:179`) — `compute_current` reads the constant at `:153` (`"v1"` at `rfm.py:24`) — while the v2 INSERT interpolates the literal `'{RULES_V2}'` (`SNAPSHOT_INSERT_V2_SQL`, `store_ld8.py:52`, VALUES at `:56`; find twin `SNAPSHOT_FIND_V2_SQL` at `:61`, WHERE at `:64`; `RULES_V2 = "v2"` at `:36`), so cross-version movement is meaningless. Serving fix: take the newest snapshot's `rules_version`, then the two newest **of that version** for that `mode`/`window_key` in scope, returning the existing `need_two_snapshots` 404 when only one exists — never relax the mismatch check.
 - Pairing is **same `mode` + same `rules_version` + same `window_key`**; the bounds need not match and normally do not (each tick find-or-creates its own window, so a same-day re-run adds nothing). `window_key` separates windows *within* a mode (`current` vs `mom`/`yoy`/`lifetime`) and never pairs across them: a two-row requirement is always **two nights of the same window**.
 - The version term is load-bearing for `rolling_365` (a v1 `current` row sits beside v2 `current` rows) and vacuous in `custom` (no v1 row), because `window_key` **cannot** separate v1 from v2: it is `NOT NULL DEFAULT 'current'` (`db/migrations/031_rfm_time_aware.sql:19-20`) and the v1 INSERT omits the column (`store_rfm.py:35-43`, nine columns at `:37-38`), so the **DDL default fills it** and a v1 `rolling_365` row reads `'current'` exactly like a v2 one.
-- **LD8's reachable space is exactly four combinations** (`ml_engine/store_ld8.py:154-155` four-combination statement, mapping applied at `:174`; the write-site invariant is that docstring, `:145-156` at this HEAD): `rolling_365×current`, `custom×lifetime`, `custom×mom`, `custom×yoy` — **`custom×current` is unreachable from the writer**. The `window_key='current'` pin therefore yields the empty state structurally.
+- **LD8's reachable space is exactly four combinations** (`ml_engine/store_ld8.py`: `WINDOW_KEYS` is the four keys, and `compute_window` maps each to its mode in the if/elif/else at `:153-169` — that function's docstring is the write-site invariant): `rolling_365×current`, `custom×lifetime`, `custom×mom`, `custom×yoy` — **`custom×current` is unreachable from the writer**. The `window_key='current'` pin therefore yields the empty state structurally.
 
 **Switching the job is a manifest edit, and `pipeline_manifests` rows are edited through the app config API, never by migration** (015 seed comment):
 
@@ -178,7 +178,7 @@ Guard `tests/test_engine.py:382-408` pins an in-band instant 17:37Z = 01:37 HKT.
       params: {}          # drop `mode: rolling_365`: the LD8 CLI has no --mode
 The builder rejects the legacy param with a named `ManifestError` rather than letting the CLI exit 2 on every tick (`pipelines/schedule.py` `_build_ld8`).
 
-**First-tick triage.** The argv's positional DB URL is the runner's resolved `ctx.db_url` (`pipelines/schedule.py:398` emits `[python, -m, <module>, ctx.db_url]`, sourced from `scripts/run_pipeline.py:106-127` via `_connect_resolved`), **never** a manifest `params` value: a wrong row fails at dispatch as a `ManifestError` with a message *above* the spawn, a bad URL is a runner/env fault that takes every ml job in the tick down, and an unset one is caught pre-spawn (`pipelines/schedule.py:395-397`, `UnknownEngineError`). The ml CLI connects *before* validating its own args (`ml_jobs/run_ld8_snapshot.py:20-27`), so a malformed `--as-of` or scope UUID surfaces as `ValueError` only after a successful connect while a bad URL is a driver error (`exit 1`, e.g. `socket.gaierror` / `ConnectionRefusedError`) that reads as a connectivity incident — that ordering bites **hand-runs** only, since the tick always passes `ctx.as_of.isoformat()` (`pipelines/schedule.py:410`, a `date`).
+**First-tick triage.** The argv's positional DB URL is the runner's resolved `ctx.db_url` (`pipelines/schedule.py:398` emits `[python, -m, <module>, ctx.db_url]`, sourced from `scripts/run_pipeline.py:106-127` via `_connect_resolved`), **never** a manifest `params` value: a wrong row fails at dispatch as a `ManifestError` with a message *above* the spawn, a bad URL is a runner/env fault that takes every ml job in the tick down, and an unset one is caught pre-spawn (`pipelines/schedule.py:395-397`, `UnknownEngineError`). The ml CLI validates its args *before* connecting (`ml_jobs/run_ld8_snapshot.py:20-28`; order-only change, ml `148cced`), so a malformed `--as-of` or scope UUID fails as a `ValueError` with no connect attempted, while a bad URL is a driver error (`exit 1`, e.g. `socket.gaierror` / `ConnectionRefusedError`) that reads as a connectivity incident — a hand-run typo can no longer masquerade as a connectivity fault, and the tick is unaffected either way since it always passes `ctx.as_of.isoformat()` (`pipelines/schedule.py:410`, a `date`).
 
 **`--as-of` is a silent no-op knob on a window that already exists.** On the tick it is always explicit (`_build_ld8` → `_with_common`, `pipelines/schedule.py:457`/`:402-410`). `ld8_snapshot` find-or-creates on `(mode, window_from, window_to, v2, window_key, scope)` (`ml_engine/store_ld8.py:63-66`, the `SNAPSHOT_FIND_V2_SQL` predicate), so an `--as-of` whose `current` window is already stored (e.g. `--as-of 2026-10-16` while the v2 row for `2025-10-16 → 2026-10-16` exists) exits 0 having written nothing: the tick is green, no row is wrong, and a consumer needing a newer period stays on `need_two_snapshots` with nothing to point at. Rule: omit `--as-of` unless you intend a new period; never reuse a date whose window is on disk.
 
@@ -384,13 +384,13 @@ row means "could not resolve", never "old row"). Data-engine rows keep
 came from in-process data code is a mislabel. This labels the *tree the
 engines were executed from*, which is a different question from ml's
 per-file `as of <sha>` pins (last commit touching the cited file, e.g.
-`ml_engine/store_ld8.py:71-72` naming `f889386` while the checkout's HEAD
+`ml_engine/store_ld8.py:70-72` naming `ac39625` while the checkout's HEAD
 is ahead of it): the checkout is not a submodule and no revision is
 pinned anywhere, so `ml_repo_dirty = true` means that run has **no**
 revision at all — the sha is a starting point for `git diff`, not a
 reproducible input. app's `/api/v1/pipelines/runs` already returns
-`upstream` untouched (`db/queries/pipelines.sql` `runs_list`, parsed at
-`services/api/routers/pipelines.py:105-122`), so a consumer needs no API
+`upstream` untouched (`db/queries/pipelines.sql` `runs_list`, parsed by
+`_run_to_dict` (`services/api/routers/pipelines.py:105-122`)), so a consumer needs no API
 change. The sha is the checkout's HEAD **at run time**, never the last
 commit to touch some file (`git log -1 --format=%h` over a path answers a
 different question and is not a substitute for it), and it is written on the
@@ -647,7 +647,7 @@ ManifestError and downstream jobs `skipped`.
 
 That containment is the whole dispatch, not just the resolver: the
 resolve call and `ENGINE_BUILDERS[engine](...)` both sit inside the job's
-`try` (`pipelines/schedule.py:829-846`), so a malformed manifest
+`try` (`pipelines/schedule.py:829-846`: the resolve call is `_resolve_segment_run_id`), so a malformed manifest
 (a wrong `params` key raising in `_build_matrix`, an `argv` builder
 refusing its input) also lands as `status = 'failed'` with
 `type(exc).__name__: exc` on that job's `pipeline_runs` row (`pipelines/schedule.py:858`)
@@ -785,7 +785,7 @@ inheritor can only be evaluated by **joining the parent**. The parent→child ed
 **A group is a property of the edge, not of the child.** Five children carry a second, non-scope parent edge
 (`rec_items`, `segment_assignments`, `rfm_customer_scores`, `churn_customer_scores`, `clv_customer_scores` reference
 `customers` via `customer_id`), and `landing_receipts` a second optional parent (`manifest_pipeline →
-pipeline_manifests`, `027_landing_receipts.sql:26-27`); key a guard on the **edge**, not the table.
+pipeline_manifests`, `027_landing_receipts.sql:27-28`); key a guard on the **edge**, not the table.
 
 Thirteen of the fourteen edges are `NOT NULL … ON DELETE CASCADE`; the exception is a boundary case:
 `landing_receipts.upload_job_id` is `uuid NULL UNIQUE … REFERENCES upload_jobs (id) ON DELETE RESTRICT`
@@ -803,22 +803,25 @@ Live entities carrying a scope column that is **not** a visibility stamp: `brand
 ### Unscoped outputs — 3
 Two shapes, split by what the relation stores:
 1. **Holds scope-dependent results with no scope column** — readers must gate, writers must abstain:
-   `rfm_segment_sizes`, `rfm_segment_movement` (031; writer ml). No predicate can distinguish a per-scope row from a
+   `rfm_segment_sizes`, `rfm_segment_movement` (031; writer ml; the writer choice is **B′**, below). No predicate can distinguish a per-scope row from a
    global one.
 2. **Holds no results at all** — no obligation either way: `report_runs` (app-only,
    `../crm-cdp-app/db/migrations/033_report_runs.sql`; data carrying no 033 is the bootstrap-subset rule, not drift) is
    a scope-free **ledger** with no result column. Grouping it with shape 1 invites the one wrong fix available here:
    scope columns on a table that carries no computed content.
 
-**Their pending writer choice.** Nothing links the two 031 aggregates to a scope: the writers `SEGMENT_SIZE_UPSERT_SQL` (`pipelines/snapshot.py:373`) and
+**Their writer choice: B′, decided 2026-10-18.** Nothing links the two 031 aggregates to a scope: the writers `SEGMENT_SIZE_UPSERT_SQL` (`pipelines/snapshot.py:373`) and
 `MOVEMENT_UPSERT_SQL` (`:380`) are `ON CONFLICT … DO NOTHING`, the readers filter `as_of` +
 window/pair only (`:387`, `:394`), so their rows are **global by construction** (first-writer-wins). A scoped
-LD8 run threads scope into its window snapshot but not into these two (`ml_engine/store_ld8.py:256-257`), so it would
-**make** a brand's aggregates the global rows for every unscoped read; the gate
-(`../crm-cdp-app/services/api/routers/analytics_rfm_windows.py:1-24`: scoped sessions 403) closes only reading. **Owner
-choice pending (A / B′ / defer), B′ recommended by app and ml:** a scoped run still writes its scope-stamped
-snapshots/scores and **skips** these two, the skip **reported as skipped** — a bare zero is
-indistinguishable from "nothing changed".
+LD8 run still writes its scope-stamped snapshots/scores and **skips** both scope-free 031 aggregates
+(`rfm_segment_sizes`, `rfm_segment_movement`) — `run_ld8` is the writer half
+(`ml_engine/store_ld8.py`: `write_sizes`/`write_movement` sit behind `if not scoped:`) — and the skip is
+**reported as skipped**, never a bare zero: the job returns `sizes: null`/`movement: null` plus
+`skipped: [{table, reason}]` built from `SCOPED_SKIP_TABLES`, since "nothing changed" and "not written for this
+scope" are indistinguishable to a reader. The rejected alternative **A** (a scoped run writes them anyway) would
+**make** a brand's aggregates the global rows for every unscoped read, and `defer` leaves that hole open. The reader
+half stays (`../crm-cdp-app/services/api/routers/analytics_rfm_windows.py:1-24`: scoped sessions 403): it closes only
+reading, which is exactly why the writer half carries the fix.
 
 ### Obligations per group, and what a guard can assert
 - **Carriers (15) and inheritors (14)** share one *reader* invariant: a query over an inheritor is safe only when whoever
