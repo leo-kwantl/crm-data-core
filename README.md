@@ -25,7 +25,7 @@ db/queries/                                   # raw-SQL mirrors (compute SQL liv
 db/seeds/demo.sql                             # demo dataset (never mixed with real rows)
 services/api/                                 # harness mirror: 4 ingest tests boot via ASGI
 scripts/bootstrap_db.py                       # DEV/CI ONLY — migrate + reseed demo (see banner)
-docs/conventions.md                           # DB + API naming, PII policy (+ data owner overrides)
+docs/conventions.md                           # data deltas only; canonical cross-repo text is ../crm-cdp-app/docs/conventions.md
 openspec/changes/data-pipeline-init/          # pipeline proposal + tasks
 ```
 

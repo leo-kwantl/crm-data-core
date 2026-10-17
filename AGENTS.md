@@ -1,6 +1,8 @@
 # crm-cdp-data — ingestion pipeline (what lands rows)
 
-Owns `pipelines/ingest/{orders,events,identity}.py` + `pipelines/contracts.md`. App serves, ML scores.
+**You are `crm-data`** (team **data**): owns `pipelines/**`, `db/migrations/**`, `db/seeds/**`
+and `pipelines/contracts.md`. Peers: `crm-app` (serves) and `crm-ml` (scores). Never edit
+`../crm-cdp-app` or `../crm-cdp-ml`.
 
 ```bash
 pip install -r services/api/requirements.txt
@@ -10,30 +12,7 @@ pytest services/api/tests/test_orders.py services/api/tests/test_customer_events
 - `member_id` must match `^M-[0-9]{6}$` — reject + quarantine, never coerce. `orders.store_id` NOT NULL (resolve store first).
 - Events/consents append-only; dedup key `(source, source_event_id)`; money in integer cents.
 - Owns future `01x_ingest_*` migrations. For any file present in **both** trees, app's checkout is the base (`db/`, `services/api/**`) — sync byte-for-byte, never fork; never delete a data-only harness file. `services/api/tests/**` is data's own harness and is **not** in a sync's scope; `pipelines/**` is data's (app vendors `pipelines/ingest/connectors.py` for serving). A mirrored module must be mirrored with the files it reads at import (`db/queries/*.sql`), or the tree imports and cannot boot. See `pipelines/contracts.md` §"Tree ownership & the mirror boundary".
-- Never edit `../crm-cdp-app`, `../crm-cdp-ml`.
 - `scripts/bootstrap_db.py` is DEV/CI ONLY — NEVER run against a live DB (TRUNCATEs 11 tables + reseeds demo; live = migrate-only).
-- Multi-pi (all optional/external): `register crm-data` visible (agent-comms, only if installed), room `data-contracts` (only if daemon runs; ingest-required/dedup/resolution/snapshot-math/migration = BREAKING @both, `contracts.md` first; ml-argv-only → `dm @crm-ml`; 2-party → `dm`); `dm_admit` crm-app/crm-ml once; review = directed `dm @target+branch`; `read_room` on start; `codegraph query <sym>` (external CLI, only if installed). New source/field → update `contracts.md` first, then announce as `[BREAKING|ADDITIVE|FYI] <scope> branch+migration`.
-- Owner rule 2026-10-14: delegated / handed-off / in-room-requested tasks are PRE-APPROVED — build without asking, announce each delivery with branch+migration per protocol, never wait for a per-item GO.
+- **Cross-team work** (rooms, DMs, full-id rule, what is worth sending, delivery line, pre-approval, recap) → `docs/conventions.md` § Cross-team work — agent-comms and `codegraph` are optional externals, skip if not installed. Data deltas: `register crm-data` visible; join `data-contracts`; `dm_admit` crm-app/crm-ml once; `read_room` on start. A new source/field updates `pipelines/contracts.md` **first**, then announces `[BREAKING|ADDITIVE|FYI] <scope> branch+migration`.
+- **`docs/conventions.md`** — this repo's deltas (PII normalization + the data-side searchable-column contract, cross-team data deltas). Canonical cross-repo text — naming, lists, master data, git history, PII policy, § Cross-team work — is owned by app at `../crm-cdp-app/docs/conventions.md`; read it, do not retype it.
 - See `pipelines/README.md`, `pipelines/contracts.md`, `openspec/changes/data-pipeline-init/`.
-
-## Git history & commit convention (shared across crm-cdp-app / -data / -ml)
-
-- Day-zero trees land as ONE import commit: `chore: initial import of
-  <repo> monorepo`. Never fabricate granular history after the fact.
-- From the import forward, one logical change per commit, Conventional
-  Commits: `feat|fix|docs|test|refactor|chore(scope): imperative subject`
-  (scope = area, e.g. `ingest`, `snapshots`, `upload`, `scheduler`).
-  Contract changes pair branch + migration per the protocol above.
-- No remote yet at import time: rewriting is free until the first push.
-  After push, history is immutable.
-
-## PII search rule (mirrored from app conventions.md — app owns the text)
-
-- Phone/email match by **exact normalized value only**; no LIKE/fuzzy on
-  PII. Override 2026-10-13 (owner): after an exact miss, phone/email
-  fall back to a bounded substring match (min 3 digits / 3 chars,
-  LIMIT 20, POST body, audited criteria-type-only). Exact-first
-  ordering preserved.
-- Data-side contract: the searchable column is
-  `customer_contacts.value_normalized` (phone digits-normalized, email
-  lowercased+trimmed); `value_display` never in a predicate.

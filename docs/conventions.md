@@ -1,48 +1,33 @@
-# DB + API Conventions & PII Policy (enforceable, short)
+# crm-cdp-data conventions
 
-## Naming
+Cross-repo practices are **owned by app**: read `../crm-cdp-app/docs/conventions.md`
+for naming, lists, master data, git history, PII policy and § Cross-team work
+(agent-comms). Only data's deltas live here — retyping the canonical text is how
+these mirrors drifted.
 
-- Tables: plural `snake_case` (`customers`, `customer_contacts`, `consents`,
-  `consent_events`, `stores`, `products`, `orders`, `order_items`, `customer_access_logs`).
-- Columns: `snake_case`. PK `id uuid DEFAULT gen_random_uuid()`.
-  FK `<singular>_id uuid NOT NULL REFERENCES <table>(id)`.
-  Timestamps `created_at / updated_at / deleted_at timestamptz` (`at`/`captured_at` on event rows).
-- JSON over the wire is `snake_case` 1:1 with column names — no mapping layer.
-  Pydantic v2 models mirror row shapes; `attributes JSONB` is verbatim round-trip.
-- Migrations: `db/migrations/NNN_name.sql`, dbmate format
-  (`-- migrate:up` / `-- migrate:down`), additive only (no destructive DDL).
-- Queries: `db/queries/<resource>.sql`, see `_template.sql` for the named-query convention.
+## PII normalization & data-side deltas
 
-## Master data (reference_values)
+- Normalization: phone → E.164 (`phonenumbers`, default region HK); email → lowercase+trim.
+- Searchable column is `customer_contacts.value_normalized` (phone digits-normalized,
+  email lowercased+trimmed); `value_display` never in a predicate.
+- Exact-first. Override 2026-10-13 (data owner): after an exact miss, phone/email fall
+  back to a bounded substring match (min 3 digits / 3 chars, LIMIT 20, POST body,
+  audited criteria-type-only), exact-first order preserved.
+- Override 2026-10-08 (data owner): staff sessions see FULL contact values — the mask
+  helpers are retained but unused.
+- Demographic PII (2026-10-14, `017_customers_demographics`): `date_of_birth` and
+  `address_line` follow the same body-only, exact-match rule as phone/email;
+  `gender` / `district` are quasi-identifiers, never combined with PII in one GET
+  predicate; age is derived (`age(date_of_birth)`), never stored.
+- Append-only grants (enforced in migrations): `consent_events`,
+  `customer_access_logs` — criteria **type** only, never raw PII values. Customers are
+  soft-deleted (`deleted_at`); history retained.
+- Identity search: `external_member_id` + `member_id` substring fallback (escaped
+  ILIKE, LIMIT 20).
 
-- New controlled vocabularies (channels, statuses, kinds, roles, ...) default to
-  rows in `reference_values(domain, code, label_en, label_zh, sort_rank, is_active)` —
-  do NOT add Pydantic `Literal` enums or per-domain `CHECK` constraints for them.
-- Graduate a domain to its own table only when it grows real fields/behaviour
-  beyond (code, labels, rank, active) — e.g. `membership_tiers` earned a table
-  via rank + benefits_text.
-- Validation is a DB lookup (`services/api/repos/reference.py::require_active`);
-  unknown codes fail with 422 whose detail names the domain
-  (`{"code": "unknown_<domain>", "domain": ..., "value": ...}`).
-- Ordering that carries meaning (campaign `draft -> active -> ended`) is encoded
-  in `sort_rank` and the transition logic reads it — never a second hardcoded copy.
-- Read API: `GET /reference/domains`, `GET /reference?domain=<d>`
-  (active codes only, ranked by `sort_rank, code`).
-- API base `/api/v1`. `POST /customers/search` (body) for PII lookup;
-  `GET` only for UUID paths, `member_id` fetch, product search.
+## Cross-team work — data deltas
 
-## PII policy (MUST)
-
-1. Phone/email match by **exact normalized value only** — E.164 (`phonenumbers`, default region HK)
-   for phone, lowercase+trim for email. No LIKE/fuzzy on PII. Name search may use `pg_trgm`.
-2. **Never** put phone/email in URL, query string, or browser history — body-only search.
-3. **Mask** contacts in multi-match lists (e.g. `+852 ****4567`, `j***@example.com`).
-   Data-owner override 2026-10-08: staff sessions see FULL values — mask
-   helpers retained but unused (list endpoints return the primary FULL value).
-4. **No request-body logging** on `/customers/search` (route-level log filter in `deps.py`).
-5. `Cache-Control: no-store` on all PII routes (search, profile, consents, orders).
-6. **Rate-limit** search per session `staff_code` (`x-session-token` identity) → `429` + log.
-7. Every search appends `customer_access_logs(staff_id, criteria_type, result_count, at)` —
-   criteria **type** only, never raw PII values. `consent_events` / `customer_access_logs`
-   are **append-only** (no UPDATE/DELETE grants; enforced in migrations).
-8. Soft-delete customers (`deleted_at`); hidden from search/reads, history retained.
+- Announce in `data-contracts`: `[BREAKING|ADDITIVE|FYI] <scope> branch+migration`.
+  ingest-required / dedup / resolution / snapshot-math / migration = BREAKING for both
+  peers, and `pipelines/contracts.md` is updated first.
+- ML CLI argv only → DM `crm-ml`. Two-party changes → DM.
