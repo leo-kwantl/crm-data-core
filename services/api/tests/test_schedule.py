@@ -38,6 +38,42 @@ async def _pool(database_url: str):
         await pool.close()
 
 
+@pytest.fixture(autouse=True)
+def _own_rows(database_url: str):
+    """Delete this file's own rows before each test, so history cannot decide.
+
+    These tests write `pipeline_runs` rows named `test_pipe_*`, probe
+    connectors named `ld3-*-probe`, and `segment_runs` at four fixed dates. On
+    a database with history (the demo cluster) a leftover row from an earlier
+    run is *claimed* by the gate in `UPSERT_RUN_SQL` (`skipped`, not
+    `succeeded`) or collides on a unique index, so a re-run failed for a reason
+    that had nothing to do with the code under test. Owning the rows is the fix:
+    a test must not depend on the database being fresh.
+    run; they scope the resolver test to `purchase/k=777`, a k no demo run uses.
+    """
+    import asyncio
+
+    async def _clean() -> None:
+        import asyncpg
+
+        conn = await asyncpg.connect(database_url)
+        try:
+            await conn.execute(
+                "DELETE FROM pipeline_runs WHERE pipeline LIKE 'test_pipe%'")
+            await conn.execute("DELETE FROM connectors WHERE name LIKE 'ld3-%'")
+            await conn.execute(
+                "DELETE FROM segment_runs"
+                " WHERE COALESCE(brand_id, group_id) IS NULL"
+                " AND ((as_of IN ('2026-10-01', '2026-10-02')"
+                "       AND mode IN ('purchase', 'overall', 'behavior'))"
+                "      OR (mode = 'purchase' AND k = 777))")
+        finally:
+            await conn.close()
+
+    asyncio.run(_clean())
+    yield
+
+
 def _ctx(**kw):
     base = {"pipeline": "test_pipe", "as_of": date(2026, 10, 1),
             "brand_id": None, "group_id": None, "created_by": "test",
@@ -452,10 +488,17 @@ async def test_runner_data_engines(database_url: str):
     ctx = _ctx(pipeline="test_pipe_data", as_of=date(2026, 10, 4))
     async with _pool(database_url) as pool:
         async with pool.acquire() as conn:
+            before = await conn.fetchval(
+                "SELECT COUNT(*) FROM kpi_daily_snapshots"
+                " WHERE snapshot_date = '2026-10-04'")
             out = await sched.run_pipeline(conn, "test_pipe_data", jobs, ctx)
             assert out["outcomes"]["apply"]["status"] == "succeeded"
             assert out["outcomes"]["kpi"]["status"] == "succeeded"
-            assert out["outcomes"]["kpi"]["run_id"] is not None
+            # `ON CONFLICT DO NOTHING` (pipelines/snapshot.py): a day already
+            # materialised is not rewritten, so the engine reports no id --
+            # and that is the only case where it may report none.
+            assert ((out["outcomes"]["kpi"]["run_id"] is not None)
+                    == (before == 0))
             n = await conn.fetchval(
                 "SELECT COUNT(*) FROM kpi_daily_snapshots"
                 " WHERE snapshot_date = '2026-10-04'")
@@ -560,22 +603,23 @@ async def test_resolve_explain_run_id(database_url: str):
         async with pool.acquire() as conn:
             old = await conn.fetchval(
                 "INSERT INTO segment_runs (as_of, mode, k, created_at)"
-                " VALUES ('2025-05-01', 'purchase', 5,"
+                " VALUES ('2025-05-01', 'purchase', 777,"
                 " '2025-05-02 00:00+00') RETURNING id")
             new = await conn.fetchval(
                 "INSERT INTO segment_runs (as_of, mode, k, created_at)"
-                " VALUES ('2025-06-01', 'purchase', 5,"
+                " VALUES ('2025-06-01', 'purchase', 777,"
                 " '2025-06-02 00:00+00') RETURNING id")
             ctx = _ctx()
             assert await sched._resolve_explain_run_id(
                 conn, {"segment_run_id": str(old)}, ctx) == str(old)
-            # scoped to purchase/k=5: newest of the two seeded rows.
+            # scoped to purchase/k=777 (this test's own namespace, cleared by
+            # _own_rows): newest of the two seeded rows.
             assert await sched._resolve_explain_run_id(
                 conn, {"segment_run_id": "latest",
                        "segment_mode": "purchase",
-                       "segment_k": 5}, ctx) == str(new)
+                       "segment_k": 777}, ctx) == str(new)
             assert await sched._resolve_explain_run_id(
-                conn, {"segment_mode": "purchase", "segment_k": 5},
+                conn, {"segment_mode": "purchase", "segment_k": 777},
                 ctx) == str(new)
             # bare latest (no k) may land on another test's newer
             # purchase row in the shared DB — assert UUID shape only.
@@ -590,19 +634,19 @@ async def test_resolve_explain_run_id(database_url: str):
                 await sched._resolve_explain_run_id(
                     conn, {"segment_run_id": "latest",
                            "segment_mode": "purchase",
-                           "segment_k": 5}, scoped)
+                           "segment_k": 777}, scoped)
             # matrix_batch shares the resolver; engine name only labels
             # the failure message.
             assert await sched._resolve_segment_run_id(
                 conn, {"segment_run_id": "latest",
                        "segment_mode": "purchase",
-                       "segment_k": 5}, ctx, "matrix_batch") == str(new)
+                       "segment_k": 777}, ctx, "matrix_batch") == str(new)
             with pytest.raises(sched.ManifestError,
                                match="matrix_batch: no segment_runs"):
                 await sched._resolve_segment_run_id(
                     conn, {"segment_run_id": "latest",
                            "segment_mode": "purchase",
-                           "segment_k": 5}, scoped, "matrix_batch")
+                           "segment_k": 777}, scoped, "matrix_batch")
             assert old != new
 
 
