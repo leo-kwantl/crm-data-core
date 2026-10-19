@@ -59,13 +59,31 @@ def clv_movement(prev_scores: dict, cur_scores: dict) -> dict:
             "moved": moved}
 
 
+# --- business clock (one definition, used by every bucket boundary) ---
+
+# The business day is +08 everywhere: cohorts, revenue, campaign outcomes.
+# Each statement pins the boundaries itself with the interval form — the
+# session zone on this cluster is GMT, so a bare ::date/date_trunc is a UTC
+# bucket and disagrees with every other +08 surface by 8 hours.
+#
+# Named zones are unavailable here: pgembed ships no tzdata, so
+# `AT TIME ZONE 'Asia/Hong_Kong'` raises `time zone "Asia/Hong_Kong"
+# not recognized`, while the interval form works. The two are exactly
+# equivalent because HK has never observed DST, so the offset never
+# floats free of the name.
+BUSINESS_TZ_NAME = "Asia/Hong_Kong"
+BUSINESS_TZ_OFFSET_HOURS = 8
+BUSINESS_TZ_SQL = (
+    f"AT TIME ZONE interval '{BUSINESS_TZ_OFFSET_HOURS} hours'"
+)
+
 # --- KPI daily-grain SQL (one row per day x scope, idempotent re-run) ---
 
-KPI_DAILY_UPSERT_SQL = """
+KPI_DAILY_UPSERT_SQL = f"""
 WITH day_bounds AS (
-  SELECT ($1::date)::timestamptz AS d_from,
-         (($1::date + 1))::timestamptz AS d_to,
-         (($1::date - 30))::timestamptz AS act_from
+  SELECT (($1::date)::timestamp {BUSINESS_TZ_SQL}) AS d_from,
+         ((($1::date + 1))::timestamp {BUSINESS_TZ_SQL}) AS d_to,
+         ((($1::date - 30))::timestamp {BUSINESS_TZ_SQL}) AS act_from
 ),
 scoped_orders AS (
   SELECT o.id, o.total_cents, o.ordered_at, o.customer_id
@@ -135,16 +153,6 @@ ORDER BY snapshot_date
 # (+08, no DST) — see contracts.md "Day boundary is business time".
 # The zone NAME is carried here even though the SQL must use the offset
 # form: this pgembed install ships no tzdata, so
-# `AT TIME ZONE 'Asia/Hong_Kong'` raises `time zone "Asia/Hong_Kong"
-# not recognized`, while the interval form works. The two are exactly
-# equivalent because HK has never observed DST, so the offset never
-# floats free of the name.
-BUSINESS_TZ_NAME = "Asia/Hong_Kong"
-BUSINESS_TZ_OFFSET_HOURS = 8
-BUSINESS_TZ_SQL = (
-    f"AT TIME ZONE interval '{BUSINESS_TZ_OFFSET_HOURS} hours'"
-)
-
 COHORT_GRANULARITIES = ("week", "month", "year")
 
 
