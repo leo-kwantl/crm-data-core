@@ -759,12 +759,34 @@ ml executes the movement math verbatim via `validate_movement_row`
 / `validate_segment_size` + the UPSERT/SELECT SQL. **Scope:** both aggregates are **unscoped outputs** — no scope
 column, no parent FK, global by construction (see **Unscoped outputs** below).
 
+## 037: backtest outcomes (M2, [ADDITIVE] analytics, joint with ml)
+
+`037_backtest_outcomes.sql` (+ `038` grant re-statement, `039` read indexes).
+One row per customer per model per holdout window, metrics `auc`/`spearman`/
+`calibration_ratio` beside the realized outcome they were scored against.
+Column names are the shipped ones — `freq`/`holdout_days`/`predicted`; ml's
+prototype `frequency_model`/`horizon_days`/`predicted_value` lost because the
+migration landed first and `ml_engine/backtest.py:117-123` was fixed to match
+(`858bd98`, and a test now pins the list). **Append-only, in two parts:** the
+unique key is the *window identity* (`COALESCE(brand_id, group_id)` +
+`model, anchor_as_of, holdout_days, customer_id`), which stops a duplicate row
+— immutability is the `REVOKE UPDATE, DELETE … FROM PUBLIC` (027/029 shape),
+and a cluster that recorded 037 before that line existed gets it from `038`
+(`035` reasoning: dbmate skips a recorded version, `REVOKE` is idempotent;
+regression guard `services/api/tests/test_migration_drift.py`). **ml writes
+this table and never reads it** (`grep -rn backtest_outcomes ml_engine/
+ml_jobs/` matches only the INSERT), so `039`'s read index has no consumer
+yet: the per-window read it is measured against (0.575 → 0.268 ms live,
+2026-10-19) belongs to app or a later report — do not wait on ml for a
+read-side number, and the half-table window aggregate keeps its seq scan by
+measurement (0.50 vs 0.45 ms). **Scope:** carrier (below).
+
 ## The stamped set: which relations carry a scope stamp (app+data+ml, 2026-10-17)
 
 A **stamped relation** carries a scope stamp (`brand_id`/`group_id`) on the row itself or inherits exactly one through
 its parent artifact: the set `row_visible` decides on (`../crm-cdp-app/services/api/analytics/scope.py:1-51`, reference
 `:72-76`), and the set the artifact-vs-population rule above applies to. **Derive the group from the schema, never from
-the name.** Over `db/migrations/*.sql` `migrate:up` bodies only: **22 = 15 carriers + 7 negatives**; never union the
+the name.** Over `db/migrations/*.sql` `migrate:up` bodies only: **23 = 16 carriers + 7 negatives**; never union the
 `migrate:down` direction (it drops `012_analytics_scope.sql:26-32`, `031_rfm_time_aware.sql`).
 
 **Visibility (`row_visible`).** Visible ⟺ NULL-safe stamp-equality between the row's own stamp and the reader's scope
@@ -774,10 +796,11 @@ global batches), and a group manager sees group-stamped runs but not brand rows.
 to "let admin see brand runs" — a brand session would then match global/legacy rows; for "own rows or global" write the
 disjunction.
 
-### Carriers — 15
+### Carriers — 16
 The row's **own** stamp decides visibility: `rfm_snapshots`, `rec_batches`, `clv_snapshots`, `churn_snapshots`,
 `kpi_daily_snapshots`, `cohort_snapshots`, `segment_runs`, `assoc_batches`, `explain_batches`, `forecast_batches`,
-`model_training_runs`, `pipeline_runs`, `connector_sync_runs`, `upload_jobs`, `btyd_params`.
+`model_training_runs`, `pipeline_runs`, `connector_sync_runs`, `upload_jobs`, `btyd_params`, `backtest_outcomes`
+(037; `ml_engine/backtest.py` writes it, nothing reads it yet — a future reader owes it the stamp predicate).
 
 ### Inheritors — 14
 **No scope column of their own**: visibility follows the parent's stamp through an FK, so a scope predicate on an
@@ -833,7 +856,7 @@ half stays (`../crm-cdp-app/services/api/routers/analytics_rfm_windows.py:1-24`:
 reading, which is exactly why the writer half carries the fix.
 
 ### Obligations per group, and what a guard can assert
-- **Carriers (15) and inheritors (14)** share one *reader* invariant: a query over an inheritor is safe only when whoever
+- **Carriers (16) and inheritors (14)** share one *reader* invariant: a query over an inheritor is safe only when whoever
   resolved its parent did so **under the scope predicate**. That is a property of code, not data, so a DB test over
   these rows asserts **nothing** — there is no second column to compare.
 - **The enforcement is not a sweep over the SQL text**: measured (app, 2026-10-17), such a sweep flags 23 of 23 query
