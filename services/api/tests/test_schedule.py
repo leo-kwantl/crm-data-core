@@ -274,7 +274,14 @@ async def test_manifest_seeds_parse_and_order(database_url: str):
     manifests.update(sched.parse_manifest(rows[1]["yaml"]))
     nightly = sched.topo_sort(manifests["nightly"])
     assert nightly[0] == "apply"  # everything else depends on apply
-    assert set(nightly) == {"apply", "rfm", "churn", "clv"}
+    assert set(nightly) == {"apply", "rfm", "churn", "clv",
+                            "segments_purchase", "segments_overall",
+                            "segments_behavior"}
+    # 041: the two derived segment modes wait for the purchase run.
+    assert (nightly.index("segments_purchase")
+            < nightly.index("segments_overall"))
+    assert (nightly.index("segments_purchase")
+            < nightly.index("segments_behavior"))
 
 
 # ---- runner with fake engines ----
