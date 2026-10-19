@@ -6,8 +6,10 @@
 -- NO manifest, so no brand had a behavior run newer than the day's one
 -- manual fire -- a page fed by a job nobody runs -- and
 -- `/analytics/segments/explain` could 404 for up to seven days after an
--- explain/segment mismatch. Nightly makes the repair daily, at ~1.7 s per
--- invocation x 3 modes x 6 brands (~30 s per tick, ~98 % interpreter start).
+-- explain/segment mismatch. Nightly makes the repair daily. Measured cost of
+-- the new jobs, one nightly tick at `2026-10-20` on the live cluster: 4.9 s
+-- purchase, 4.9 s overall, 1.5 s behavior (medians) x 6 brands + the global
+-- batch = ~79 s added to the tick, most of it interpreter start.
 --
 -- `weekly` keeps its copy: its `assoc`, `explain` and `matrix` jobs declare
 -- `depends_on: segments_overall`, so dropping the segments jobs there would
