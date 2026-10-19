@@ -4,10 +4,11 @@ The 2026-10-18 review (§4.1) found the demo cluster holding 36 migration
 versions, head `034`, while `orders.source` did not exist: migration
 `014_upload_staging.sql` gained that column (and `orders_source_ext_ux`) on
 2026-10-15, after the cluster's data directory had already recorded version
-014. dbmate and `scripts/bootstrap_db.py` both skip a version present in
-`schema_migrations`, so an edit to an already-applied migration lands on
-nobody -- and a from-scratch test database cannot see it, because it replays
-every file's current text by definition.
+014. Every applier here skips a version already present in
+`schema_migrations` (`scripts/bootstrap_db.py` reads the ledger and inserts the
+file stem), so an edit to an already-applied migration lands on nobody -- and a
+from-scratch test database cannot see it, because it replays every file's
+current text by definition.
 
 So this test does what the review's blast-radius probe did, as a test:
 
@@ -192,9 +193,10 @@ async def test_no_unrecorded_migration_is_already_live(
     """A version missing from `schema_migrations` must not already be live.
 
     Found by hand on 2026-10-19: `043_quarantine_codes.sql`'s columns existed
-    on the demo cluster while the ledger's head was `042`, so `dbmate up` and
-    `scripts/bootstrap_db.py` would both have re-run the file -- the drift the
-    review found at `orders.source`, seen from the other side. The declared-
+    on the demo cluster while the ledger's head was `042`, so the next
+    `scripts/bootstrap_db.py` run would have re-executed the whole file -- the
+    drift the review found at `orders.source`, seen from the other side. The
+    declared-
     object test above cannot see it: the objects are present, and on a
     from-scratch database every file's current text runs by definition.
 
@@ -244,9 +246,8 @@ async def test_no_unrecorded_migration_is_already_live(
             continue
         gaps.append(f"{version}: {sorted(unique)}")
     assert not gaps, (
-        "migration(s) already live but absent from schema_migrations, so a"
-        " plain `dbmate up` re-runs them and 'what is applied' is"
-        " unanswerable:\n" + "\n".join(gaps))
+        "migration(s) already live but absent from schema_migrations, so the"
+        " next applier re-runs them and 'what is applied' is unanswerable:\n" + "\n".join(gaps))
 
 
 async def test_append_only_revokes_ran_on_this_database(
