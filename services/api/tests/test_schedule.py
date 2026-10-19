@@ -923,3 +923,139 @@ async def test_two_concurrent_cursors_execute_the_job_once(
                       for out in (out_a, out_b))
     assert statuses == ["skipped", "succeeded"], statuses
     assert len(ran) == 1, f"job executed {len(ran)} times"
+
+
+# ---- scope fan-out (the tick's per-brand batches) ----
+
+async def _seed_brands(conn, n: int = 2):
+    """Committed brand rows, because the tick reads them on its own
+    connection (a test transaction would be invisible to it)."""
+    gid = await conn.fetchval(
+        "INSERT INTO groups (code, name)"
+        " VALUES ('TICK-SCOPE', 'Tick Scope Test') RETURNING id")
+    ids = []
+    for i in range(n):
+        ids.append(await conn.fetchval(
+            "INSERT INTO brands (group_id, code, name)"
+            " VALUES ($1, $2, $3) RETURNING id",
+            gid, f"TICK-SCOPE-{i}", f"Tick Scope Brand {i}"))
+    return gid, sorted(ids)
+
+
+async def _drop_seeded_brands(conn, gid, ids) -> None:
+    await conn.execute("DELETE FROM brands WHERE id = ANY($1::uuid[])", ids)
+    await conn.execute("DELETE FROM groups WHERE id = $1", gid)
+
+
+@pytest.mark.asyncio
+async def test_tick_scopes_cover_every_brand_then_hq(database_url: str):
+    """Scope is a run-level dimension, so "visible to a brand session" is
+    a fan-out: one batch per brand in `brands`, then the (NULL, NULL) hq
+    batch. A stamped row is invisible to hq and an hq row to a brand
+    (stamp equality, fail closed), so dropping either half leaves a session
+    class with no rows to read -- the 404 `no_snapshot` this fan-out is for.
+    """
+    async with _pool(database_url) as pool:
+        async with pool.acquire() as conn:
+            gid, ids = await _seed_brands(conn, 2)
+            try:
+                scopes = await sched.tick_scopes(conn)
+                all_brands = sorted(
+                    r["id"] for r in await conn.fetch(sched.TICK_BRANDS_SQL))
+            finally:
+                await _drop_seeded_brands(conn, gid, ids)
+    assert set(ids).issubset(set(all_brands))
+    assert scopes[-1] == (None, None), "the hq batch must be last"
+    assert scopes[:-1] == [(b, None) for b in all_brands]
+
+
+async def _watch_fires(database_url, now, **kw) -> list[tuple]:
+    """Run one `--once` pass with `run` recorded instead of executed."""
+    sys.path.insert(0, str(REPO / "scripts"))
+    import run_pipeline                                     # noqa: E402
+
+    calls: list[tuple] = []
+
+    async def _fake(pipeline, as_of, ml_repo, brand_id, group_id,
+                    created_by, force, manifest_file, db_url, sync_run_id,
+                    tick=None):
+        calls.append((pipeline, str(brand_id), str(group_id)))
+        return {"outcomes": {}}
+
+    original = run_pipeline.run
+    run_pipeline.run = _fake
+    try:
+        await run_pipeline.watch(60, REPO, kw.get("brand_id"),
+                                 kw.get("group_id"), "test", False,
+                                 database_url, True, now, kw.get("only"))
+    finally:
+        run_pipeline.run = original
+    return calls
+
+
+@pytest.mark.asyncio
+async def test_watch_fires_one_batch_per_brand_plus_hq(
+        database_url: str):
+    """The unattended tick is the writer of the brand rows: one fire per
+    brand, one for hq, all four inside the same window, or the analytics
+    pages stay empty for every brand-scoped login (the only logins that
+    exist on the demo deployment).
+    """
+    import yaml
+
+    async with _pool(database_url) as pool:
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(sched.FETCH_MANIFESTS_SQL)
+            if not rows:
+                pytest.skip("no manifest rows in this database")
+            pipeline, yaml_text = rows[0]["pipeline"], rows[0]["yaml"]
+            spec = ((yaml.safe_load(yaml_text).get("pipelines") or {})
+                    .get(pipeline) or {}).get("schedule")
+            gid, ids = await _seed_brands(conn, 2)
+            all_brands = sorted(
+                r["id"] for r in await conn.fetch(sched.TICK_BRANDS_SQL))
+    try:
+        start = datetime(2026, 10, 12, 0, 0, tzinfo=HK)
+        week = [start + timedelta(minutes=m) for m in range(7 * 24 * 60)]
+        due = [w for w in week if sched.cron_matches(str(spec), w)][0]
+        calls = await _watch_fires(database_url, due, only=[pipeline])
+    finally:
+        async with _pool(database_url) as pool:
+            async with pool.acquire() as conn:
+                await _drop_seeded_brands(conn, gid, ids)
+    assert set(ids).issubset(set(all_brands)), "seeded brands must be seen"
+    assert len(calls) == len(set(calls)), f"a scope fired twice: {calls}"
+    assert set(calls) == ({(pipeline, str(b), "None") for b in all_brands}
+                          | {(pipeline, "None", "None")}), calls
+
+
+@pytest.mark.asyncio
+async def test_watch_pinned_scope_does_not_fan_out(
+        database_url: str):
+    """A hand-run that pins a scope gets exactly that scope: the fan-out
+    belongs to the unattended tick, and doubling a pinned run would write
+    the same brand twice and cost every other brand a full pipeline.
+    """
+    import yaml
+
+    async with _pool(database_url) as pool:
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(sched.FETCH_MANIFESTS_SQL)
+            if not rows:
+                pytest.skip("no manifest rows in this database")
+            pipeline, yaml_text = rows[0]["pipeline"], rows[0]["yaml"]
+            spec = ((yaml.safe_load(yaml_text).get("pipelines") or {})
+                    .get(pipeline) or {}).get("schedule")
+            gid, ids = await _seed_brands(conn, 2)
+    pinned = ids[0]
+    try:
+        start = datetime(2026, 10, 12, 0, 0, tzinfo=HK)
+        week = [start + timedelta(minutes=m) for m in range(7 * 24 * 60)]
+        due = [w for w in week if sched.cron_matches(str(spec), w)][0]
+        calls = await _watch_fires(database_url, due, only=[pipeline],
+                                   brand_id=pinned)
+    finally:
+        async with _pool(database_url) as pool:
+            async with pool.acquire() as conn:
+                await _drop_seeded_brands(conn, gid, ids)
+    assert calls == [(pipeline, str(pinned), "None")], calls

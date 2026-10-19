@@ -79,6 +79,26 @@ FETCH_MANIFEST_SQL = "SELECT yaml FROM pipeline_manifests WHERE pipeline = $1"
 FETCH_MANIFESTS_SQL = ("SELECT pipeline, yaml FROM pipeline_manifests"
                        " ORDER BY pipeline")
 
+# The tick's scope fan-out. Scope is a run-level dimension: `--brand-id`
+# reaches every job of one invocation, so per-brand rows cost one invocation
+# per brand -- and a stamped row is invisible to hq and vice versa
+# (contracts.md "Scope is a run-level dimension"), which is why the hq
+# (NULL, NULL) batch has to be fired too instead of being replaced by the
+# brand ones. `brands` is the live registry: a brand a session can be scoped
+# to must be able to see its own snapshots.
+TICK_BRANDS_SQL = "SELECT id FROM brands ORDER BY id"
+
+
+async def tick_scopes(conn) -> list[tuple[Any, Any]]:
+    """The scopes one unattended tick covers: every brand, then hq.
+
+    A hand-run that pins `--brand-id`/`--group-id` does not come through
+    here -- one pinned scope is what the caller asked for. An empty
+    `brands` table yields just hq, so a fresh database still ticks.
+    """
+    brands = [r["id"] for r in await conn.fetch(TICK_BRANDS_SQL)]
+    return [(b, None) for b in brands] + [(None, None)]
+
 UPSERT_RUN_SQL = f"""
 INSERT INTO pipeline_runs
   (pipeline, job, as_of, status, started_at, brand_id, group_id,

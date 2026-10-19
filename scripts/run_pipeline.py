@@ -153,6 +153,25 @@ def _log(event: dict) -> None:
     print(json.dumps(event, default=str), flush=True)
 
 
+def _scope_label(brand, group) -> dict:
+    return {"brand_id": str(brand) if brand is not None else None,
+            "group_id": str(group) if group is not None else None}
+
+
+async def _tick_scopes(db_url: str | None) -> list[tuple[Any, Any]]:
+    """Every brand, then hq -- the scopes one unattended fire covers.
+
+    A brand-scoped session can only see brand-stamped rows and an hq
+    session only NULL/NULL ones (stamp equality, fail closed), so one fire
+    per scope is what makes the same pipeline visible to both.
+    """
+    conn, _live = await _connect_resolved(db_url)
+    try:
+        return await sched.tick_scopes(conn)
+    finally:
+        await conn.close()
+
+
 async def watch(interval: int, ml_repo, brand_id, group_id,
                 created_by: str | None, force: bool, db_url: str | None,
                 once: bool, now: datetime | None,
@@ -225,24 +244,34 @@ async def watch(interval: int, ml_repo, brand_id, group_id,
             fired.add(key)
             due_now.append(pipeline)
             tick_id = uuid.uuid4().hex[:12]
-            try:
-                out = await run(pipeline, as_of, ml_repo, brand_id,
-                                group_id, created_by, force, None, db_url,
-                                None, tick_id)
-            except Exception as exc:              # unattended: keep going
-                failures += 1
+            # Scope is a run-level dimension, so "visible to a brand
+            # session" is one fire per brand plus the hq batch -- unless
+            # the caller pinned a scope, which is a deliberate hand-run of
+            # exactly that scope.
+            pinned = brand_id is not None or group_id is not None
+            scopes = ([(brand_id, group_id)] if pinned
+                      else await _tick_scopes(db_url))
+            for scope_brand, scope_group in scopes:
+                try:
+                    out = await run(pipeline, as_of, ml_repo, scope_brand,
+                                    scope_group, created_by, force, None,
+                                    db_url, None, tick_id)
+                except Exception as exc:          # unattended: keep going
+                    failures += 1
+                    _log({"tick": when.isoformat(), "pipeline": pipeline,
+                          "as_of": as_of.isoformat(), "tick_id": tick_id,
+                          "scope": _scope_label(scope_brand, scope_group),
+                          "event": "fire failed",
+                          "error": f"{type(exc).__name__}: {exc}"})
+                    continue
+                bad = {n: o["status"] for n, o in out["outcomes"].items()
+                       if o["status"] not in ("succeeded", "skipped")}
+                failures += len(bad)
                 _log({"tick": when.isoformat(), "pipeline": pipeline,
                       "as_of": as_of.isoformat(), "tick_id": tick_id,
-                      "event": "fire failed",
-                      "error": f"{type(exc).__name__}: {exc}"})
-                continue
-            bad = {n: o["status"] for n, o in out["outcomes"].items()
-                   if o["status"] not in ("succeeded", "skipped")}
-            failures += len(bad)
-            _log({"tick": when.isoformat(), "pipeline": pipeline,
-                  "as_of": as_of.isoformat(), "tick_id": tick_id,
-                  "event": "fired", "jobs": len(out["outcomes"]),
-                  "failed": bad or None})
+                      "scope": _scope_label(scope_brand, scope_group),
+                      "event": "fired", "jobs": len(out["outcomes"]),
+                      "failed": bad or None})
         if once:
             _log({"tick": when.isoformat(), "event": "once: done",
                   "fired": sorted(f"{p}@{d}" for p, d in fired),
