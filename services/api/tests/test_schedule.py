@@ -436,8 +436,8 @@ async def test_runner_labels_a_failed_job_too(database_url: str, monkeypatch,
                                               tmp_path: Path):
     """A failed row still says which code ran -- that is when it matters.
 
-    The label is resolved before the engine is invoked (`_upstream_payload` `pipelines/schedule.py:806`)
-    and both finish paths persist it (`FINISH_RUN_SQL` `:891`, `:898`), so a non-zero exit cannot leave
+    The label is resolved before the engine is invoked (`_upstream_payload` `pipelines/schedule.py:819`)
+    and both finish paths persist it (`FINISH_RUN_SQL` `pipelines/schedule.py:118`, `:903`, `:910`), so a non-zero exit cannot leave
     an error whose revision is unknown.
     """
     monkeypatch.setitem(sched.ENGINE_BUILDERS, "fake_fail", _fake_fail)
@@ -542,7 +542,7 @@ def test_build_forecast_assoc_explain_argv():
     assert f[1:4] == ["-m", "ml_jobs.run_forecast_snapshot",
                       "postgresql://fake/db"]
     assert "--horizon-days" in f and "28" in f
-    assert "--lookback-weeks" in f and "52" in f
+    assert "--lookback-weeks" in f and "104" in f
     assert "--as-of" in f
     a = sched.ENGINE_BUILDERS["assoc_batch"]({}, ctx)
     assert a[1:3] == ["-m", "ml_jobs.run_assoc_batch"]
