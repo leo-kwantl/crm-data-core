@@ -540,20 +540,20 @@ def _build_forecast(params: dict, ctx: JobCtx) -> list[str]:
     # CONFIRMED verbatim (ml): run_forecast_snapshot DB_URL
     # --horizon-days --lookback-weeks --min-history-weeks [--as-of]
     # + scope/created-by. These defaults are data's pinned production values
-    # (28d horizon / 104wks lookback / 8wks history). The window is not free:
+    # (28d horizon / 106wks lookback / 8wks history). The window is not free:
     # ml fits the seasonal candidate only when the window holds
-    # `SEASON_MIN_CYCLES` (2) observations per season position, so a lookback
-    # below `2 * season_period` silently drops every series to the level
-    # fallback while the batch reports `seasonality` unmeasured. 104 = 2 x 52
-    # is the smallest window that identifies the annual cycle.
-    # 044_manifest_forecast_lookback.sql pins the same pair for the manifests;
-    # services/api/tests/test_forecast_manifest.py ties the two together.
+    # `SEASON_MIN_CYCLES` (2) observations per season position, and the window
+    # always loses its own last week before the fit (`LOST_WINDOW_WEEKS`), so
+    # the bar is `lookback_weeks >= 2 * season_period + 1`; 104 fits 103 weeks
+    # = 1.98 cycles and refuses the candidate. 046_manifest_forecast_lookback_106.sql
+    # pins the same pair for the manifests; test_forecast_manifest.py ties them
+    # to ml's constants, so neither side drifts silently.
     argv = _ml_module("ml_jobs.run_forecast_snapshot")(params, ctx)
     argv += ["--horizon-days",
              str(_p(params, "horizon_days", "horizon-days", default=28)),
              "--lookback-weeks",
              str(_p(params, "lookback_weeks", "lookback-weeks",
-                     default=104)),
+                     default=106)),
              "--min-history-weeks",
              str(_p(params, "min_history_weeks", "min-history-weeks",
                      default=8)),

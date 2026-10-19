@@ -542,7 +542,7 @@ def test_build_forecast_assoc_explain_argv():
     assert f[1:4] == ["-m", "ml_jobs.run_forecast_snapshot",
                       "postgresql://fake/db"]
     assert "--horizon-days" in f and "28" in f
-    assert "--lookback-weeks" in f and "104" in f
+    assert "--lookback-weeks" in f and "106" in f
     assert "--as-of" in f
     a = sched.ENGINE_BUILDERS["assoc_batch"]({}, ctx)
     assert a[1:3] == ["-m", "ml_jobs.run_assoc_batch"]

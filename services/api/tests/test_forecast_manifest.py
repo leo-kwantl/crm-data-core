@@ -2,12 +2,17 @@
 
 `ml_engine/forecast.py` fits its seasonal candidate only when the window holds
 `SEASON_MIN_CYCLES` observations per season position -- in practice
-`lookback_weeks >= SEASON_MIN_CYCLES * season_period`. The manifests pinned
-52 weeks against an annual `season_period` of 52, so that inequality was false
-for every production series: the seasonal branch was unreachable, every series
-came from the level fallback, and each batch reported `seasonality`
-unmeasured while looking healthy (right up until ml `ee271ca` started saying
-so on stderr). The fix was 104 weeks; the guard is these assertions.
+`lookback_weeks - LOST_WINDOW_WEEKS >= SEASON_MIN_CYCLES * season_period`,
+because the window's own last week (the one `as_of` falls in) is dropped
+before the fit. The manifests pinned 52 weeks against an annual
+`season_period` of 52, so that bar was missed for every production series: the
+seasonal branch was unreachable, every series came from the level fallback,
+and each batch reported `seasonality` unmeasured while looking healthy (right
+up until ml `ee271ca` started saying so on stderr). The first fix was 104,
+which still squeezed in at 103 fitted weeks = 1.98 cycles and was refused; the
+window is 106. The guard is these assertions -- and it is written against the
+bar, not the number, so 104 alone would go red on the lost week rather than
+pass on the arithmetic.
 
 Why a test instead of a comment: the two numbers live in two repos and were
 kept in agreement by memory. This reads the pinned manifest row AND ml's
@@ -95,6 +100,7 @@ def test_stored_manifest_window_identifies_the_annual_cycle(
         database_url: str) -> None:
     """Every stored manifest's pinned window clears the identifiability bar."""
     cycles = _ml_int_constant("SEASON_MIN_CYCLES")
+    lost = _ml_int_constant("LOST_WINDOW_WEEKS")
     jobs = _forecast_jobs(database_url)
     assert jobs, ("no stored manifest has a forecast job -- this test would "
                   "pass vacuously")
@@ -104,27 +110,29 @@ def test_stored_manifest_window_identifies_the_annual_cycle(
         assert lookback is not None, (
             f"{pipeline}: forecast pins no lookback_weeks, so the code "
             f"default decides -- see the default test below")
-        assert lookback >= cycles * period, (
+        assert lookback >= cycles * period + lost, (
             f"{pipeline}: lookback_weeks {lookback} < {cycles} x "
-            f"season_period {period} -> every series falls back to level and "
+            f"season_period {period} + {lost} (the half-observed last week "
+            f"the fit drops) -> every series falls back to level and "
             f"`seasonality` is unmeasured, silently")
 
 
 def test_code_default_window_identifies_the_annual_cycle() -> None:
     """A manifest that pins nothing still gets an identifiable window."""
     cycles = _ml_int_constant("SEASON_MIN_CYCLES")
+    lost = _ml_int_constant("LOST_WINDOW_WEEKS")
     argv = sched.ENGINE_BUILDERS["forecast_snapshot"]({}, _ctx())
     lookback = _argv_value(argv, "--lookback-weeks")
     period = _argv_value(argv, "--season-period")
-    assert lookback >= cycles * period, (
+    assert lookback >= cycles * period + lost, (
         f"code default lookback_weeks {lookback} < {cycles} x "
-        f"season_period {period}")
+        f"season_period {period} + {lost} fitted week(s)")
     assert period == 52, "the annual season is the default ml fits"
 
 
 def test_manifest_season_period_reaches_the_cli() -> None:
     """Both numbers travel, so the pinned pair is the pair that runs."""
     argv = sched.ENGINE_BUILDERS["forecast_snapshot"](
-        {"lookback_weeks": 104, "season_period": 52}, _ctx())
-    assert _argv_value(argv, "--lookback-weeks") == 104
+        {"lookback_weeks": 106, "season_period": 52}, _ctx())
+    assert _argv_value(argv, "--lookback-weeks") == 106
     assert _argv_value(argv, "--season-period") == 52
