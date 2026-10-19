@@ -19,6 +19,14 @@ Deletion is one statement per *parent*: every child row hangs off its batch /
 run / snapshot with `ON DELETE CASCADE` (verified: deleting one
 `churn_snapshots` row removed its 505 `churn_customer_scores`), so `CASCADE` is
 a list of things never targeted directly rather than a list of things to clean.
+One child can hang off two parents: `explain_batches` dies when its
+`segment_runs` run ages *or* when its own `created_at` ages, and those are not
+the same clock, so an explain batch's life is the shorter of the two.
+
+`rfm_snapshots` has no index on `scored_at` and does not need one: 75 rows and
+about +14 a night, and the planner already reports `Index Cond: (scored_at <
+...)` off the existing `(mode, scored_at)` index. Do not "fix" that by buying
+an index for a 75-row table.
 """
 from __future__ import annotations
 

@@ -274,9 +274,11 @@ async def watch(interval: int, ml_repo, brand_id, group_id,
                       "event": "fired", "jobs": len(out["outcomes"]),
                       "failed": bad or None})
         # Housekeeping last, never before the scores, and never fatal: a
-        # retention bug must not cost a night of analytics. Its own line says
-        # how many rows each parent dropped, which is where a broken rule
-        # shows up without turning the tick red (`0`/absent = nothing aged).
+        # retention bug must not cost a night of analytics. The line carries the
+        # full per-parent map unchanged -- `{}` reads as "ran, nothing aged",
+        # which is a different fact from the line being absent (did not run) --
+        # and `failed` lists the parents that raised (`-1` in the map), so a
+        # night where every parent failed cannot look like a quiet one.
         if due_now:
             try:
                 rconn, _ = await _connect_resolved(db_url)
@@ -285,7 +287,8 @@ async def watch(interval: int, ml_repo, brand_id, group_id,
                 finally:
                     await rconn.close()
                 _log({"tick": when.isoformat(), "event": "retention",
-                      "deleted": deleted or None})
+                      "deleted": deleted,
+                      "failed": [t for t, n in deleted.items() if n < 0]})
             except Exception as exc:       # noqa: BLE001 -- see above
                 _log({"tick": when.isoformat(),
                       "event": "retention failed",

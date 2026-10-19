@@ -6,8 +6,10 @@ it stops being true:
 
 * every table is classified (a new table cannot be silently forgotten, and the
   append-only tables cannot be quietly aged by a later edit),
-* every delete predicate is served by an index (`enable_seqscan = off` so the
-  answer is "is there an index", not "is the table big enough today"),
+* every delete predicate is served by an index that **leads with the aged
+  column** (`enable_seqscan = off`, and the column must appear in an
+  `Index Cond`) — "an index exists" and "the planner can use it" are
+  different answers, and only the second survives a 100x year,
 * nothing younger than the window is touched, and one parent never deletes more
   than the cap in one tick,
 * a failing parent is reported and skipped instead of aborting the sweep.
@@ -15,6 +17,7 @@ it stops being true:
 from __future__ import annotations
 
 import asyncio
+import re
 from pathlib import Path
 
 import asyncpg
@@ -76,6 +79,17 @@ def _declared_tables() -> list[str]:
 
 
 def test_each_predicate_uses_an_index(database_url: str) -> None:
+    """Every age predicate must be led by the aged column, not merely indexed.
+
+    "No Seq Scan under `enable_seqscan = off`" is too weak: with any index on
+    the table the planner will happily Bitmap-Heap scan a different leading
+    column and the test passes -- the failure that only bites once the table is
+    big, which is the whole reason this sweep exists. So the plan has to show
+    `Index Cond: (<aged column> < ...)`. That is also what separates a real
+    index from a size accident: `rfm_snapshots` has no `scored_at` index of its
+    own and still satisfies this (its `(mode, scored_at)` index leads far
+    enough), while a table whose only index is on some other column fails.
+    """
     async def _plans():
         conn = await _connect(database_url)
         try:
@@ -95,6 +109,17 @@ def test_each_predicate_uses_an_index(database_url: str) -> None:
         "retention predicates that would scan the whole table: "
         + ", ".join(f"{t} ({p.splitlines()[-1].strip()[:60]})"
                     for t, p in bad.items()))
+
+    # The aged column must appear in an `Index Cond`, which is the planner
+    # saying "this index decided the row set". `Index Cond: (created_at < ...)`
+    # is the shape; a filter that only appears as `Filter:` is a post-scan
+    # filter and does not count.
+    aged = {t: retention.AGED[t] for t in plans}
+    unled = {t: p for t, p in plans.items()
+             if not re.search(rf"Index Cond:.*\b{re.escape(aged[t])}\b", p)}
+    assert not unled, (
+        "index does not lead with the aged column (indexed, but not by age): "
+        + ", ".join(f"{t} needs `{aged[t]}` in an Index Cond" for t in unled))
 
 
 def test_prune_keeps_the_window_and_reports_counts(database_url: str) -> None:
