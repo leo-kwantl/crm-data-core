@@ -346,6 +346,11 @@ the clock (dev/verification; naive = `Asia/Hong_Kong`).
   unique per (pipeline, job, `as_of`, scope) and a `succeeded` row skips
   unless `--force`, so a second tick for a window already succeeded writes
   nothing new — overlapping triggers, a restart and two hosts converge.
+  A row that is `running` refuses the claim (`UPSERT_RUN_SQL` returns no
+  row), so two cursors in one cron minute cannot execute the same job
+  twice: the loser skips that job *and* its dependants (outcome carries
+  `blocking`), and a `running` row older than `RUN_STALE_AFTER` (2 h) is
+  reclaimed, so a killed tick does not wedge the job forever.
   The loop's `fired` set only stops one process from re-entering the same
   window inside one `as_of`; a `failed` row is retried once per process
   start, not every interval (a failure is a row carrying `error`, not

@@ -817,3 +817,109 @@ def test_watch_interrupt_stops_the_loop(database_url, monkeypatch, capsys):
     printed = capsys.readouterr().out
     assert '"event": "pass"' in printed
     assert "interrupted" in printed
+
+# ---- one cursor per job x as_of (review §4.3-3) ----
+#
+# `run_pipeline` used to upsert straight to status='running' and skip only on
+# 'succeeded', so two ticks in the same cron minute both claimed the row and
+# both executed the job. UPSERT_RUN_SQL now refuses a claim on a live
+# 'running' row (and takes over one older than RUN_STALE_AFTER).
+
+@pytest.mark.asyncio
+async def test_claim_gate_lets_one_cursor_own_a_job(database_url: str):
+    as_of = date(2026, 10, 4)
+    async with _pool(database_url) as pool:
+        conn_a = await pool.acquire()
+        conn_b = await pool.acquire()
+        try:
+            first = await conn_a.fetchrow(
+                sched.UPSERT_RUN_SQL, "test_pipe_claim", "j1", as_of,
+                None, None, None)
+            second = await conn_b.fetchrow(
+                sched.UPSERT_RUN_SQL, "test_pipe_claim", "j1", as_of,
+                None, None, None)
+        finally:
+            await pool.release(conn_a)
+            await pool.release(conn_b)
+    assert first is not None and first["id"]
+    assert second is None, "a live 'running' row must refuse a second claim"
+
+
+@pytest.mark.asyncio
+async def test_claim_gate_takes_over_a_stale_running_row(database_url: str):
+    as_of = date(2026, 10, 5)
+    async with _pool(database_url) as pool:
+        async with pool.acquire() as conn:
+            await conn.fetchrow(sched.UPSERT_RUN_SQL, "test_pipe_stale",
+                                "j1", as_of, None, None, None)
+            await conn.execute(
+                "UPDATE pipeline_runs SET started_at = now() - interval '3 hours'"
+                " WHERE pipeline = 'test_pipe_stale' AND job = 'j1'")
+            again = await conn.fetchrow(sched.UPSERT_RUN_SQL,
+                                        "test_pipe_stale", "j1", as_of,
+                                        None, None, None)
+    assert again is not None, (
+        "a crashed tick leaves status='running' forever; an abandoned row"
+        " must be reclaimable after RUN_STALE_AFTER")
+
+
+@pytest.mark.asyncio
+async def test_runner_defers_job_another_cursor_is_running(
+        database_url: str, monkeypatch):
+    """The second cursor skips the job AND its dependants, without running."""
+    ran: list[str] = []
+
+    async def _engine(engine, params, conn, ctx):
+        ran.append(engine)
+        return None
+
+    monkeypatch.setattr(sched, "_run_data_engine", _engine)
+    jobs = {"j1": {"engine": "kpi_daily", "depends_on": [], "params": {}},
+            "down": {"engine": "kpi_daily", "depends_on": ["j1"],
+                     "params": {}}}
+    as_of = date(2026, 10, 6)
+    ctx = _ctx(pipeline="test_pipe_defer", as_of=as_of)
+    async with _pool(database_url) as pool:
+        async with pool.acquire() as conn:
+            # another cursor claimed the row a moment ago
+            await conn.fetchrow(sched.UPSERT_RUN_SQL, "test_pipe_defer",
+                                "j1", as_of, None, None, None)
+            out = await sched.run_pipeline(conn, "test_pipe_defer", jobs, ctx)
+    assert out["outcomes"]["j1"]["status"] == "skipped"
+    assert "already running" in out["outcomes"]["j1"]["error"]
+    assert out["outcomes"]["down"]["status"] == "skipped"
+    assert "upstream" in out["outcomes"]["down"]["error"]
+    assert ran == [], "the deferred job must not execute at all"
+
+
+@pytest.mark.asyncio
+async def test_two_concurrent_cursors_execute_the_job_once(
+        database_url: str, monkeypatch):
+    """Two `--once` ticks at the same minute: one executes, one defers."""
+    import asyncio
+
+    ran: list[str] = []
+
+    async def _engine(engine, params, conn, ctx):
+        ran.append(engine)
+        await asyncio.sleep(0.3)   # hold the claim while the peer tick runs
+        return None
+
+    monkeypatch.setattr(sched, "_run_data_engine", _engine)
+    jobs = {"j1": {"engine": "kpi_daily", "depends_on": [], "params": {}}}
+    as_of = date(2026, 10, 7)
+    ctx = _ctx(pipeline="test_pipe_race", as_of=as_of)
+    async with _pool(database_url) as pool:
+        conn_a = await pool.acquire()
+        conn_b = await pool.acquire()
+        try:
+            out_a, out_b = await asyncio.gather(
+                sched.run_pipeline(conn_a, "test_pipe_race", jobs, ctx),
+                sched.run_pipeline(conn_b, "test_pipe_race", jobs, ctx))
+        finally:
+            await pool.release(conn_a)
+            await pool.release(conn_b)
+    statuses = sorted(out["outcomes"]["j1"]["status"]
+                      for out in (out_a, out_b))
+    assert statuses == ["skipped", "succeeded"], statuses
+    assert len(ran) == 1, f"job executed {len(ran)} times"

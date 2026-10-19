@@ -65,6 +65,12 @@ from pipelines.snapshot import (  # noqa: E402
 # Data-owned engines run in-process (ml engines go through argv builders).
 DATA_ENGINES = ("upload_apply", "kpi_daily", "cohort_snapshot")
 
+# A 'running' row older than this is abandoned, not in flight: a crashed or
+# killed tick leaves status='running' forever, and the claim gate below would
+# then block that job until someone edited the row by hand. Two hours is
+# longer than any single job may run (JobCtx.timeout_s defaults to 30 min).
+RUN_STALE_AFTER = "interval '2 hours'"
+
 # Default retention offsets per granularity for the cohort_snapshot engine
 # (overridable per job via params.max_offsets).
 COHORT_DEFAULT_MAX_OFFSETS = {"week": 12, "month": 12, "year": 5}
@@ -73,7 +79,7 @@ FETCH_MANIFEST_SQL = "SELECT yaml FROM pipeline_manifests WHERE pipeline = $1"
 FETCH_MANIFESTS_SQL = ("SELECT pipeline, yaml FROM pipeline_manifests"
                        " ORDER BY pipeline")
 
-UPSERT_RUN_SQL = """
+UPSERT_RUN_SQL = f"""
 INSERT INTO pipeline_runs
   (pipeline, job, as_of, status, started_at, brand_id, group_id,
    sync_run_id)
@@ -84,6 +90,8 @@ ON CONFLICT (pipeline, job, as_of,
 DO UPDATE SET status = 'running', started_at = now(), error = NULL,
   finished_at = NULL,
   sync_run_id = COALESCE(pipeline_runs.sync_run_id, EXCLUDED.sync_run_id)
+WHERE pipeline_runs.status <> 'running'
+   OR pipeline_runs.started_at < now() - {RUN_STALE_AFTER}
 RETURNING id
 """
 
@@ -808,7 +816,8 @@ async def run_pipeline(conn, pipeline: str, jobs: dict[str, dict],
         engine = job["engine"]
         failed_upstream = [d for d in job["depends_on"]
                            if outcomes.get(d, {}).get("status")
-                           not in ("succeeded", "skipped")]
+                           not in ("succeeded", "skipped")
+                           or outcomes.get(d, {}).get("blocking")]
         if failed_upstream:
             outcomes[name] = {"status": "skipped",
                               "error": f"upstream failed: {failed_upstream}"}
@@ -824,6 +833,15 @@ async def run_pipeline(conn, pipeline: str, jobs: dict[str, dict],
         run_row = await conn.fetchrow(
             UPSERT_RUN_SQL, pipeline, name, ctx.as_of,
             ctx.brand_id, ctx.group_id, ctx.sync_run_id)
+        if run_row is None:
+            # The gate refused the claim: another cursor owns this job for
+            # this as_of right now. Skip it, and make sure its dependants
+            # skip too -- running them beside an in-flight job reads
+            # half-written tables and is the race this gate exists for.
+            outcomes[name] = {
+                "status": "skipped", "blocking": True,
+                "error": "already running in another process"}
+            continue
         rid = run_row["id"]
         upstream = _upstream_payload(engine, ctx, ml_revision)
         try:
