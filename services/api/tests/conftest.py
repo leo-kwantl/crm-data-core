@@ -26,13 +26,37 @@ def _up_sql(path: Path) -> str:
 
 
 @pytest.fixture(scope="session")
-def database_url(tmp_path_factory: pytest.TempPathFactory) -> str:
+def database_url(
+    tmp_path_factory: pytest.TempPathFactory, pytestconfig: pytest.Config
+) -> str:
     import os
 
-    # DATABASE_URL swap path (task 7.1): point at managed/containerized PG to
-    # run this same suite against it, e.g. DATABASE_URL=postgresql://... pytest.
+    # DATABASE_URL swap path: point at managed/containerized PG to run this
+    # same suite against it, e.g. DATABASE_URL=postgresql://... pytest.
+    # Opt-in only: an externally supplied URL is somebody else's database, and
+    # this suite leaves rows behind by design (see tests/shared_db_guard.py).
     existing = os.environ.get("DATABASE_URL")
     if existing:
+        from services.api.tests import shared_db_guard
+
+        problem = shared_db_guard.shared_url_problem(dict(os.environ))
+        if problem:
+            pytest.exit(problem, returncode=4)
+        # Opted in: remember what the database looked like so the session can
+        # prove it was left that way.
+        import asyncio
+
+        import asyncpg
+
+        async def _counts() -> dict[str, int]:
+            conn = await asyncpg.connect(existing)
+            try:
+                return await shared_db_guard.table_counts(conn)
+            finally:
+                await conn.close()
+
+        pytestconfig._shared_dsn = existing  # type: ignore[attr-defined]
+        pytestconfig._shared_before = asyncio.run(_counts())  # type: ignore[attr-defined]
         return existing
     pgembed = pytest.importorskip("pgembed")
     server = pgembed.get_server(str(tmp_path_factory.mktemp("pgembed-test")))
@@ -93,3 +117,40 @@ async def _seed_admin_session(database_url: str) -> AsyncIterator[None]:  # type
     finally:
         await own.close()
     yield None
+
+
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    """Fail a shared-database run that changed the row count of any table.
+
+    Only armed when the run opted into `DATABASE_URL` (+ `CRM_CDP_ALLOW_SHARED_DB=1`);
+    the default throwaway cluster is not audited because tests write freely
+    there. A drifting table means some fixture wrote and did not clean up --
+    the failure names the tables so the next reader does not have to hunt.
+    """
+    dsn = getattr(session.config, "_shared_dsn", None)
+    before = getattr(session.config, "_shared_before", None)
+    if not dsn or not before:
+        return
+
+    import asyncio
+
+    import asyncpg
+
+    from services.api.tests import shared_db_guard
+
+    async def _after() -> dict[str, int]:
+        conn = await asyncpg.connect(dsn)
+        try:
+            return await shared_db_guard.table_counts(conn)
+        finally:
+            await conn.close()
+
+    moved = shared_db_guard.diff(before, asyncio.run(_after()))
+    if moved:
+        session.exitstatus = 1
+        print(
+            "\nshared database left dirty (row counts): "
+            + shared_db_guard.describe(moved)
+            + "\n  a fixture wrote and did not delete its rows; clean up in a"
+            " `finally`, or unset DATABASE_URL to run on a throwaway cluster."
+        )

@@ -22,6 +22,7 @@ python -c "import pipelines.ingest.orders, pipelines.ingest.events, pipelines.in
   A mirrored module must be mirrored with the files it reads at import (`db/queries/*.sql`), or the tree imports and cannot boot.
   See `pipelines/contracts.md` §"Tree ownership & the mirror boundary".
 - `scripts/bootstrap_db.py` is DEV/CI ONLY — NEVER run against a live DB (TRUNCATEs every table + reseeds demo; live = migrate-only).
+- `pytest` writes freely and does not clean up after every fixture, so `DATABASE_URL` is refused unless `CRM_CDP_ALLOW_SHARED_DB=1`; an opted-in run is audited and fails on any table's row-count drift (`services/api/tests/shared_db_guard.py`). Debris a past shared run left behind: `python scripts/clean_test_debris.py` (dry run; `--apply` dumps the rows first).
 - `db/migrations/` is applied in filename order and the version key is the file stem; a number is never reused and dbmate is not installed — `../docs/conventions.md` § Naming.
 - After editing `pipelines/contracts.md`, run `python scripts/audit_doc_cites.py`: it checks every cite against the trees it names.
 
