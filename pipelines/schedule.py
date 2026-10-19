@@ -735,8 +735,8 @@ async def apply_pending(conn, ctx: JobCtx) -> dict[str, Any]:
         swept.append({"upload_job_id": str(jid), "status": status,
                       "applied": res["applied"],
                       "skipped": res["skipped"],
-                      "failed_rows": [f["row_number"]
-                                      for f in res["failed"]]})
+                      "customers_revived": res["customers_revived"],
+                      "failed_rows": [f["row_number"] for f in res["failed"]]})
     return {"swept": len(swept), "jobs": swept}
 
 

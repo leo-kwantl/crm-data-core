@@ -79,13 +79,13 @@ async def run(path: Path, kind: str, source: str, created_by: str | None,
                                b["row_number"], source, b["key"],
                                b["reason"], json.dumps(b["raw"]))
         up.reconcile(len(rows), len(ok), len(bad))
-        applied = skipped = 0
+        applied = skipped = revived = 0
         apply_failed: list = []
         async with conn.transaction():
             if apply:
                 res = await ap.apply_job(conn, job_id, kind, source)
-                applied, skipped, apply_failed = (
-                    res["applied"], res["skipped"], res["failed"])
+                applied, skipped = res["applied"], res["skipped"]
+                apply_failed, revived = res["failed"], res["customers_revived"]
         committed = applied + skipped
         quarantined = len(bad) + len(apply_failed)
         if not apply:
@@ -102,7 +102,7 @@ async def run(path: Path, kind: str, source: str, created_by: str | None,
                 "status": status, "encoding": encoding,
                 "total": len(rows), "committed": committed,
                 "quarantined": quarantined, "applied": applied,
-                "skipped": skipped,
+                "skipped": skipped, "customers_revived": revived,
                 "apply_failed": [f["row_number"] for f in apply_failed]}
     except Exception as exc:  # noqa: BLE001 - job row must record failure
         if job_id is not None:

@@ -71,6 +71,7 @@ re-derived afterwards.
 |---|---|---|
 | member code | `member_id` | must match `^M-[0-9]{6}$`, else reject row + quarantine |
 | source key | `external_member_id` | unique per source; second-see is update, not insert |
+| re-ingest of a soft-deleted member | `deleted_at` | **revive**: a re-ingested member clears the tombstone (the feed is authoritative for "this member exists again"); counted as `customers_revived` in the run summary and written as the staged row's reason, because a resurrected customer reappears in every segment and dashboard |
 | phone/email | `phone`, `email` | exact-first matching; on an exact miss a bounded substring fallback (min 3 digits / 3 chars, LIMIT 20, POST body, criteria-type-only audit) |
 
 ## orders
@@ -81,6 +82,8 @@ re-derived afterwards.
 | source order key | `external_order_id` | idempotency key; replay = no-op |
 | demo seed | `source='demo'`, `external_order_id='DEMO-O-NNN'` | stable keys, so re-seeding `db/seeds/demo.sql` inserts nothing (the item rows are gated on the order having no lines) |
 | line amounts | `order_lines` | integer cents; `total_cents = Σ qty × unit_cents` |
+| order total | `total_cents` (feed) | optional; when present it must equal `Σ qty × unit_cents` — a discount, shipping or tax line is exactly the mismatch shape, so a disagreement quarantines the row with both numbers rather than silently picking one; with no feed total the line sum is stored |
+| timestamp | `ordered_at` (raw) | optional, ISO-8601; unparseable, or tz-naive with no feed zone, **quarantines** (never `now()`, which files a bad row under today's revenue); a naive value is read in the feed zone (+08), not UTC |
 
 ## events / consents
 

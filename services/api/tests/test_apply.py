@@ -431,3 +431,154 @@ async def test_apply_survives_a_find_that_missed(
             assert int(total) == 300, "the winner's row must not be rewritten"
     finally:
         await pool.close()
+
+
+@pytest.mark.asyncio
+async def test_reingest_revives_a_soft_deleted_customer(
+        database_url: str, tmp_path: Path, monkeypatch) -> None:
+    """A rejoin has to bring the member back: leaving the tombstone in place
+    made the customer invisible and quarantined every later order for them."""
+    import asyncpg
+
+    monkeypatch.setenv("DATABASE_URL", database_url)
+    pool = await asyncpg.create_pool(database_url)
+    assert pool is not None
+    try:
+        async with pool.acquire() as conn:
+            await _seed(conn)
+            await conn.execute(
+                "INSERT INTO customers (member_id, full_name, deleted_at)"
+                " VALUES ('M-900010', 'Revived One', now())"
+                " ON CONFLICT (member_id) DO UPDATE SET deleted_at = now()")
+    finally:
+        await pool.close()
+
+    csv = "member_id,full_name\nM-900010,Revived One Again\n"
+    out = await run_upload.run(
+        _write(tmp_path, "revive.csv", csv), "customers", "pos", None,
+        None, None, apply=True)
+    assert out["status"] == "committed", out
+    assert out["customers_revived"] == 1, out
+    assert out["applied"] == 1
+
+    lines = json.dumps([{"sku": "APPLY-SKU", "qty": 1,
+                         "unit_cents": 100}]).replace('"', '""')
+    csv_o = ("store_id,external_order_id,member_id,lines\n"
+             f"APPLY-S1,E-REVIVE-1,M-900010,\"{lines}\"\n")
+    out_o = await run_upload.run(
+        _write(tmp_path, "revive_order.csv", csv_o), "orders", "pos",
+        None, None, None, apply=True)
+    assert out_o["status"] == "committed", out_o
+    assert out_o["quarantined"] == 0 and out_o["applied"] == 1, out_o
+    assert out_o["customers_revived"] == 0
+
+    pool = await asyncpg.create_pool(database_url)
+    assert pool is not None
+    try:
+        async with pool.acquire() as conn:
+            live = await conn.fetchval(
+                "SELECT deleted_at IS NULL FROM customers"
+                " WHERE member_id = 'M-900010'")
+            assert live is True, "the rejoin must clear the tombstone"
+            n = await conn.fetchval(
+                "SELECT COUNT(*) FROM orders o JOIN customers c"
+                " ON c.id = o.customer_id"
+                " WHERE o.external_order_id = 'E-REVIVE-1'"
+                "   AND c.member_id = 'M-900010'")
+            assert int(n) == 1, "the revived member's order must apply"
+            note = await conn.fetchval(
+                "SELECT reason FROM staging_rows WHERE upload_job_id = $1"
+                " ORDER BY row_number LIMIT 1", out["job_id"])
+            assert note and "revived" in note and "M-900010" in note, note
+    finally:
+        await pool.close()
+
+
+@pytest.mark.asyncio
+async def test_unparseable_ordered_at_quarantines_with_the_value(
+        database_url: str, tmp_path: Path, monkeypatch) -> None:
+    """`now()` filed a bad timestamp under today's revenue, where nothing
+    downstream can tell it from a real one."""
+    import asyncpg
+
+    monkeypatch.setenv("DATABASE_URL", database_url)
+    pool = await asyncpg.create_pool(database_url)
+    assert pool is not None
+    try:
+        async with pool.acquire() as conn:
+            await _seed(conn)
+            await conn.execute(
+                "INSERT INTO customers (member_id, full_name)"
+                " VALUES ('M-900011', 'Bad Timestamp')"
+                " ON CONFLICT (member_id) DO NOTHING")
+    finally:
+        await pool.close()
+
+    lines = json.dumps([{"sku": "APPLY-SKU", "qty": 1,
+                         "unit_cents": 100}]).replace('"', '""')
+    csv = ("store_id,external_order_id,member_id,lines,ordered_at\n"
+           f"APPLY-S1,E-BADTS,M-900011,\"{lines}\",2026-02-31T10:00:00Z\n")
+    out = await run_upload.run(
+        _write(tmp_path, "badts.csv", csv), "orders", "pos", None,
+        None, None, apply=True)
+    assert out["apply_failed"] == [1], out
+    assert out["quarantined"] == 1 and out["applied"] == 0, out
+
+    pool = await asyncpg.create_pool(database_url)
+    assert pool is not None
+    try:
+        async with pool.acquire() as conn:
+            reason = await conn.fetchval(
+                "SELECT reason FROM quarantine_rows WHERE upload_job_id = $1"
+                " AND row_number = 1", out["job_id"])
+            assert "2026-02-31T10:00:00Z" in reason, reason
+            assert "now()" in reason, reason
+            n = await conn.fetchval(
+                "SELECT COUNT(*) FROM orders WHERE source = 'pos'"
+                " AND external_order_id = 'E-BADTS'")
+            assert int(n) == 0, "a refused row must not be written at all"
+    finally:
+        await pool.close()
+
+
+@pytest.mark.asyncio
+async def test_naive_ordered_at_reads_the_feed_zone_not_utc(
+        database_url: str, tmp_path: Path, monkeypatch) -> None:
+    """The feed's local clock is +08; reading it as UTC moved an 01:30 order
+    into the previous business day's bucket."""
+    import asyncpg
+    from datetime import datetime, timezone
+
+    monkeypatch.setenv("DATABASE_URL", database_url)
+    pool = await asyncpg.create_pool(database_url)
+    assert pool is not None
+    try:
+        async with pool.acquire() as conn:
+            await _seed(conn)
+            await conn.execute(
+                "INSERT INTO customers (member_id, full_name)"
+                " VALUES ('M-900012', 'Naive Clock')"
+                " ON CONFLICT (member_id) DO NOTHING")
+    finally:
+        await pool.close()
+
+    lines = json.dumps([{"sku": "APPLY-SKU", "qty": 1,
+                         "unit_cents": 100}]).replace('"', '""')
+    csv = ("store_id,external_order_id,member_id,lines,ordered_at\n"
+           f"APPLY-S1,E-NAIVE-1,M-900012,\"{lines}\",2026-10-17T01:30:00\n")
+    out = await run_upload.run(
+        _write(tmp_path, "naivets.csv", csv), "orders", "pos", None,
+        None, None, apply=True)
+    assert out["status"] == "committed", out
+
+    pool = await asyncpg.create_pool(database_url)
+    assert pool is not None
+    try:
+        async with pool.acquire() as conn:
+            when = await conn.fetchval(
+                "SELECT ordered_at FROM orders WHERE source = 'pos'"
+                " AND external_order_id = 'E-NAIVE-1'")
+            assert when == datetime(2026, 10, 16, 17, 30, tzinfo=timezone.utc), \
+                f"01:30 +08 is 17:30Z the day before, got {when}"
+    finally:
+        await pool.close()

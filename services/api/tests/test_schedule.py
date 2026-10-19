@@ -400,9 +400,9 @@ async def test_runner_labels_a_failed_job_too(database_url: str, monkeypatch,
                                               tmp_path: Path):
     """A failed row still says which code ran -- that is when it matters.
 
-    The label is resolved before the engine is invoked and both finish
-    paths persist it (`pipelines/schedule.py:706`, `:734-741`), so a
-    non-zero exit cannot leave an error whose revision is unknown.
+    The label is resolved before the engine is invoked (`_upstream_payload` `pipelines/schedule.py:806`)
+    and both finish paths persist it (`FINISH_RUN_SQL` `:891`, `:898`), so a non-zero exit cannot leave
+    an error whose revision is unknown.
     """
     monkeypatch.setitem(sched.ENGINE_BUILDERS, "fake_fail", _fake_fail)
     repo = tmp_path / "ml"

@@ -22,7 +22,7 @@ by apply-fails, so total == committed + quarantined still holds.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from pipelines import upload as up
@@ -40,14 +40,21 @@ WHERE deleted_at IS NULL
 RESOLVE_PRODUCT_SQL = "SELECT id FROM products WHERE sku = $1"
 
 CUSTOMER_UPSERT_SQL = """
-INSERT INTO customers (member_id, full_name, external_member_id)
-VALUES ($1, $2, $3)
-ON CONFLICT (member_id) DO UPDATE SET
-  full_name = EXCLUDED.full_name,
-  external_member_id = COALESCE(EXCLUDED.external_member_id,
-                                customers.external_member_id),
-  updated_at = now()
-RETURNING id
+WITH prev AS (
+  SELECT id, deleted_at FROM customers WHERE member_id = $1
+), upserted AS (
+  INSERT INTO customers (member_id, full_name, external_member_id)
+  VALUES ($1, $2, $3)
+  ON CONFLICT (member_id) DO UPDATE SET
+    full_name = EXCLUDED.full_name,
+    external_member_id = COALESCE(EXCLUDED.external_member_id,
+                                  customers.external_member_id),
+    deleted_at = NULL,
+    updated_at = now()
+  RETURNING id
+)
+SELECT u.id, COALESCE(p.deleted_at IS NOT NULL, false) AS revived
+FROM upserted u LEFT JOIN prev p ON p.id = u.id
 """
 
 CONTACT_INSERT_SQL = """
@@ -171,29 +178,63 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _ordered_at(raw: dict) -> datetime:
+# The business zone, as a fixed offset: pgembed ships no tzdata, so the
+# cohort/KPI engines write `AT TIME ZONE interval '8 hours'` and this module
+# must not name 'Asia/Hong_Kong' either.
+BUSINESS_TZ_OFFSET_HOURS = 8
+BUSINESS_TZ = timezone(timedelta(hours=BUSINESS_TZ_OFFSET_HOURS))
+
+
+def _ordered_at(raw: dict,
+                feed_tz: Optional[timezone] = BUSINESS_TZ) -> datetime:
+    """Feed `ordered_at` -> aware datetime. Raises ValueError (quarantine).
+
+    An unparseable value is refused, never replaced by `now()`: `now()` files
+    a bad row under today's revenue, which no later reader can tell from a
+    real one. A tz-naive value is read in the zone the feed declares
+    (`feed_tz`, the business zone by default) rather than as UTC -- assuming
+    UTC shifts a local timestamp by the offset and mis-buckets it in every
+    day/week/month figure. `feed_tz=None` means the feed declares no zone,
+    and then a naive value is refused as well rather than guessed at.
+    """
     val = (raw.get("ordered_at") or "").strip() if raw.get("ordered_at") else ""
-    if val:
-        try:
-            dt = datetime.fromisoformat(val.replace("Z", "+00:00"))
-            return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
-        except ValueError:
-            pass
-    return _now()
+    if not val:
+        return _now()
+    try:
+        dt = datetime.fromisoformat(val.replace("Z", "+00:00"))
+    except ValueError:
+        raise ValueError(
+            f"ordered_at {val!r} is not an ISO-8601 timestamp (refusing to"
+            " file the row under now())") from None
+    if dt.tzinfo is None:
+        if feed_tz is None:
+            raise ValueError(
+                f"ordered_at {val!r} is timezone-naive and this feed declares"
+                " no zone (8 h of slack would move it between business days)")
+        dt = dt.replace(tzinfo=feed_tz)
+    return dt
 
 
-async def _apply_customer(conn, norm: dict, raw: dict) -> str:
-    cid = await conn.fetchval(
+async def _apply_customer(conn, norm: dict, raw: dict) -> tuple[str, bool]:
+    """Upsert the member row. Returns `(customer_id, revived)`.
+
+    `revived` is true when the row was a soft-deleted tombstone and this
+    ingest brought it back: the feed is authoritative for "this member exists
+    again", and a tombstone that stays invisible silently quarantines every
+    later order for that member (the resolver only sees `deleted_at IS NULL`).
+    """
+    row = await conn.fetchrow(
         CUSTOMER_UPSERT_SQL, norm["member_id"], norm["full_name"],
         norm.get("external_member_id"))
-    cid = str(cid)
+    cid = str(row["id"])
+    revived = bool(row["revived"])
     for kind in ("phone", "email"):
         val = (raw.get(kind) or "").strip()
         if not val:
             continue
         normed = val.lower() if kind == "email" else val
         await conn.execute(CONTACT_INSERT_SQL, cid, kind, normed, val)
-    return cid
+    return cid, revived
 
 
 async def _apply_identity(conn, norm: dict, raw: dict) -> str:
@@ -206,11 +247,15 @@ async def _apply_identity(conn, norm: dict, raw: dict) -> str:
     return cid
 
 
-async def _apply_order(conn, norm: dict, raw: dict,
-                       source: str) -> Optional[str]:
+async def _apply_order(conn, norm: dict, raw: dict, source: str,
+                       feed_tz: Optional[timezone] = BUSINESS_TZ
+                       ) -> Optional[str]:
     ext = norm["external_order_id"]
     if await conn.fetchval(FIND_ORDER_SQL, source, ext):
         return None  # replay: already applied
+    # Parse the timestamp before touching anything else: an unparseable or
+    # zoneless value is a quarantine, and it must not depend on state.
+    ordered_at = _ordered_at(raw, feed_tz)
     store_id = await resolve_store(conn, norm["store_id"])
     if store_id is None:
         raise LookupError(f"unknown store {norm['store_id']!r}")
@@ -227,7 +272,7 @@ async def _apply_order(conn, norm: dict, raw: dict,
             raise LookupError(f"unknown sku {line['sku']!r}")
         product_ids.append((str(pid), line["qty"], line["unit_cents"]))
     oid = await conn.fetchval(
-        INSERT_ORDER_SQL, cid, store_id, _ordered_at(raw),
+        INSERT_ORDER_SQL, cid, store_id, ordered_at,
         norm["total_cents"], (raw.get("status") or "completed")[:20],
         source, ext)
     if oid is None:
@@ -240,7 +285,7 @@ async def _apply_order(conn, norm: dict, raw: dict,
     for pid, qty, cents in product_ids:
         await conn.execute(INSERT_LINE_SQL, oid, pid, qty, cents)
     await _write_order_placed(conn, cid, store_id, oid,
-                              _ordered_at(raw), norm["total_cents"], ext)
+                              ordered_at, norm["total_cents"], ext)
     return oid
 
 
@@ -297,20 +342,24 @@ _APPLIERS = {
 }
 
 
-async def apply_job(conn, job_id: str, kind: str,
-                    source: str) -> dict[str, Any]:
+async def apply_job(conn, job_id: str, kind: str, source: str,
+                    *, feed_tz: Optional[timezone] = BUSINESS_TZ
+                    ) -> dict[str, Any]:
     """Apply all `ok` staged rows of a job to core tables.
 
     Runs inside the caller's transaction. Apply-fails are written to
     `quarantine_rows` (and staged rows marked `rejected`) so the caller
     can reconcile: committed = applied + skipped,
-    quarantined += failed.
+    quarantined += failed. `customers` may revive soft-deleted members:
+    the count comes back as `customers_revived` and each revival is also
+    written as the staged row's reason, so the run shows it.
     """
     if kind not in _APPLIERS:
         raise ValueError(f"unknown kind {kind!r}")
     applier = _APPLIERS[kind]
     applied = 0
     skipped = 0
+    revived_count = 0
     failed: list[dict[str, Any]] = []
     rows = await conn.fetch(STAGED_OK_SQL, job_id)
     for rec in rows:
@@ -329,9 +378,15 @@ async def apply_job(conn, job_id: str, kind: str,
             await conn.execute(MARK_STAGED_SQL, job_id, row_no,
                                "rejected", reason)
             continue
+        revived = False
         try:
-            if kind in ("orders", "events"):
+            if kind == "orders":
+                result = await applier(conn, norm, raw, source,
+                                       feed_tz=feed_tz)
+            elif kind == "events":
                 result = await applier(conn, norm, raw, source)
+            elif kind == "customers":
+                result, revived = await applier(conn, norm, raw)
             else:
                 result = await applier(conn, norm, raw)
         except (LookupError, ValueError) as exc:
@@ -347,8 +402,18 @@ async def apply_job(conn, job_id: str, kind: str,
             skipped += 1
         else:
             applied += 1
+        if revived:
+            revived_count += 1
+            # One audit line per revival, on the row that caused it: a
+            # resurrected customer reappears in every segment and dashboard,
+            # so the run has to say so where a human reads the job.
+            await conn.execute(
+                MARK_STAGED_SQL, job_id, row_no, "ok",
+                f"revived soft-deleted customer {norm['member_id']}:"
+                " re-ingest is authoritative")
         # success: row stays 'ok' (no new status needed — the CHECK enum
         # is ('pending','ok','rejected')); replay safety comes from the
         # per-kind dedup pre-checks (orders/events skip) and convergent
         # upserts (customers/identity), not from row state.
-    return {"applied": applied, "skipped": skipped, "failed": failed}
+    return {"applied": applied, "skipped": skipped, "failed": failed,
+            "customers_revived": revived_count}

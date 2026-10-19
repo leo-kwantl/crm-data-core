@@ -104,15 +104,24 @@ def parse_csv(text: str, kind: str) -> list[dict]:
 
 
 def _coerce_lines(raw_lines: Any) -> list[dict]:
-    """Accept JSON list string or already-parsed list; cents may be decimal."""
+    """Accept a JSON list string or an already-parsed list; money stays exact."""
     items = json.loads(raw_lines) if isinstance(raw_lines, str) else raw_lines
     if not isinstance(items, list):
         raise ValueError(f"lines must be a JSON list, got {raw_lines!r}")
     out = []
     for ln in items:
-        qty = int(float(ln.get("qty", 0)))
-        unit_raw = ln.get("unit_cents", ln.get("unit", 0))
-        unit = int(round(float(unit_raw) * 100)) if "unit_cents" not in ln else int(unit_raw)
+        if not isinstance(ln, dict):
+            raise ValueError(f"line must be an object, got {ln!r}")
+        # Parsed through `Decimal` in the order contract's own helpers: a
+        # float here loses a cent on values like "2.675", and `int(float(qty))`
+        # truncates a fractional count instead of refusing it.
+        qty = orders_ingest.whole_number(ln.get("qty", 0), field="qty")
+        if "unit_cents" in ln:
+            unit = orders_ingest.money_cents(ln["unit_cents"],
+                                             field="unit_cents")
+        else:
+            unit = orders_ingest.money_cents(ln.get("unit", 0), field="unit",
+                                             scale=100)
         out.append({"sku": ln.get("sku"), "qty": qty, "unit_cents": unit})
     return out
 

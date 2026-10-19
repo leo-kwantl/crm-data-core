@@ -32,6 +32,52 @@ def test_file_hash_deterministic():
     assert up.file_hash(b"abc") != up.file_hash(b"abd")
 
 
+def test_three_decimal_unit_price_is_exact_not_float():
+    """`float("2.675") * 100` is 267.49999999999997, which rounded to 267 --
+    a cent lost on a price that is exactly 267.5 cents (half up -> 268)."""
+    got = up.normalize_row(
+        {"store_id": "S1", "external_order_id": "E-MONEY-1",
+         "lines": json.dumps([{"sku": "SKU-1", "qty": 1,
+                               "unit": 2.675}])}, "orders")
+    assert got["total_cents"] == 268
+
+
+def test_fractional_qty_is_refused_not_truncated():
+    """`int(float("2.5"))` was 2: a line silently lost half the goods."""
+    with pytest.raises(ValueError, match="qty: must be a whole number"):
+        up.normalize_row(
+            {"store_id": "S1", "external_order_id": "E-MONEY-2",
+             "lines": json.dumps([{"sku": "SKU-1", "qty": 2.5,
+                                   "unit_cents": 100}])}, "orders")
+
+
+def test_feed_total_must_match_the_line_sum():
+    """A discount/shipping/tax is exactly this shape and the row has to name
+    both numbers instead of quietly picking one of them."""
+    with pytest.raises(ValueError, match="1000 does not match the line sum"):
+        up.normalize_row(
+            {"store_id": "S1", "external_order_id": "E-MONEY-3",
+             "total_cents": "1000",
+             "lines": json.dumps([{"sku": "SKU-1", "qty": 3,
+                                   "unit_cents": 400}])}, "orders")
+
+
+def test_present_feed_total_is_what_gets_persisted():
+    """When the feed agrees, its own number is the one stored (it is the
+    audited figure); with no feed total the line sum is kept, not invented."""
+    got = up.normalize_row(
+        {"store_id": "S1", "external_order_id": "E-MONEY-4",
+         "total_cents": "1000",
+         "lines": json.dumps([{"sku": "SKU-1", "qty": 2,
+                               "unit_cents": 500}])}, "orders")
+    assert got["total_cents"] == 1000
+    no_total = up.normalize_row(
+        {"store_id": "S1", "external_order_id": "E-MONEY-5",
+         "lines": json.dumps([{"sku": "SKU-1", "qty": 2,
+                               "unit_cents": 500}])}, "orders")
+    assert no_total["total_cents"] == 1000
+
+
 def test_parse_csv_missing_columns():
     with pytest.raises(ValueError, match="missing columns"):
         up.parse_csv("member_id\nM-000001\n", "customers")
