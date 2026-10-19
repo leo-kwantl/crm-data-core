@@ -79,6 +79,7 @@ re-derived afterwards.
 |---|---|---|
 | store code | `store_id` | NOT NULL; resolve via store map, create store if whitelisted |
 | source order key | `external_order_id` | idempotency key; replay = no-op |
+| demo seed | `source='demo'`, `external_order_id='DEMO-O-NNN'` | stable keys, so re-seeding `db/seeds/demo.sql` inserts nothing (the item rows are gated on the order having no lines) |
 | line amounts | `order_lines` | integer cents; `total_cents = Σ qty × unit_cents` |
 
 ## events / consents

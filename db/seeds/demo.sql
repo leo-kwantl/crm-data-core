@@ -124,22 +124,24 @@ UPDATE customers SET external_member_id = 'POS-1002'
 WHERE member_id = 'M-000102' AND external_member_id IS NULL;
 
 -- Orders (15 across ~6 months) + items
-INSERT INTO orders (customer_id, store_id, ordered_at, total_cents, status) VALUES
-  ('c0000000-0000-0000-0000-000000000001', '11111111-1111-1111-1111-111111111111', now() - interval '175 days', 22800, 'completed'),
-  ('c0000000-0000-0000-0000-000000000001', '11111111-1111-1111-1111-111111111111', now() - interval '40 days', 15900, 'completed'),
-  ('c0000000-0000-0000-0000-000000000001', '22222222-2222-2222-2222-222222222222', now() - interval '5 days', 3900, 'completed'),
-  ('c0000000-0000-0000-0000-000000000002', '11111111-1111-1111-1111-111111111111', now() - interval '160 days', 14900, 'completed'),
-  ('c0000000-0000-0000-0000-000000000002', '22222222-2222-2222-2222-222222222222', now() - interval '60 days', 13900, 'completed'),
-  ('c0000000-0000-0000-0000-000000000003', '11111111-1111-1111-1111-111111111111', now() - interval '140 days', 24900, 'completed'),
-  ('c0000000-0000-0000-0000-000000000004', '22222222-2222-2222-2222-222222222222', now() - interval '120 days', 15900, 'completed'),
-  ('c0000000-0000-0000-0000-000000000004', '11111111-1111-1111-1111-111111111111', now() - interval '20 days', 1200, 'completed'),
-  ('c0000000-0000-0000-0000-000000000005', '11111111-1111-1111-1111-111111111111', now() - interval '100 days', 34800, 'completed'),
-  ('c0000000-0000-0000-0000-000000000005', '22222222-2222-2222-2222-222222222222', now() - interval '70 days', 7900, 'completed'),
-  ('c0000000-0000-0000-0000-000000000005', '11111111-1111-1111-1111-111111111111', now() - interval '10 days', 1800, 'completed'),
-  ('c0000000-0000-0000-0000-000000000006', '22222222-2222-2222-2222-222222222222', now() - interval '90 days', 12900, 'completed'),
-  ('c0000000-0000-0000-0000-000000000007', '11111111-1111-1111-1111-111111111111', now() - interval '80 days', 19900, 'completed'),
-  ('c0000000-0000-0000-0000-000000000007', '11111111-1111-1111-1111-111111111111', now() - interval '15 days', 1500, 'completed'),
-  ('c0000000-0000-0000-0000-000000000008', '22222222-2222-2222-2222-222222222222', now() - interval '50 days', 13900, 'completed')
+-- Stable keys: a re-seed hits the partial unique index and is a no-op.
+INSERT INTO orders (customer_id, store_id, ordered_at, total_cents,
+                    status, source, external_order_id) VALUES
+  ('c0000000-0000-0000-0000-000000000001', '11111111-1111-1111-1111-111111111111', now() - interval '175 days', 22800, 'completed', 'demo', 'DEMO-O-001'),
+  ('c0000000-0000-0000-0000-000000000001', '11111111-1111-1111-1111-111111111111', now() - interval '40 days', 15900, 'completed', 'demo', 'DEMO-O-002'),
+  ('c0000000-0000-0000-0000-000000000001', '22222222-2222-2222-2222-222222222222', now() - interval '5 days', 3900, 'completed', 'demo', 'DEMO-O-003'),
+  ('c0000000-0000-0000-0000-000000000002', '11111111-1111-1111-1111-111111111111', now() - interval '160 days', 14900, 'completed', 'demo', 'DEMO-O-004'),
+  ('c0000000-0000-0000-0000-000000000002', '22222222-2222-2222-2222-222222222222', now() - interval '60 days', 13900, 'completed', 'demo', 'DEMO-O-005'),
+  ('c0000000-0000-0000-0000-000000000003', '11111111-1111-1111-1111-111111111111', now() - interval '140 days', 24900, 'completed', 'demo', 'DEMO-O-006'),
+  ('c0000000-0000-0000-0000-000000000004', '22222222-2222-2222-2222-222222222222', now() - interval '120 days', 15900, 'completed', 'demo', 'DEMO-O-007'),
+  ('c0000000-0000-0000-0000-000000000004', '11111111-1111-1111-1111-111111111111', now() - interval '20 days', 1200, 'completed', 'demo', 'DEMO-O-008'),
+  ('c0000000-0000-0000-0000-000000000005', '11111111-1111-1111-1111-111111111111', now() - interval '100 days', 34800, 'completed', 'demo', 'DEMO-O-009'),
+  ('c0000000-0000-0000-0000-000000000005', '22222222-2222-2222-2222-222222222222', now() - interval '70 days', 7900, 'completed', 'demo', 'DEMO-O-010'),
+  ('c0000000-0000-0000-0000-000000000005', '11111111-1111-1111-1111-111111111111', now() - interval '10 days', 1800, 'completed', 'demo', 'DEMO-O-011'),
+  ('c0000000-0000-0000-0000-000000000006', '22222222-2222-2222-2222-222222222222', now() - interval '90 days', 12900, 'completed', 'demo', 'DEMO-O-012'),
+  ('c0000000-0000-0000-0000-000000000007', '11111111-1111-1111-1111-111111111111', now() - interval '80 days', 19900, 'completed', 'demo', 'DEMO-O-013'),
+  ('c0000000-0000-0000-0000-000000000007', '11111111-1111-1111-1111-111111111111', now() - interval '15 days', 1500, 'completed', 'demo', 'DEMO-O-014'),
+  ('c0000000-0000-0000-0000-000000000008', '22222222-2222-2222-2222-222222222222', now() - interval '50 days', 13900, 'completed', 'demo', 'DEMO-O-015')
 ON CONFLICT DO NOTHING;
 
 -- One or two items per order, totals kept consistent-ish with lines
@@ -155,7 +157,8 @@ FROM orders o JOIN products p ON p.sku = (
     WHEN o.total_cents > 2000 THEN 'ACC-001'
     ELSE 'ACC-002'
   END)
-ON CONFLICT DO NOTHING;
+WHERE o.source = 'demo' AND o.external_order_id LIKE 'DEMO-O-%'
+  AND NOT EXISTS (SELECT 1 FROM order_items oi WHERE oi.order_id = o.id);
 
 -- Identity seed (account records only — no passwords/sessions; auth deferred).
 -- 3 staff (S-014 + S-015 linked to login accounts, S-016 unlinked) +
