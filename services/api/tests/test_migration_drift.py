@@ -205,3 +205,66 @@ async def test_pipelines_statements_resolve_against_database(
     assert not failures, (
         "statements do not resolve against this database:\n"
         + "\n".join(failures))
+
+
+MODEL_CHECK_RE = re.compile(r"CHECK\s*\(\s*model\s+IN\s*\(([^)]*)\)", re.I)
+
+# The two models ml's trust-layer writers record quality rows for; 042 exists
+# because the table rejected them outright. A third model added there has to be
+# added here too -- this is the data-side half of that pair.
+REQUIRED_TRAINING_RUN_MODELS = {"forecast", "assoc"}
+
+
+def declared_training_run_models() -> set[str]:
+    """The `model_training_runs.model` whitelist as the migrations last set it.
+
+    Table-scoped on purpose: `028`/`034` declare their own `CHECK (model IN ...)`
+    on `btyd_params`, so a bare regex would read the wrong table's list. Only
+    statements that name `model_training_runs` are considered, and the last
+    declaration wins (013 creates it, 042 widens it).
+    """
+    declared: set[str] = set()
+    for path in sorted(MIGRATIONS_DIR.glob("*.sql")):
+        up = UP_RE.search(path.read_text(encoding="utf-8"))
+        if not up:
+            continue
+        for statement in up.group(1).split(";"):
+            if "model_training_runs" not in statement:
+                continue
+            match = MODEL_CHECK_RE.search(statement)
+            if match:
+                declared = {value.strip().strip("'")
+                            for value in match.group(1).split(",") if value.strip()}
+    return declared
+
+
+async def test_declared_training_run_models_are_writable(
+        database_url: str) -> None:
+    """042's widening, checked as behaviour rather than as constraint text.
+
+    Every value the migrations declare must actually insert -- `forecast` and
+    `assoc` could not, so ml had no lineage for two models -- and the check must
+    still reject a value nobody declares. Rolled back: this writes nothing.
+
+    Not covered here: that `ml_engine/training_runs.py` `MODELS` matches this
+    list. That is a cross-repo pair, so it is the writer's suite that pins it.
+    """
+    declared = declared_training_run_models()
+    assert declared, "no model_training_runs model whitelist found in db/migrations"
+    assert REQUIRED_TRAINING_RUN_MODELS <= declared, (
+        "model_training_runs rejects a model whose writer records quality rows,"
+        f" so those rows cannot be written at all: missing"
+        f" {sorted(REQUIRED_TRAINING_RUN_MODELS - declared)}")
+    conn = await asyncpg.connect(database_url)
+    try:
+        tr = conn.transaction()
+        await tr.start()
+        for model in sorted(declared):
+            await conn.execute(
+                "INSERT INTO model_training_runs (model) VALUES ($1)", model)
+        with pytest.raises(asyncpg.exceptions.CheckViolationError):
+            await conn.execute(
+                "INSERT INTO model_training_runs (model) VALUES ('not_a_model')")
+        await tr.rollback()
+    finally:
+        await conn.close()
