@@ -129,6 +129,32 @@ NEVER: dict[str, str] = {
 
 ALL_TABLES: dict[str, str] = {**AGED, **CASCADE, **NEVER}
 
+# The aged tables whose time column is an analytic anchor rather than a write
+# timestamp: a row dated after the tick's own day is a rehearsal, and it wins
+# every `as_of DESC` reader (`created_at` cannot be in the future, `as_of` can).
+FUTURE_DATED: dict[str, str] = {
+    table: column for table, column in AGED.items()
+    if column in ("as_of", "scored_at")
+}
+
+
+async def future_rows(conn, today) -> dict[str, int]:
+    """Rows dated after `today`, per anchored table.
+
+    Detection, not prevention: the writers refuse a future `as_of` (the tick in
+    `guard_as_of`, ml's CLI before it connects), so a non-zero count here means
+    a path nobody owns yet wrote one -- and the tick must say so out loud,
+    naming the table and the count, rather than leaving the row to outrank the
+    live number on a page.
+    """
+    found: dict[str, int] = {}
+    for table, column in FUTURE_DATED.items():
+        n = await conn.fetchval(
+            f'SELECT count(*) FROM "{table}" WHERE "{column}" > $1', today)
+        if n:
+            found[table] = int(n)
+    return found
+
 def _delete_sql(table: str, column: str) -> str:
     """The capped age-delete for one parent.
 

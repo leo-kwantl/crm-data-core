@@ -55,6 +55,7 @@ if str(REPO) not in sys.path:  # pragma: no cover - import convenience
     sys.path.insert(0, str(REPO))
 
 from pipelines import apply as ap  # noqa: E402
+from pipelines import retention  # noqa: E402
 from pipelines import upload as up  # noqa: E402
 from pipelines.snapshot import (  # noqa: E402
     COHORT_GRANULARITIES,
@@ -64,7 +65,8 @@ from pipelines.snapshot import (  # noqa: E402
 )
 
 # Data-owned engines run in-process (ml engines go through argv builders).
-DATA_ENGINES = ("upload_apply", "kpi_daily", "cohort_snapshot")
+DATA_ENGINES = ("upload_apply", "kpi_daily", "cohort_snapshot",
+                "future_rows_guard")
 
 # A 'running' row older than this is abandoned, not in flight: a crashed or
 # killed tick leaves status='running' forever, and the claim gate below would
@@ -768,6 +770,20 @@ async def _run_data_engine(engine: str, params: dict,
                 f"upload_apply strategy {strategy!r} unsupported "
                 f"(only 'validated_only')")
         await apply_pending(conn, ctx)
+        return None
+    if engine == "future_rows_guard":
+        # Runs last in the nightly tick. Prevention is in the two writers
+        # (`guard_as_of` here, ml's CLI before it connects); this is the
+        # missing *detection*: a path nobody owns writes a future `as_of`,
+        # the row outranks the live number on every `as_of DESC` reader, and
+        # a `succeeded` ledger row for a day that has not happened makes the
+        # real tick skip the job. Fail loudly, naming table and count.
+        offenders = await retention.future_rows(conn, ctx.as_of)
+        if offenders:
+            raise RuntimeError(
+                "future-dated rows: " + ", ".join(
+                    f"{table}: {n}"
+                    for table, n in sorted(offenders.items())))
         return None
     if engine == "kpi_daily":
         row = await conn.fetchrow(KPI_DAILY_UPSERT_SQL, ctx.as_of,

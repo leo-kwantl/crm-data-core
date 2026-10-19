@@ -312,7 +312,8 @@ async def test_manifest_seeds_parse_and_order(database_url: str):
     assert nightly[0] == "apply"  # everything else depends on apply
     assert set(nightly) == {"apply", "rfm", "churn", "clv",
                             "segments_purchase", "segments_overall",
-                            "segments_behavior", "forecast"}
+                            "segments_behavior", "forecast",
+                            "future_rows"}
     # 041: the two derived segment modes wait for the purchase run.
     assert (nightly.index("segments_purchase")
             < nightly.index("segments_overall"))
@@ -436,8 +437,8 @@ async def test_runner_labels_a_failed_job_too(database_url: str, monkeypatch,
                                               tmp_path: Path):
     """A failed row still says which code ran -- that is when it matters.
 
-    The label is resolved before the engine is invoked (`_upstream_payload` `pipelines/schedule.py:825`)
-    and both finish paths persist it (`FINISH_RUN_SQL` `pipelines/schedule.py:119`, `:928`, `:935`), so a non-zero exit cannot leave
+    The label is resolved before the engine is invoked (`_upstream_payload` `pipelines/schedule.py:841`)
+    and both finish paths persist it (`FINISH_RUN_SQL` `pipelines/schedule.py:121`, `:944`, `:951`), so a non-zero exit cannot leave
     an error whose revision is unknown.
     """
     monkeypatch.setitem(sched.ENGINE_BUILDERS, "fake_fail", _fake_fail)
@@ -1134,3 +1135,46 @@ def test_a_scheduled_tick_may_not_stamp_a_future_as_of():
     # Today and every past day stay legal (backfills replay the window).
     sched.guard_as_of(_ctx(as_of=today))
     sched.guard_as_of(_ctx(as_of=today - timedelta(days=400)))
+
+
+# ---- the nightly detection job (a future-dated row must fail the tick) ----
+
+@pytest.mark.asyncio
+async def test_future_rows_guard_fails_naming_the_table_and_count(
+        database_url: str):
+    """Detection, not prevention: a future `as_of` must show up as a red tick.
+
+    Measured 2026-10-20: 753 rows in 7 tables held an `as_of` days ahead, and
+    the worst (`pipeline_runs` claiming `succeeded` for 10-24..10-26) fail
+    silently and in the future -- the real tick skips the job and the page
+    shows nothing. Both writers refuse to mint one now; this is the check
+    that catches a writer nobody owns.
+    """
+    from datetime import timedelta
+
+    from pipelines.snapshot import business_today
+
+    ctx = _ctx(as_of=business_today())
+    async with _pool(database_url) as pool:
+        async with pool.acquire() as conn:
+            before = await conn.fetchval(
+                "SELECT count(*) FROM segment_runs WHERE as_of > $1",
+                ctx.as_of)
+            assert await sched._run_data_engine(
+                "future_rows_guard", {}, conn, ctx) is None
+            rid = await conn.fetchval(
+                "INSERT INTO segment_runs (as_of, mode, k, created_by)"
+                " VALUES ($1, 'overall', 5, 'test-guard') RETURNING id",
+                ctx.as_of + timedelta(days=3))
+            try:
+                with pytest.raises(
+                        RuntimeError,
+                        match=f"segment_runs: {before + 1}"):
+                    await sched._run_data_engine(
+                        "future_rows_guard", {}, conn, ctx)
+            finally:
+                await conn.execute(
+                    "DELETE FROM segment_runs WHERE id = $1", rid)
+            # and the row's removal is what clears the finding, not a flag
+            assert await sched._run_data_engine(
+                "future_rows_guard", {}, conn, ctx) is None
