@@ -129,5 +129,12 @@ async def test_receipt_lifecycle_and_manifest_link(database_url: str):
                 job)
             await conn.execute(
                 "DELETE FROM upload_jobs WHERE id = $1", job)
+            # The probe row is not a schedule. Left behind it breaks
+            # test_schedule.py::test_live_manifest_rows_are_reachable_by_the_tick,
+            # which requires every stored manifest to declare one (it skips
+            # only when pipeline_manifests is empty).
+            await conn.execute(
+                "DELETE FROM pipeline_manifests"
+                " WHERE pipeline = 'ld12-probe'")
     finally:
         await pool.close()
