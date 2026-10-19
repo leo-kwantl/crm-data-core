@@ -363,3 +363,71 @@ def test_ld1_unknown_entity_rejected():
 
     with pytest.raises(ValueError):
         ap.custom_data_upsert_sql("stores")
+
+
+@pytest.mark.asyncio
+async def test_apply_survives_a_find_that_missed(
+        database_url: str, tmp_path: Path, monkeypatch) -> None:
+    """find-then-insert TOCTOU: the row lands between the check and the write.
+
+    The pre-check is blinded (`FIND_ORDER_SQL` answers NULL) while the order
+    is already there, so the INSERT is the only statement that can notice.
+    Without ON CONFLICT the partial unique index raises UniqueViolationError
+    and the whole job dies on one replayed row; with it the row is skipped
+    and counted (review §4.3-4).
+    """
+    import asyncpg
+
+    monkeypatch.setenv("DATABASE_URL", database_url)
+    pool = await asyncpg.create_pool(database_url)
+    assert pool is not None
+    try:
+        async with pool.acquire() as conn:
+            await _seed(conn)
+            cid = await conn.fetchval(
+                "INSERT INTO customers (member_id, full_name)"
+                " VALUES ('M-900003', 'Race Buyer')"
+                " ON CONFLICT (member_id) DO UPDATE"
+                " SET full_name = EXCLUDED.full_name RETURNING id")
+            sid = await conn.fetchval(
+                "SELECT id FROM stores WHERE code = 'APPLY-S1'")
+            # the concurrent writer's row, already committed
+            await conn.execute(
+                "INSERT INTO orders (customer_id, store_id, ordered_at,"
+                " total_cents, status, source, external_order_id)"
+                " VALUES ($1, $2, TIMESTAMPTZ '2026-09-02 10:00:00+00',"
+                " 300, 'completed', 'pos', 'E-RACE-1')", cid, sid)
+    finally:
+        await pool.close()
+
+    import pipelines.apply as ap
+
+    monkeypatch.setattr(
+        ap, "FIND_ORDER_SQL",
+        "SELECT NULL::uuid WHERE $1::text IS NOT NULL"
+        " AND $2::text IS NOT NULL")
+
+    lines = json.dumps([{"sku": "APPLY-SKU", "qty": 3,
+                         "unit_cents": 100}]).replace('"', '""')
+    csv = ("store_id,external_order_id,customer_id,lines,ordered_at\n"
+           f"APPLY-S1,E-RACE-1,M-900003,\"{lines}\",2026-09-02T10:00:00Z\n")
+    out = await run_upload.run(
+        _write(tmp_path, "race.csv", csv), "orders", "pos", None,
+        None, None, apply=True)
+
+    assert out["status"] == "committed", out
+    assert out["skipped"] == 1 and out["apply_failed"] == []
+    pool = await asyncpg.create_pool(database_url)
+    assert pool is not None
+    try:
+        async with pool.acquire() as conn:
+            n = await conn.fetchval(
+                "SELECT COUNT(*) FROM orders WHERE source = 'pos'"
+                " AND external_order_id = 'E-RACE-1'")
+            assert int(n) == 1, "the raced row must not be duplicated"
+            total = await conn.fetchval(
+                "SELECT total_cents FROM orders"
+                " WHERE external_order_id = 'E-RACE-1'")
+            assert int(total) == 300, "the winner's row must not be rewritten"
+    finally:
+        await pool.close()

@@ -71,6 +71,9 @@ INSERT INTO orders
   (customer_id, store_id, ordered_at, total_cents, status,
    source, external_order_id)
 VALUES ($1, $2, $3, $4, $5, $6, $7)
+ON CONFLICT (source, external_order_id)
+  WHERE source IS NOT NULL AND external_order_id IS NOT NULL
+DO NOTHING
 RETURNING id
 """
 
@@ -88,6 +91,9 @@ INSERT INTO customer_events
   (customer_id, kind, source, source_event_id, summary, payload,
    occurred_at)
 VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)
+ON CONFLICT (source, source_event_id)
+  WHERE source_event_id IS NOT NULL
+DO NOTHING
 RETURNING id
 """
 
@@ -224,6 +230,12 @@ async def _apply_order(conn, norm: dict, raw: dict,
         INSERT_ORDER_SQL, cid, store_id, _ordered_at(raw),
         norm["total_cents"], (raw.get("status") or "completed")[:20],
         source, ext)
+    if oid is None:
+        # The partial unique index caught a row a concurrent apply inserted
+        # between the find above and this insert. One replay lost the race:
+        # skip it (the order and its lines exist) instead of failing the
+        # whole job on a uniqueness violation.
+        return None
     oid = str(oid)
     for pid, qty, cents in product_ids:
         await conn.execute(INSERT_LINE_SQL, oid, pid, qty, cents)
@@ -247,9 +259,10 @@ async def _write_order_placed(conn, cid: str, store_id: str, oid: str,
     summary = f"Order {label} \u00b7 ${total_cents / 100:,.2f}"[:200]
     payload = json.dumps({"order_id": oid, "total_cents": total_cents,
                           "store_id": str(store_id)})
-    await conn.execute(INSERT_EVENT_SQL, cid, DERIVED_ORDER_KIND,
-                       DERIVED_EVENT_SOURCE, evid, summary, payload,
-                       ordered_at)
+    new_id = await conn.fetchval(INSERT_EVENT_SQL, cid, DERIVED_ORDER_KIND,
+                                 DERIVED_EVENT_SOURCE, evid, summary, payload,
+                                 ordered_at)
+    return None if new_id is None else evid
 
 
 async def _apply_event(conn, norm: dict, raw: dict,
@@ -267,10 +280,12 @@ async def _apply_event(conn, norm: dict, raw: dict,
     if isinstance(occurred, str):
         occurred = datetime.fromisoformat(occurred.replace("Z", "+00:00"))
     summary = (raw.get("summary") or f"{norm['type']} event")[:200]
-    await conn.execute(
+    new_id = await conn.fetchval(
         INSERT_EVENT_SQL, cid, norm["type"], source,
         norm["source_event_id"], summary,
         json.dumps(norm.get("payload") or {}), occurred)
+    if new_id is None:
+        return None  # lost the race to a concurrent apply of the same event
     return "event"
 
 

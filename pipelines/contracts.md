@@ -230,7 +230,11 @@ App posts the file edge (`upload_jobs` row); data owns stage → validate
    upsert on `member_id` (+ contacts append, conflict-ignore); orders
    resolve store (id-or-code) + customer (uuid/member/external) +
    SKUs, pre-checking `(source, external_order_id)` so replay = skip;
-   events pre-check `(source, source_event_id)`; identity binds the
+   the insert itself is `ON CONFLICT DO NOTHING` on that same partial
+   UNIQUE, so a row that lands between the pre-check and the insert (a
+   concurrent apply) is skipped and counted instead of failing the whole
+   job; events pre-check `(source, source_event_id)` with the same
+   conflict-ignore on insert; identity binds the
    external id onto the existing member row. Unresolvable refs
    (unknown store/customer/SKU/member) → apply-fail quarantine, so
    `total == committed + quarantined` still holds
