@@ -17,7 +17,10 @@ pass on the arithmetic.
 Why a test instead of a comment: the two numbers live in two repos and were
 kept in agreement by memory. This reads the pinned manifest row AND ml's
 constant, so an edit to either side alone turns red -- the same class of
-drift as the app/data mirror.
+drift as the app/data mirror. In a data-only checkout ml's numbers are
+absent, and the bar degrades to the documented floor rather than the test
+disappearing: a guard that skips is a guard that reports success where it
+could not run.
 """
 
 from __future__ import annotations
@@ -34,6 +37,17 @@ from pipelines import schedule as sched
 REPO = Path(__file__).resolve().parents[3]
 ML_FORECAST = REPO.parent / "crm-cdp-ml" / "ml_engine" / "forecast.py"
 
+# ml's constants, duplicated on purpose: a duplicate that is *checked against
+# the original whenever the sibling is present* is a pin, not a copy. They are
+# the floor, not a decoration -- with only the sibling read, a data-only
+# checkout skipped both arithmetic tests and the file reported green, i.e. the
+# guard was silent in the one checkout shape it protects. When the sibling is
+# absent the bar degrades to the floor and the test still runs; when the
+# sibling exists but the constant is gone the test fails (ml renamed what this
+# reads).
+SEASON_MIN_CYCLES_FLOOR = 2
+LOST_WINDOW_WEEKS_FLOOR = 1
+
 
 def _ml_int_constant(name: str) -> int:
     """Read a module-level integer constant from ml's forecast module.
@@ -42,8 +56,6 @@ def _ml_int_constant(name: str) -> int:
     data-only CI run) and importing it would drag numpy in for one integer.
     A rename or a move fails here loudly -- which is the point.
     """
-    if not ML_FORECAST.exists():
-        pytest.skip(f"ml checkout not present at {ML_FORECAST}")
     tree = ast.parse(ML_FORECAST.read_text(encoding="utf-8"))
     for node in tree.body:
         if isinstance(node, ast.Assign):
@@ -54,6 +66,13 @@ def _ml_int_constant(name: str) -> int:
                     return node.value.value
     raise AssertionError(f"{name} is not a module-level integer in "
                          f"{ML_FORECAST}")
+
+
+def _ml_int_constant_or(floor: int, name: str) -> int:
+    """ml's value when its checkout sits beside this one, else the floor."""
+    if not ML_FORECAST.exists():
+        return floor
+    return _ml_int_constant(name)
 
 
 def _argv_value(argv: list[str], flag: str) -> int:
@@ -99,8 +118,8 @@ def _forecast_jobs(database_url: str) -> list[tuple[str, dict]]:
 def test_stored_manifest_window_identifies_the_annual_cycle(
         database_url: str) -> None:
     """Every stored manifest's pinned window clears the identifiability bar."""
-    cycles = _ml_int_constant("SEASON_MIN_CYCLES")
-    lost = _ml_int_constant("LOST_WINDOW_WEEKS")
+    cycles = _ml_int_constant_or(SEASON_MIN_CYCLES_FLOOR, "SEASON_MIN_CYCLES")
+    lost = _ml_int_constant_or(LOST_WINDOW_WEEKS_FLOOR, "LOST_WINDOW_WEEKS")
     jobs = _forecast_jobs(database_url)
     assert jobs, ("no stored manifest has a forecast job -- this test would "
                   "pass vacuously")
@@ -119,8 +138,8 @@ def test_stored_manifest_window_identifies_the_annual_cycle(
 
 def test_code_default_window_identifies_the_annual_cycle() -> None:
     """A manifest that pins nothing still gets an identifiable window."""
-    cycles = _ml_int_constant("SEASON_MIN_CYCLES")
-    lost = _ml_int_constant("LOST_WINDOW_WEEKS")
+    cycles = _ml_int_constant_or(SEASON_MIN_CYCLES_FLOOR, "SEASON_MIN_CYCLES")
+    lost = _ml_int_constant_or(LOST_WINDOW_WEEKS_FLOOR, "LOST_WINDOW_WEEKS")
     argv = sched.ENGINE_BUILDERS["forecast_snapshot"]({}, _ctx())
     lookback = _argv_value(argv, "--lookback-weeks")
     period = _argv_value(argv, "--season-period")
