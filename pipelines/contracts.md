@@ -558,6 +558,10 @@ mean_abs_shap/mean_shap/min_shap/max_shap, UNIQUE against
 double-write). PNGs stay MLflow-only; app serves latest-run summaries.
 Shape mirrors `ml_engine/store_explain.py` inserts.
 
+## 040: SHAP batch coverage (`clusters_explained`, `clusters_skipped`)
+
+`store_explain.explain_matrix` already returned how many clusters it explained and which cluster NUMBERS it skipped (too few members / all one cluster); `explain_batches` had nowhere to put them, so a batch that dropped clusters looked identical to a full one and the app could not render "segment 3 was not explained". `040` adds `clusters_explained integer` and `clusters_skipped integer[]`, both NULLABLE with no default: a batch written before 040 reads `NULL` = **not recorded** (the `seg_surrogate_fits.accuracy` convention), never a false "explained 0, skipped none". ml binds both in `BATCH_INSERT_SQL`; app renders `NULL` as not recorded and a non-empty `clusters_skipped` as the per-segment skip.
+
 ## 022: demand-forecast snapshot tables (M3, [ADDITIVE] analytics)
 
 `022_forecast.sql`: `forecast_batches` (as_of/method/horizon_days/

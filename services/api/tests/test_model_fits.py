@@ -360,3 +360,54 @@ def test_explain_write_gate():
         fit_accuracy=0.93) == "xgb_surrogate_v1"
     with pytest.raises(ValueError, match="unknown explain method"):
         validate_explain_write("shap_legacy")
+
+
+async def test_explain_batches_carry_coverage_columns(database_url: str):
+    """040: a batch records how much of the run it explained.
+
+    ml's `explain_matrix` already returns `clusters_explained` and the
+    skipped cluster NUMBERS; nothing persisted them, so the app could not
+    tell a full batch from one that silently dropped clusters. Both columns
+    are nullable on purpose: a batch written before 040 must read "not
+    recorded", never a false "explained 0, skipped none".
+    """
+    import asyncpg
+    pool = await asyncpg.create_pool(database_url)
+    try:
+        async with pool.acquire() as conn:
+            cols = {r["column_name"]: (r["udt_name"], r["is_nullable"])
+                    for r in await conn.fetch(
+                        "SELECT column_name, udt_name, is_nullable"
+                        " FROM information_schema.columns"
+                        " WHERE table_name = 'explain_batches'"
+                        " AND column_name LIKE 'clusters_%'")}
+        assert cols == {"clusters_explained": ("int4", "YES"),
+                        "clusters_skipped": ("_int4", "YES")}, cols
+        async with pool.acquire() as conn:
+            run = await conn.fetchval(
+                "INSERT INTO segment_runs (as_of, mode, k)"
+                " VALUES ($1::date, 'overall', 3) RETURNING id",
+                date(2025, 1, 14))
+            legacy = await conn.fetchval(
+                "INSERT INTO explain_batches (segment_run_id, mode, k, top_n)"
+                " VALUES ($1, 'overall', 3, 5) RETURNING id", run)
+            row = await conn.fetchrow(
+                "SELECT clusters_explained, clusters_skipped"
+                " FROM explain_batches WHERE id = $1", legacy)
+            assert row["clusters_explained"] is None
+            assert row["clusters_skipped"] is None
+            stamped = await conn.fetchval(
+                "INSERT INTO explain_batches"
+                " (segment_run_id, mode, k, top_n, clusters_explained,"
+                " clusters_skipped)"
+                " VALUES ($1, 'overall', 3, 5, 4, $2::int[]) RETURNING id",
+                run, [3])
+            row = await conn.fetchrow(
+                "SELECT clusters_explained, clusters_skipped"
+                " FROM explain_batches WHERE id = $1", stamped)
+            assert row["clusters_explained"] == 4
+            assert list(row["clusters_skipped"]) == [3]
+            await conn.execute(
+                "DELETE FROM segment_runs WHERE id = $1", run)
+    finally:
+        await pool.close()
