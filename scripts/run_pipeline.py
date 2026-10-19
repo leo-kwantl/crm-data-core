@@ -31,6 +31,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
+from pipelines import retention  # noqa: E402
 from pipelines import schedule as sched  # noqa: E402
 from pipelines.snapshot import (  # noqa: E402
     BUSINESS_TZ_OFFSET_HOURS, business_now, business_today)
@@ -272,6 +273,23 @@ async def watch(interval: int, ml_repo, brand_id, group_id,
                       "scope": _scope_label(scope_brand, scope_group),
                       "event": "fired", "jobs": len(out["outcomes"]),
                       "failed": bad or None})
+        # Housekeeping last, never before the scores, and never fatal: a
+        # retention bug must not cost a night of analytics. Its own line says
+        # how many rows each parent dropped, which is where a broken rule
+        # shows up without turning the tick red (`0`/absent = nothing aged).
+        if due_now:
+            try:
+                rconn, _ = await _connect_resolved(db_url)
+                try:
+                    deleted = await retention.prune(rconn)
+                finally:
+                    await rconn.close()
+                _log({"tick": when.isoformat(), "event": "retention",
+                      "deleted": deleted or None})
+            except Exception as exc:       # noqa: BLE001 -- see above
+                _log({"tick": when.isoformat(),
+                      "event": "retention failed",
+                      "error": f"{type(exc).__name__}: {exc}"})
         if once:
             _log({"tick": when.isoformat(), "event": "once: done",
                   "fired": sorted(f"{p}@{d}" for p, d in fired),

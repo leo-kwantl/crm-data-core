@@ -1,0 +1,170 @@
+"""The 365-day retention rule: classified, indexed, capped, and never fatal.
+
+The rule itself is `pipelines/retention.py`; these are the four properties a
+delete that runs unattended needs, each expressed as something that fails when
+it stops being true:
+
+* every table is classified (a new table cannot be silently forgotten, and the
+  append-only tables cannot be quietly aged by a later edit),
+* every delete predicate is served by an index (`enable_seqscan = off` so the
+  answer is "is there an index", not "is the table big enough today"),
+* nothing younger than the window is touched, and one parent never deletes more
+  than the cap in one tick,
+* a failing parent is reported and skipped instead of aborting the sweep.
+"""
+from __future__ import annotations
+
+import asyncio
+from pathlib import Path
+
+import asyncpg
+
+from pipelines import retention
+
+REPO = Path(__file__).resolve().parents[3]
+
+
+def _run(coro):
+    return asyncio.run(coro)
+
+
+async def _connect(database_url: str):
+    return await asyncpg.connect(database_url)
+
+
+def test_every_public_table_is_classified(database_url: str) -> None:
+    async def _tables():
+        conn = await _connect(database_url)
+        try:
+            rows = await conn.fetch(
+                "SELECT c.relname FROM pg_class c"
+                " JOIN pg_namespace n ON n.oid = c.relnamespace"
+                " WHERE c.relkind = 'r' AND n.nspname = 'public'"
+                " ORDER BY 1")
+            return {r["relname"] for r in rows}
+        finally:
+            await conn.close()
+
+    live = _run(_tables())
+    # The migrations are the schema's source of truth, and they carry the tables
+    # a future change adds: a table declared in a migration but missing from the
+    # test database (dev-only DDL, a gated branch) still has to be classified.
+    declared = set(_declared_tables())
+    unknown = (live | declared) - set(retention.ALL_TABLES)
+    assert not unknown, (
+        f"table(s) in neither the delete set nor the never-delete set: "
+        f"{sorted(unknown)} -- decide, do not let a new table be forgotten")
+    # A delete or cascade target that is absent is a silent no-op sweep; a
+    # never-delete entry that is absent is only a stale declaration (dev-only
+    # tables such as `report_runs` live in the bootstrap, not in the migrations
+    # this fixture replays).
+    missing_targets = (set(retention.AGED) | set(retention.CASCADE)) - live
+    assert not missing_targets, (
+        f"retention targets absent from the schema: {sorted(missing_targets)}")
+
+
+def _declared_tables() -> list[str]:
+    """Table names any migration creates, read from the files themselves."""
+    import re
+    pattern = re.compile(
+        r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([a-z_][a-z0-9_]*)",
+        re.I)
+    names: set[str] = set()
+    for path in sorted((REPO / "db" / "migrations").glob("*.sql")):
+        names.update(pattern.findall(path.read_text(encoding="utf-8")))
+    return sorted(names)
+
+
+def test_each_predicate_uses_an_index(database_url: str) -> None:
+    async def _plans():
+        conn = await _connect(database_url)
+        try:
+            out = {}
+            for table, query in retention.predicates().items():
+                await conn.execute("SET enable_seqscan = off")
+                rows = await conn.fetch("EXPLAIN (FORMAT TEXT) " + query)
+                await conn.execute("SET enable_seqscan = on")
+                out[table] = "\n".join(r[0] for r in rows)
+            return out
+        finally:
+            await conn.close()
+
+    plans = _run(_plans())
+    bad = {t: p for t, p in plans.items() if "Seq Scan" in p}
+    assert not bad, (
+        "retention predicates that would scan the whole table: "
+        + ", ".join(f"{t} ({p.splitlines()[-1].strip()[:60]})"
+                    for t, p in bad.items()))
+
+
+def test_prune_keeps_the_window_and_reports_counts(database_url: str) -> None:
+    old = "retention-old"
+    new = "retention-new"
+
+    async def _work():
+        conn = await _connect(database_url)
+        try:
+            await conn.execute(
+                "DELETE FROM pipeline_runs WHERE pipeline LIKE $1",
+                "retention-%")
+            await conn.execute(
+                "INSERT INTO pipeline_runs (pipeline, job, as_of, created_at)"
+                " VALUES ($1, 'j', current_date - $2::int,"
+                "         now() - make_interval(days => $2::int))", old, 400)
+            await conn.execute(
+                "INSERT INTO pipeline_runs (pipeline, job, as_of, created_at)"
+                " VALUES ($1, 'j', current_date, now())", new)
+            counts = await retention.prune(conn)
+            left = {r["pipeline"] for r in await conn.fetch(
+                "SELECT pipeline FROM pipeline_runs WHERE pipeline LIKE $1",
+                "retention-%")}
+            await conn.execute(
+                "DELETE FROM pipeline_runs WHERE pipeline LIKE $1",
+                "retention-%")
+            return counts, left
+        finally:
+            await conn.close()
+
+    counts, left = _run(_work())
+    assert old not in left, "a row older than the window survived"
+    assert new in left, "a row inside the window was deleted"
+    assert counts.get("pipeline_runs") == 1, counts
+
+
+def test_one_parent_is_capped_per_tick(database_url: str) -> None:
+    async def _work():
+        conn = await _connect(database_url)
+        try:
+            await conn.execute(
+                "DELETE FROM pipeline_runs WHERE pipeline LIKE $1",
+                "retention-cap-%")
+            await conn.executemany(
+                "INSERT INTO pipeline_runs (pipeline, job, as_of, created_at)"
+                " VALUES ($1, 'j', current_date - 400,"
+                "         now() - interval '400 days')",
+                [(f"retention-cap-{i}",) for i in range(7)])
+            counts = await retention.prune(conn, cap=3)
+            left = await conn.fetchval(
+                "SELECT count(*) FROM pipeline_runs WHERE pipeline LIKE $1",
+                "retention-cap-%")
+            await conn.execute(
+                "DELETE FROM pipeline_runs WHERE pipeline LIKE $1",
+                "retention-cap-%")
+            return counts, left
+        finally:
+            await conn.close()
+
+    counts, left = _run(_work())
+    assert counts.get("pipeline_runs") == 3, counts
+    assert left == 4, f"cap 3 should leave 4 of 7 rows, {left} left"
+
+
+def test_a_failing_parent_is_reported_not_raised() -> None:
+    class Boom:
+        async def execute(self, *a, **k):
+            raise RuntimeError("boom")
+
+    counts = _run(retention.prune(Boom()))
+    assert counts, "the sweep reports every parent it attempted"
+    assert set(counts.values()) == {-1}, (
+        "a failing parent must be marked -1 and not stop the sweep")
