@@ -77,7 +77,8 @@ async def run(path: Path, kind: str, source: str, created_by: str | None,
                                "rejected", b["reason"])
             await conn.execute(up.WRITE_QUARANTINE_SQL, job_id,
                                b["row_number"], source, b["key"],
-                               b["reason"], json.dumps(b["raw"]))
+                               b["reason"], json.dumps(b["raw"]),
+                               b["code"])
         up.reconcile(len(rows), len(ok), len(bad))
         applied = skipped = revived = 0
         apply_failed: list = []
@@ -96,19 +97,22 @@ async def run(path: Path, kind: str, source: str, created_by: str | None,
         else:
             status = ("committed" if not quarantined
                       else "committed_with_rejects")
+        reasons = await up.reason_counts(conn, job_id)
         await conn.execute(up.FINISH_JOB_SQL, job_id, status, len(rows),
-                           len(rows), committed, quarantined, None)
+                           len(rows), committed, quarantined, None,
+                           json.dumps(reasons))
         return {"job_id": str(job_id), "reused": False,
                 "status": status, "encoding": encoding,
                 "total": len(rows), "committed": committed,
                 "quarantined": quarantined, "applied": applied,
                 "skipped": skipped, "customers_revived": revived,
+                "quarantine_reasons": reasons,
                 "apply_failed": [f["row_number"] for f in apply_failed]}
     except Exception as exc:  # noqa: BLE001 - job row must record failure
         if job_id is not None:
             try:
                 await conn.execute(up.FINISH_JOB_SQL, job_id, "failed", 0,
-                                   0, 0, 0, str(exc)[:1000])
+                                   0, 0, 0, str(exc)[:1000], "{}")
             except Exception:
                 pass
         raise

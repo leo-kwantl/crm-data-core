@@ -12,17 +12,21 @@ from __future__ import annotations
 
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
+from pipelines.ingest.errors import RowRejected
+
 _CENTS = Decimal("1")
 
 
 def decimal_number(value, *, field: str) -> Decimal:
-    """Feed number -> Decimal, exactly. Raises ValueError (quarantine)."""
+    """Feed number -> Decimal, exactly. Raises RowRejected (quarantine)."""
     try:
         dec = Decimal(str(value).strip())
     except (InvalidOperation, ValueError):
-        raise ValueError(f"{field}: not a number: {value!r}") from None
+        raise RowRejected(f"{field}: not a number: {value!r}",
+                          "not_decimal") from None
     if not dec.is_finite():
-        raise ValueError(f"{field}: not a finite number: {value!r}")
+        raise RowRejected(f"{field}: not a finite number: {value!r}",
+                          "not_finite")
     return dec
 
 
@@ -43,7 +47,8 @@ def whole_number(value, *, field: str) -> int:
     """Feed count -> int, refusing a fraction rather than truncating it."""
     dec = decimal_number(value, field=field)
     if dec != dec.to_integral_value():
-        raise ValueError(f"{field}: must be a whole number, got {value!r}")
+        raise RowRejected(f"{field}: must be a whole number, got {value!r}",
+                          "qty_not_integral")
     return int(dec)
 
 

@@ -26,6 +26,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from pipelines import upload as up
+from pipelines.ingest.errors import RowMissing, RowRejected, code_of
 
 RESOLVE_STORE_SQL = """
 SELECT id FROM stores WHERE code = $1 OR id::text = $1
@@ -111,9 +112,17 @@ WHERE upload_job_id = $1 AND status = 'ok' ORDER BY row_number
 
 QUARANTINE_INSERT_SQL = """
 INSERT INTO quarantine_rows (upload_job_id, row_number, source, key,
-                             reason, raw)
-VALUES ($1, $2, $3, $4, $5, $6::jsonb)
+                             reason, raw, code)
+VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)
 ON CONFLICT (upload_job_id, row_number) DO NOTHING
+"""
+
+# A row that now applies cleanly retires the quarantine record that blocked it
+# earlier (`(source, key)` is the row's dedup identity, so the match is exact).
+RESOLVE_QUARANTINE_SQL = """
+UPDATE quarantine_rows SET resolved_at = now()
+WHERE source = $1 AND key = $2 AND resolved_at IS NULL
+  AND upload_job_id <> $3
 """
 
 # LD1: side-table registry (table, pk column). Writers merge jsonb
@@ -203,14 +212,15 @@ def _ordered_at(raw: dict,
     try:
         dt = datetime.fromisoformat(val.replace("Z", "+00:00"))
     except ValueError:
-        raise ValueError(
+        raise RowRejected(
             f"ordered_at {val!r} is not an ISO-8601 timestamp (refusing to"
-            " file the row under now())") from None
+            " file the row under now())", "ordered_at_unparseable") from None
     if dt.tzinfo is None:
         if feed_tz is None:
-            raise ValueError(
+            raise RowRejected(
                 f"ordered_at {val!r} is timezone-naive and this feed declares"
-                " no zone (8 h of slack would move it between business days)")
+                " no zone (8 h of slack would move it between business days)",
+                "ordered_at_naive")
         dt = dt.replace(tzinfo=feed_tz)
     return dt
 
@@ -241,7 +251,8 @@ async def _apply_identity(conn, norm: dict, raw: dict) -> str:
     tag = await conn.execute(
         IDENTITY_BIND_SQL, norm["member_id"], norm["external_member_id"])
     if tag.split()[-1] == "0":
-        raise LookupError(f"unknown member_id {norm['member_id']}")
+        raise RowMissing(f"unknown member_id {norm['member_id']}",
+                         "member_missing")
     cid = await resolve_customer(conn, norm["member_id"])
     assert cid is not None
     return cid
@@ -258,18 +269,20 @@ async def _apply_order(conn, norm: dict, raw: dict, source: str,
     ordered_at = _ordered_at(raw, feed_tz)
     store_id = await resolve_store(conn, norm["store_id"])
     if store_id is None:
-        raise LookupError(f"unknown store {norm['store_id']!r}")
+        raise RowMissing(f"unknown store {norm['store_id']!r}",
+                         "store_missing")
     cid = await resolve_customer(
         conn, raw.get("customer_id"), raw.get("member_id"),
         raw.get("external_member_id"))
     if cid is None:
-        raise LookupError("unresolvable customer (need customer_id, "
-                          "member_id or external_member_id)")
+        raise RowMissing("unresolvable customer (need customer_id, "
+                         "member_id or external_member_id)",
+                         "customer_unresolved")
     product_ids: list[tuple[str, int, int]] = []
     for line in norm["lines"]:
         pid = await conn.fetchval(RESOLVE_PRODUCT_SQL, line["sku"])
         if pid is None:
-            raise LookupError(f"unknown sku {line['sku']!r}")
+            raise RowMissing(f"unknown sku {line['sku']!r}", "sku_missing")
         product_ids.append((str(pid), line["qty"], line["unit_cents"]))
     oid = await conn.fetchval(
         INSERT_ORDER_SQL, cid, store_id, ordered_at,
@@ -319,8 +332,9 @@ async def _apply_event(conn, norm: dict, raw: dict,
         conn, norm.get("customer_id"), raw.get("member_id"),
         raw.get("external_member_id"))
     if cid is None:
-        raise LookupError("unresolvable customer (need customer_id, "
-                          "member_id or external_member_id)")
+        raise RowMissing("unresolvable customer (need customer_id, "
+                         "member_id or external_member_id)",
+                         "customer_unresolved")
     occurred = norm.get("occurred_at") or _now()
     if isinstance(occurred, str):
         occurred = datetime.fromisoformat(occurred.replace("Z", "+00:00"))
@@ -371,10 +385,12 @@ async def apply_job(conn, job_id: str, kind: str, source: str,
             norm = up.normalize_row(raw, kind)
         except ValueError as exc:
             reason = f"revalidate failed: {exc}"
-            failed.append({"row_number": row_no, "reason": reason})
+            code = code_of(exc)
+            failed.append({"row_number": row_no, "reason": reason,
+                           "code": code})
             await conn.execute(QUARANTINE_INSERT_SQL, job_id, row_no,
                                source, up.row_key(raw, kind), reason,
-                               json.dumps(raw))
+                               json.dumps(raw), code)
             await conn.execute(MARK_STAGED_SQL, job_id, row_no,
                                "rejected", reason)
             continue
@@ -391,10 +407,12 @@ async def apply_job(conn, job_id: str, kind: str, source: str,
                 result = await applier(conn, norm, raw)
         except (LookupError, ValueError) as exc:
             reason = f"apply failed: {exc}"
-            failed.append({"row_number": row_no, "reason": reason})
+            code = code_of(exc)
+            failed.append({"row_number": row_no, "reason": reason,
+                           "code": code})
             await conn.execute(QUARANTINE_INSERT_SQL, job_id, row_no,
                                source, up.row_key(raw, kind), reason,
-                               json.dumps(raw))
+                               json.dumps(raw), code)
             await conn.execute(MARK_STAGED_SQL, job_id, row_no,
                                "rejected", reason)
             continue
@@ -402,6 +420,10 @@ async def apply_job(conn, job_id: str, kind: str, source: str,
             skipped += 1
         else:
             applied += 1
+            key = up.row_key(raw, kind)
+            if key:
+                await conn.execute(RESOLVE_QUARANTINE_SQL, source, key,
+                                   job_id)
         if revived:
             revived_count += 1
             # One audit line per revival, on the row that caused it: a

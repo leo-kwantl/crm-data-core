@@ -191,10 +191,12 @@ async def test_upload_idempotent_and_quarantine(database_url: str):
             for b in bad:
                 await conn.execute(up.WRITE_QUARANTINE_SQL, job_id,
                                    b["row_number"], "upload", b["key"],
-                                   b["reason"], json.dumps(b["raw"]))
+                                   b["reason"], json.dumps(b["raw"]),
+                                   b["code"])
             await conn.execute(up.FINISH_JOB_SQL, job_id,
                                "committed_with_rejects",
-                               len(rows), len(rows), len(ok), len(bad), None)
+                               len(rows), len(rows), len(ok), len(bad), None,
+                               "{}")
             q = await conn.fetch(
                 "SELECT row_number, key, reason, raw FROM quarantine_rows"
                 " WHERE upload_job_id = $1", job_id)

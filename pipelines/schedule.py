@@ -730,11 +730,14 @@ async def apply_pending(conn, ctx: JobCtx) -> dict[str, Any]:
         up.reconcile(int(total), committed, quarantined)
         status = ("committed" if not res["failed"]
                   else "committed_with_rejects")
+        reasons = await up.reason_counts(conn, jid)
         await conn.execute(up.FINISH_JOB_SQL, jid, status, int(total),
-                           int(total), committed, quarantined, None)
+                           int(total), committed, quarantined, None,
+                           json.dumps(reasons))
         swept.append({"upload_job_id": str(jid), "status": status,
                       "applied": res["applied"],
                       "skipped": res["skipped"],
+                      "quarantine_reasons": reasons,
                       "customers_revived": res["customers_revived"],
                       "failed_rows": [f["row_number"] for f in res["failed"]]})
     return {"swept": len(swept), "jobs": swept}

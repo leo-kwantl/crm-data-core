@@ -19,6 +19,8 @@ transmitted bytes, so dedup is encoding-independent.
 """
 from __future__ import annotations
 
+from pipelines.ingest.errors import code_of
+
 import csv
 import gzip
 import hashlib
@@ -183,6 +185,7 @@ def validate_batch(rows: list[dict], kind: str) -> tuple[list[dict], list[dict]]
                         or row["raw"].get("external_member_id")
                         or row["raw"].get("member_id"),
                         "reason": str(exc)[:500],
+                        "code": code_of(exc),
                         "raw": row["raw"]})
     return ok, bad
 
@@ -226,14 +229,32 @@ WHERE upload_job_id = $1 AND row_number = $2
 """
 
 WRITE_QUARANTINE_SQL = """
-INSERT INTO quarantine_rows (upload_job_id, row_number, source, key, reason, raw)
-VALUES ($1, $2, $3, $4, $5, $6::jsonb)
+INSERT INTO quarantine_rows (upload_job_id, row_number, source, key, reason,
+                             raw, code)
+VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)
 ON CONFLICT (upload_job_id, row_number) DO NOTHING
 """
+
+REASON_COUNTS_SQL = """
+SELECT COALESCE(code, 'other') AS code, COUNT(*) AS n
+FROM quarantine_rows WHERE upload_job_id = $1 GROUP BY 1 ORDER BY 1
+"""
+
+
+async def reason_counts(conn, job_id) -> dict[str, int]:
+    """`{reason_code: rows}` for one job, read back from the quarantine rows.
+
+    Counted from the table rather than accumulated in Python so a job swept
+    twice (validate, then apply) still reports every quarantined row once.
+    """
+    return {r["code"]: int(r["n"])
+            for r in await conn.fetch(REASON_COUNTS_SQL, job_id)}
+
 
 FINISH_JOB_SQL = """
 UPDATE upload_jobs
 SET status = $2, total_rows = $3, staged_rows = $4,
-    committed_rows = $5, quarantined_rows = $6, error = $7
+    committed_rows = $5, quarantined_rows = $6, error = $7,
+    quarantine_reasons = $8::jsonb
 WHERE id = $1
 """

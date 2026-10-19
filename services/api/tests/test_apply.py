@@ -38,6 +38,22 @@ def _write(tmp_path: Path, name: str, text: str) -> Path:
     return p
 
 
+def test_rejection_codes_are_named_or_unclassified() -> None:
+    """A code is a token, never the free-text reason, and never invented.
+
+    `code_of` is the one place a rejection becomes a machine-readable bucket:
+    a validator that names a code keeps it, anything else lands as `other` so
+    an unclassified row is visible rather than merged into a plausible one.
+    """
+    from pipelines.ingest.errors import (RowMissing, RowRejected,
+                                         code_of)
+
+    assert code_of(RowRejected("bad yaml", "invalid_yaml")) == "invalid_yaml"
+    assert code_of(RowMissing("no sku", "sku_missing")) == "sku_missing"
+    assert code_of(RowRejected("hand-written")) == "other"
+    assert code_of(ValueError("hand-written")) == "other"
+
+
 @pytest.mark.asyncio
 async def test_apply_customers_upsert_and_contacts(
         database_url: str, tmp_path: Path, monkeypatch) -> None:
@@ -51,6 +67,7 @@ async def test_apply_customers_upsert_and_contacts(
         None, None, apply=True)
     assert out["status"] == "committed", out
     assert out["committed"] == 1 and out["quarantined"] == 0
+    assert out["quarantine_reasons"] == {}, out
 
     pool = await asyncpg.create_pool(database_url)
     assert pool is not None
@@ -580,5 +597,140 @@ async def test_naive_ordered_at_reads_the_feed_zone_not_utc(
                 " AND external_order_id = 'E-NAIVE-1'")
             assert when == datetime(2026, 10, 16, 17, 30, tzinfo=timezone.utc), \
                 f"01:30 +08 is 17:30Z the day before, got {when}"
+    finally:
+        await pool.close()
+
+
+@pytest.mark.asyncio
+async def test_run_summary_counts_quarantines_by_reason(
+        database_url: str, tmp_path: Path, monkeypatch) -> None:
+    """A run that drops rows must say so, by reason, on its own summary.
+
+    `quarantined_rows` alone is a number a reader cannot act on: the row is
+    dropped and the run says "succeeded". The job carries `{code: count}`
+    (migration 043), counted from the quarantine rows themselves.
+    """
+    import asyncpg
+
+    monkeypatch.setenv("DATABASE_URL", database_url)
+    pool = await asyncpg.create_pool(database_url)
+    assert pool is not None
+    try:
+        async with pool.acquire() as conn:
+            await _seed(conn)
+            await conn.execute(
+                "INSERT INTO customers (member_id, full_name)"
+                " VALUES ('M-910003', 'Reason Buyer')"
+                " ON CONFLICT (member_id) DO NOTHING")
+    finally:
+        await pool.close()
+
+    good = json.dumps([{"sku": "APPLY-SKU", "qty": 1,
+                        "unit_cents": 100}]).replace('"', '""')
+    nosku = json.dumps([{"sku": "NO-SUCH-SKU", "qty": 1,
+                         "unit_cents": 100}]).replace('"', '""')
+    csv = ("store_id,external_order_id,customer_id,lines,ordered_at\n"
+           f"APPLY-S1,E-Q1,M-910003,\"{good}\",2026-09-01T10:00:00Z\n"
+           f"APPLY-S1,E-Q2,M-910003,\"{good}\",not-a-date\n"
+           f"APPLY-S1,E-Q3,M-910003,\"{nosku}\",2026-09-01T10:00:00Z\n")
+    out = await run_upload.run(
+        _write(tmp_path, "q.csv", csv), "orders", "pos", None,
+        None, None, apply=True)
+
+    assert out["status"] == "committed_with_rejects", out
+    assert out["applied"] == 1
+    assert out["quarantine_reasons"] == {"ordered_at_unparseable": 1,
+                                         "sku_missing": 1}, out
+
+    pool = await asyncpg.create_pool(database_url)
+    assert pool is not None
+    try:
+        async with pool.acquire() as conn:
+            stored = await conn.fetchval(
+                "SELECT quarantine_reasons FROM upload_jobs WHERE id = $1",
+                out["job_id"])
+            if isinstance(stored, str):
+                stored = json.loads(stored)
+            assert stored == out["quarantine_reasons"], stored
+            codes = await conn.fetch(
+                "SELECT code FROM quarantine_rows WHERE upload_job_id = $1"
+                " ORDER BY code", out["job_id"])
+            assert [r["code"] for r in codes] == ["ordered_at_unparseable",
+                                                  "sku_missing"]
+    finally:
+        await pool.close()
+
+
+@pytest.mark.asyncio
+async def test_quarantine_retry_after_the_feed_is_fixed(
+        database_url: str, tmp_path: Path, monkeypatch) -> None:
+    """Quarantine is not terminal: the fixed row applies and the reject retires.
+
+    Append-only stays true -- the record is `resolved_at`, never edited or
+    deleted -- and the second run is a clean one, so its summary is `{}`.
+    """
+    import asyncpg
+
+    monkeypatch.setenv("DATABASE_URL", database_url)
+    pool = await asyncpg.create_pool(database_url)
+    assert pool is not None
+    try:
+        async with pool.acquire() as conn:
+            await _seed(conn)
+            await conn.execute(
+                "INSERT INTO customers (member_id, full_name)"
+                " VALUES ('M-910004', 'Retry Buyer')"
+                " ON CONFLICT (member_id) DO NOTHING")
+    finally:
+        await pool.close()
+
+    lines = json.dumps([{"sku": "APPLY-SKU", "qty": 3,
+                         "unit_cents": 100}]).replace('"', '""')
+    head = "store_id,external_order_id,customer_id,lines,ordered_at\n"
+    bad = (head + f"APPLY-S1,E-RETRY-1,M-910004,\"{lines}\",not-a-date\n")
+    out1 = await run_upload.run(
+        _write(tmp_path, "r1.csv", bad), "orders", "pos", None,
+        None, None, apply=True)
+    assert out1["status"] == "committed_with_rejects", out1
+    assert out1["quarantine_reasons"] == {"ordered_at_unparseable": 1}, out1
+
+    pool = await asyncpg.create_pool(database_url)
+    assert pool is not None
+    try:
+        async with pool.acquire() as conn:
+            assert not await conn.fetchval(
+                "SELECT COUNT(*) FROM orders"
+                " WHERE external_order_id = 'E-RETRY-1'")
+            open1 = await conn.fetchval(
+                "SELECT COUNT(*) FROM quarantine_rows WHERE source = 'pos'"
+                " AND key = 'E-RETRY-1' AND resolved_at IS NULL")
+            assert int(open1) == 1
+    finally:
+        await pool.close()
+
+    fixed = (head + f"APPLY-S1,E-RETRY-1,M-910004,\"{lines}\","
+             "2026-09-02T10:00:00Z\n")
+    out2 = await run_upload.run(
+        _write(tmp_path, "r2.csv", fixed), "orders", "pos", None,
+        None, None, apply=True)
+    assert out2["status"] == "committed", out2
+    assert out2["quarantine_reasons"] == {}, out2
+
+    pool = await asyncpg.create_pool(database_url)
+    assert pool is not None
+    try:
+        async with pool.acquire() as conn:
+            total = await conn.fetchval(
+                "SELECT total_cents FROM orders"
+                " WHERE external_order_id = 'E-RETRY-1'")
+            assert int(total) == 300
+            open2 = await conn.fetchval(
+                "SELECT COUNT(*) FROM quarantine_rows WHERE source = 'pos'"
+                " AND key = 'E-RETRY-1' AND resolved_at IS NULL")
+            assert int(open2) == 0
+            retired = await conn.fetchval(
+                "SELECT COUNT(*) FROM quarantine_rows WHERE source = 'pos'"
+                " AND key = 'E-RETRY-1' AND resolved_at IS NOT NULL")
+            assert int(retired) == 1
     finally:
         await pool.close()

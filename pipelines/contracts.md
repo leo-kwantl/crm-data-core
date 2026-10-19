@@ -105,8 +105,23 @@ ML features) read; nobody updates.
 
 ## Failure handling
 
-Rejects go to quarantine with (source, key, reason, raw) — never silently
-dropped, never auto-retried without a rule change.
+Rejects go to quarantine with (source, key, reason, raw, `code`) — never silently
+dropped. `code` is a stable token from `pipelines/ingest/errors.py`
+(`RowRejected` / `RowMissing`, read back by `code_of`), so a run can say *why*
+it dropped a row: the job carries `quarantine_reasons` = `{code: count}`
+(`043_quarantine_codes.sql`, `up.reason_counts`), which is how a run that
+quarantined stops reading as a clean pass — `{}` on a clean run, asserted in
+`services/api/tests/test_apply.py`. The row is dead but the data is not: 014
+revoked UPDATE/DELETE and 043 grants UPDATE on `resolved_at` alone, so the
+record is never edited or deleted, and re-applying the same `(source, key)`
+after the feed is fixed applies the row and stamps `resolved_at` on the open
+record (`RESOLVE_QUARANTINE_SQL`) — an append-only trail of the reject and of
+its resolution. A revived customer's derivations are **carried over, not
+recomputed** (measured: churn 13 / clv 15 / rfm 13 / segment 24 rows identical
+before the soft delete and after the revive, `max(created_at)` unmoved), so
+the scores describe the pre-deletion state until the next scheduled run — and
+while the customer is deleted its rows do not resolve, so new orders/events
+for that member quarantine as `customer_unresolved` instead of landing.
 
 ## Snapshot history (serves downstream trends + training)
 
@@ -188,7 +203,9 @@ The builder rejects the legacy param with a named `ManifestError` rather than le
 
 **Serving-side freshness.** The app's `POST /analytics/{churn,clv,segments}/snapshots` calls `store_*.create_snapshot` **in-process with `as_of` omitted** (app `services/api/analytics/snapshots_serve.py:48-54`), so an `ml_engine/` change is live for `ml_jobs/` immediately but **live in the API only after that process restarts** — compare the changed file's mtime against the serving process's start time, not `git log`.
 
-**`created_by` provenance.** `--created-by` is passed through (`scripts/run_pipeline.py:298` default `scheduler`), so via the runner a NULL is **unreachable**. Of the 12 `ml_jobs/run_*.py` entry points, 10 declare `add_argument("--created-by"` and 9 reference a `created_by` column; the 2 that declare nothing (`run_alive_path.py`, `run_matrix_batch.py`) reference none; `run_churn_predict.py:50-52` is **inert** — it accepts the flag and never passes it (`:26` calls `store_churn.predict_one`, `:54` prints JSON) — and no tick can reach it: `churn_predict` is not an `ENGINE_BUILDERS` key (`pipelines/schedule.py:609`, ten engines) and dispatch raises `UnknownEngineError` (`:217`, `:887`). app settled the other half: `churn_customer_scores` **is** read by app (`db/queries/analytics_customer.sql:26-33`, `analytics_snapshots.sql:31`), but those rows come from `store_churn.create_snapshot` (`:478`; `SNAPSHOT_INSERT_SQL` `:538`, `SCORES_INSERT_SQL` via `executemany` `:548`)
+**`created_by` provenance.** `--created-by` is passed through (`scripts/run_pipeline.py:298` default `scheduler`), so via the runner a NULL is **unreachable**. Of the 12 `ml_jobs/run_*.py` entry points, 10 declare `add_argument("--created-by"` and 9 reference a `created_by` column; the 2 that declare nothing (`run_alive_path.py`, `run_matrix_batch.py`) reference none; `run_churn_predict.py:50-52` is **inert** — it accepts the flag and never passes it (`:26` calls `store_churn.predict_one`, `:54` prints JSON) — and no tick can reach it.
+`churn_predict` is not an `ENGINE_BUILDERS` key (`pipelines/schedule.py:619`, ten engines), and `run_pipeline`'s dispatch (`pipelines/schedule.py:890`, `:898`) refuses an engine with no `ENGINE_BUILDERS` entry instead of skipping it.
+app settled the other half: `churn_customer_scores` **is** read by app (`db/queries/analytics_customer.sql:26-33`, `analytics_snapshots.sql:31`), but those rows come from `store_churn.create_snapshot` (`:478`; `SNAPSHOT_INSERT_SQL` `:538`, `SCORES_INSERT_SQL` via `executemany` `:548`)
 driven by the churn snapshot writer `ml_jobs/run_churn_snapshot.py:23`, while `predict_one` (`:411`) writes nothing (`return out` at `:428`/`:475`) — so removing the dead flag is app-safe as well as scheduler-safe. A NULL in the column therefore dates the row to a **direct ml-CLI hand-run** of one of the 9 writers, or to a tick handed an explicitly falsy stamp: `--created-by ""` is dropped by the truthiness guard at `pipelines/schedule.py:406-407` (again at `:441-442`) before `scripts/run_pipeline.py:132`'s non-empty default applies.
 `JobCtx` is constructed only at `scripts/run_pipeline.py:124`. **Pass a staff code wherever a job writes.**
 - The hole is **structural, not incidental**: all 12 `created_by` columns in this repo's DDL are `text NULL` with no `DEFAULT` (`db/migrations/007_customer_events.sql:14`, `010_analytics_rfm.sql:15`, `011_recommendations.sql:14`, `013_analytics_history.sql:24,57,115`, `014_upload_staging.sql:39`, `015_segments_pipelines.sql:37`, `018_assoc_rules.sql:25`, `019_connectors.sql:27`, `021_explain.sql:27`, `022_forecast.sql:30`), so an unstamped hand-run **cannot fail anywhere**. Data's own CLI follows the convention (`scripts/run_upload.py:124` `default=None`; the API stamps the session, `services/api/routers/customer_events.py:73`). Making `--created-by` **required** in the 10 ml CLIs was considered and **declined**: a 10-file argv change (`[BREAKING @both]`) that forces every dev/one-off invocation to pass a value, so the rule above closes the hole operationally.
@@ -210,7 +227,7 @@ driven by the churn snapshot writer `ml_jobs/run_churn_snapshot.py:23`, while `p
 `--brand-id`/`--group-id` (`scripts/run_pipeline.py:296-297` → `JobCtx`, `:125`) reach **every** job of a batch via `_scope_args(ctx)` (`pipelines/schedule.py:400`), so one invocation scopes the *whole* pipeline, not one job — which is why per-brand rows require **one runner invocation per brand**.
 Every job joins that argv through `_with_common` (`pipelines/schedule.py:430`), whose `with_scope` defaults true, so a manifest is what opts a job out.
 A fire with no pinned scope takes its batches from the live `brands` table (`tick_scopes`, `pipelines/schedule.py:92`; enumeration `TICK_BRANDS_SQL`, `:89`): every brand, then the `(NULL, NULL)` hq roll-up last (`scripts/run_pipeline.py:252-253`); a hand-run that pins a scope stays exactly that one batch (`pinned`, `:251`).
-Data engines stamp the run context directly (`_run_data_engine` `pipelines/schedule.py:743`; `KPI_DAILY_UPSERT_SQL` `:754`, `COHORT_SNAPSHOT_UPSERT_SQL` `:774`), so the fan-out covers them with no argv change, while the ml writers receive their `--brand-id` from the same `_scope_args`.
+Data engines stamp the run context directly (`_run_data_engine` `pipelines/schedule.py:756`; `KPI_DAILY_UPSERT_SQL` `pipelines/snapshot.py:82`, `COHORT_SNAPSHOT_UPSERT_SQL` `pipelines/snapshot.py:166`), so the fan-out covers them with no argv change, while the ml writers receive their `--brand-id` from the same `_scope_args` (`pipelines/schedule.py:400`).
 The stored crons are `nightly` (`0 1 * * *`: apply, rfm, churn, clv, **segments_purchase, segments_overall, segments_behavior**) and `weekly` (`0 2 * * 1`: segments_purchase, segments_overall, recs, assoc, explain, forecast, cohort, matrix) — the three segment modes moved to nightly in `041` because `segments_behavior` was in no manifest at all (a page fed by a job nobody ran) and the other two made an explain-vs-segment mismatch take up to seven days to heal; `weekly` keeps its own segments copy because `assoc`/`explain`/`matrix` declare `depends_on: segments_overall`, so folding them out would leave dangling names, and the duplicate run on the weekly night is a `skipped` row on the day grain. `kpi_daily` is in neither manifest **by decision** (the manager verified no app reader and no `/analytics/kpi` route: a nightly write into a table nobody serves is tick time for no user) — the manifest line goes in with the first KPI surface.
 Measured on the demo dataset: one nightly fire is **7 batches** (6 brands — `DEMO`/`SUNHING`/`KVLN`/`VICEW`/`HARBOR`/`PEAKLENS` — plus hq) × 4 jobs = 28 job runs in **34.5 s**, with each writer stamping its own row per brand (`rfm_snapshots` four window rows per scope) and 0 failures, so a weekly fire pays the same fan-out over 8 jobs. Before the fan-out a brand-scoped session got live RFM at `n=435` while `GET /analytics/rfm/snapshots` returned **0 rows** and `movement` a **404 `need_two_snapshots`** — **never a platform limit: nothing wrote scoped rows** (the tick now does) and no UI action calls the POST, while a scoped POST works (`services/api/tests/test_rfm.py:380` asserts `201`).
 Find-or-create is scope-aware (`ml_engine/store_ld8.py:65-66`), so the fan-out adds its rows beside the hq row instead of replacing it, and the single demo group makes a `--group-id` run customer-identical to hq — the reason the fan-out is by brand. No ML change is needed (`ml_engine/store_rfm.py:29-31`; `run_ld8` already threads `brand_id`/`group_id`), so per-brand writes are a **runner** decision — and they do not fix the scoped role that night: the band pairs **two** `current` rows of the newest `rules_version` in scope, so each scope needs a second scoped night, and the accurate copy is scope-neutral (*"no movement for this scope yet — movement appears once two snapshots of this window exist for this scope"*), because "the view needs a second night" is false of a scope whose own row count never moves.
@@ -251,8 +268,9 @@ App posts the file edge (`upload_jobs` row); data owns stage → validate
    `total == committed + quarantined` still holds
    (committed = applied + dedup-skipped). Optional raw `ordered_at`
    (ISO) honoured for orders, else now().
-5. **finish:** rejects → `quarantine_rows` (source, key, reason, raw) +
-   job counts; invariant `total == committed + quarantined`
+5. **finish:** rejects → `quarantine_rows` (source, key, reason, raw, `code`)
+   + job counts + `upload_jobs.quarantine_reasons` = `{code: count}`;
+   invariant `total == committed + quarantined`
    (`reconcile()` raises on drift). Without `--apply` the job ends
    `validated` (staged-ok counted committed, core untouched); with it,
    `committed` / `committed_with_rejects` / `failed`.
