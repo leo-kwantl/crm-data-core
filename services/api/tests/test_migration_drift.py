@@ -40,6 +40,7 @@ pytestmark = pytest.mark.asyncio
 
 MIGRATIONS_DIR = Path(__file__).resolve().parents[3] / "db" / "migrations"
 UP_RE = re.compile(r"--\s*migrate:up(.*?)(?=--\s*migrate:down|\Z)", re.S | re.I)
+VERSION_RE = re.compile(r"^(\d+)")
 
 CREATE_TABLE_RE = re.compile(
     r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([a-z_][a-z0-9_]*)", re.I)
@@ -67,6 +68,11 @@ FRAGMENT_CONSTANTS = {"pipelines.snapshot.BUSINESS_TZ_SQL"}
 # quoted EXECUTE literals are removed before parsing.
 DO_BLOCK_RE = re.compile(r"DO\s+\$\$.*?\$\$\s*;", re.S | re.I)
 STRING_RE = re.compile(r"'(?:[^']|'')*'")
+# Line comments go before string literals: a stray apostrophe in prose
+# (`job's own {code: count} map`) otherwise pairs with a later quote and
+# swallows every statement between them -- which is how 043's two
+# `ADD COLUMN`s stayed invisible to the declared-object check.
+LINE_COMMENT_RE = re.compile(r"--[^\n]*")
 
 
 def _up_sql(path: Path) -> str:
@@ -75,19 +81,53 @@ def _up_sql(path: Path) -> str:
     return m.group(1) if m else ""
 
 
+def _version_key(value: str) -> str:
+    """`043_quarantine_codes` and `043` name the same migration."""
+    m = VERSION_RE.match(str(value).strip())
+    return m.group(1) if m else str(value).strip().split("_")[0]
+
+
+def _declared_in(sql: str) -> tuple[set[str], set[tuple[str, str]], set[str]]:
+    """Parse one up-section for the objects it declares."""
+    sql = STRING_RE.sub("", LINE_COMMENT_RE.sub("", DO_BLOCK_RE.sub("", sql)))
+    return (
+        {m.group(1).lower() for m in CREATE_TABLE_RE.finditer(sql)},
+        {(m.group(1).lower(), m.group(2).lower())
+         for m in ADD_COLUMN_RE.finditer(sql)},
+        {m.group(1).lower() for m in CREATE_INDEX_RE.finditer(sql)},
+    )
+
+
 def declared_objects() -> tuple[set[str], set[tuple[str, str]], set[str]]:
     """Every table / (table, column) / index the up-sections declare."""
     tables: set[str] = set()
     columns: set[tuple[str, str]] = set()
     indexes: set[str] = set()
     for mig in sorted(MIGRATIONS_DIR.glob("*.sql")):
-        sql = STRING_RE.sub("", DO_BLOCK_RE.sub("", _up_sql(mig)))
-        tables.update(m.group(1).lower() for m in CREATE_TABLE_RE.finditer(sql))
-        columns.update((m.group(1).lower(), m.group(2).lower())
-                       for m in ADD_COLUMN_RE.finditer(sql))
-        indexes.update(m.group(1).lower()
-                       for m in CREATE_INDEX_RE.finditer(sql))
+        t, c, i = _declared_in(_up_sql(mig))
+        tables |= t
+        columns |= c
+        indexes |= i
     return tables, columns, indexes
+
+
+def declared_by_version() -> dict[str, set[str]]:
+    """{version: objects it declares} for every migration file.
+
+    "Objects" is the string form used in the ledger-gap message: `t:table`,
+    `c:table.column`, `i:index`.
+    """
+    out: dict[str, set[str]] = {}
+    for mig in sorted(MIGRATIONS_DIR.glob("*.sql")):
+        version = VERSION_RE.match(mig.name)
+        if version is None:
+            continue
+        tables, columns, indexes = _declared_in(_up_sql(mig))
+        out[version.group(1)] = (
+            {f"t:{t}" for t in tables}
+            | {f"c:{t}.{c}" for t, c in columns}
+            | {f"i:{i}" for i in indexes})
+    return out
 
 
 def append_only_tables() -> set[str]:
@@ -145,6 +185,68 @@ async def test_declared_ddl_exists_in_database(database_url: str) -> None:
     assert not missing_indexes, (
         "declared indexes missing (an applied migration was edited after this"
         f" database ran it): {missing_indexes}")
+
+
+async def test_no_unrecorded_migration_is_already_live(
+        database_url: str) -> None:
+    """A version missing from `schema_migrations` must not already be live.
+
+    Found by hand on 2026-10-19: `043_quarantine_codes.sql`'s columns existed
+    on the demo cluster while the ledger's head was `042`, so `dbmate up` and
+    `scripts/bootstrap_db.py` would both have re-run the file -- the drift the
+    review found at `orders.source`, seen from the other side. The declared-
+    object test above cannot see it: the objects are present, and on a
+    from-scratch database every file's current text runs by definition.
+
+    Flagged only when **every** object the file declares is live and at least
+    one of them is declared by no other file, so a column two migrations share
+    cannot fire it. A database with no ledger at all is the tests' own
+    throwaway cluster (conftest replays each up-section), so there it skips.
+
+    Known gap: a migration that only moves data (`044`'s `UPDATE` of the
+    manifest row) declares no object, so this check cannot see it -- the ledger
+    row is the only evidence it ran.
+    """
+    conn = await asyncpg.connect(database_url)
+    try:
+        if await conn.fetchval("SELECT to_regclass('schema_migrations')") is None:
+            pytest.skip("no schema_migrations ledger (replayed test cluster)")
+        recorded = {_version_key(r["version"])
+                    for r in await conn.fetch("SELECT version FROM schema_migrations")}
+        if not recorded:
+            pytest.skip("schema_migrations exists but is empty (replayed cluster)")
+        live_tables = {r["relname"] for r in await conn.fetch(
+            "SELECT c.relname FROM pg_class c JOIN pg_namespace n"
+            " ON n.oid = c.relnamespace"
+            " WHERE c.relkind = 'r' AND n.nspname = 'public'")}
+        live_columns = {f"{r['table_name']}.{r['column_name']}"
+                        for r in await conn.fetch(
+                            "SELECT table_name, column_name"
+                            " FROM information_schema.columns"
+                            " WHERE table_schema = 'public'")}
+        live_indexes = {r["indexname"] for r in await conn.fetch(
+            "SELECT indexname FROM pg_indexes WHERE schemaname = 'public'")}
+    finally:
+        await conn.close()
+    live = ({f"t:{t}" for t in live_tables}
+            | {f"c:{c}" for c in live_columns}
+            | {f"i:{i}" for i in live_indexes})
+    by_version = declared_by_version()
+    declared_union = set().union(*by_version.values()) if by_version else set()
+    shared = {o for o in declared_union
+              if sum(o in objects for objects in by_version.values()) > 1}
+    gaps = []
+    for version, objects in sorted(by_version.items()):
+        if version in recorded or not objects or not objects <= live:
+            continue
+        unique = objects - shared
+        if not unique:
+            continue
+        gaps.append(f"{version}: {sorted(unique)}")
+    assert not gaps, (
+        "migration(s) already live but absent from schema_migrations, so a"
+        " plain `dbmate up` re-runs them and 'what is applied' is"
+        " unanswerable:\n" + "\n".join(gaps))
 
 
 async def test_append_only_revokes_ran_on_this_database(
