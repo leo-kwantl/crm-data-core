@@ -7,6 +7,7 @@ die with their segment run (CASCADE), run read serves one layout.
 """
 from __future__ import annotations
 
+import json
 from datetime import date
 
 import pytest
@@ -360,6 +361,74 @@ def test_explain_write_gate():
         fit_accuracy=0.93) == "xgb_surrogate_v1"
     with pytest.raises(ValueError, match="unknown explain method"):
         validate_explain_write("shap_legacy")
+
+
+async def test_explain_batches_carry_skipped_reasons(database_url: str):
+    """048: WHY a cluster was skipped survives storage, not just the writer.
+
+    `clusters_skipped` holds cluster numbers; it cannot say why. ml produces two
+    reasons that a reader must be able to tell apart -- a cluster too small to
+    attribute and a cluster that is the whole cohort -- so the column is an
+    object keyed by cluster, not a boolean and not a bare list. A batch written
+    before 048 reads NULL ("not recorded"), never `{}` ("nothing skipped").
+    """
+    import asyncpg
+    pool = await asyncpg.create_pool(database_url)
+    try:
+        async with pool.acquire() as conn:
+            col = await conn.fetchrow(
+                "SELECT udt_name, is_nullable, column_default"
+                " FROM information_schema.columns"
+                " WHERE table_name = 'explain_batches'"
+                " AND column_name = 'skipped_reasons'")
+            assert col is not None, "048 did not add explain_batches.skipped_reasons"
+            assert col["udt_name"] == "jsonb"
+            assert col["is_nullable"] == "YES"
+            assert col["column_default"] is None, (
+                "a default would make every old batch claim a reason set")
+
+            run = await conn.fetchval(
+                "INSERT INTO segment_runs (as_of, mode, k)"
+                " VALUES ($1::date, 'overall', 3) RETURNING id",
+                date(2025, 1, 21))
+            legacy = await conn.fetchval(
+                "INSERT INTO explain_batches (segment_run_id, mode, k, top_n)"
+                " VALUES ($1, 'overall', 3, 5) RETURNING id", run)
+            assert await conn.fetchval(
+                "SELECT skipped_reasons FROM explain_batches WHERE id = $1",
+                legacy) is None
+
+            reasons = {
+                "0": "this cluster holds the whole cohort; nothing to contrast",
+                "2": "too few members to attribute (needs >= 2)",
+            }
+            stamped = await conn.fetchval(
+                "INSERT INTO explain_batches"
+                " (segment_run_id, mode, k, top_n, clusters_explained,"
+                "  clusters_skipped, skipped_reasons)"
+                " VALUES ($1, 'overall', 3, 5, 1, $2::int[], $3::jsonb)"
+                " RETURNING id", run, [0, 2], json.dumps(reasons))
+            row = await conn.fetchrow(
+                "SELECT clusters_skipped, skipped_reasons"
+                " FROM explain_batches WHERE id = $1", stamped)
+            stored = json.loads(row["skipped_reasons"])
+            assert stored == reasons
+            assert "nothing to contrast" in stored["0"]
+            assert "too few members" in stored["2"]
+            assert {int(k) for k in stored} <= set(row["clusters_skipped"]), (
+                "a reason for a cluster that was not skipped is a reader trap")
+
+            empty = await conn.fetchval(
+                "INSERT INTO explain_batches"
+                " (segment_run_id, mode, k, top_n, skipped_reasons)"
+                " VALUES ($1, 'overall', 3, 5, '{}'::jsonb) RETURNING id", run)
+            assert await conn.fetchval(
+                "SELECT skipped_reasons FROM explain_batches WHERE id = $1",
+                empty) == "{}", "empty object must stay distinct from NULL"
+            await conn.execute(
+                "DELETE FROM segment_runs WHERE id = $1", run)
+    finally:
+        await pool.close()
 
 
 async def test_explain_batches_carry_coverage_columns(database_url: str):
