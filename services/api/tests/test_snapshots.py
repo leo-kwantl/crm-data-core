@@ -65,10 +65,18 @@ def test_snapshot_sql_present():
 async def test_kpi_day_bounds_are_business_tz_not_session_zone(database_url: str):
     """The day bucket is +08 even when the connection's zone is GMT.
 
-    2027-03-01T20:00:00Z is 2027-03-02 04:00 in HK, so the 03-02 KPI day
+    2022-03-01T20:00:00Z is 2022-03-02 04:00 in HK, so the 03-02 KPI day
     owns it. Bucketed with the session zone (this cluster runs GMT) the
     order falls on 03-01 and orders_day for 03-02 reads 0 -- the review's
     §4.3-1 (published day numbers disagree with every +08 surface).
+
+    The instant is deliberately in the PAST, in a year no seed touches: a
+    completed sale dated tomorrow is a fact that has not happened, and any
+    `last_order_at` surface ranks it above every real customer forever.
+    `pipelines/apply.py` refuses such a row as `future_dated`; a fixture must
+    not create what the pipeline refuses. Everything written here is removed
+    again -- on failure too -- because this file also runs against a live
+    cluster when DATABASE_URL points at one.
     """
     import asyncpg
 
@@ -81,36 +89,51 @@ async def test_kpi_day_bounds_are_business_tz_not_session_zone(database_url: str
         async with pool.acquire() as conn:
             await conn.execute("SET timezone = 'GMT'")
             demo_brand = "60100000-0000-0000-0000-000000000001"
-            sid = await conn.fetchval(
-                "INSERT INTO stores (code, name, brand_id)"
-                " VALUES ('KPI-TZ-T', 'KPI TZ Store', $1)"
-                " ON CONFLICT (code) DO UPDATE SET name = EXCLUDED.name"
-                " RETURNING id", demo_brand)
-            cid = await conn.fetchval(
-                "INSERT INTO customers (member_id, full_name)"
-                " VALUES ('M-009902', 'KPI TZ C1')"
-                " ON CONFLICT (member_id) DO UPDATE"
-                " SET full_name = EXCLUDED.full_name RETURNING id")
-            await conn.execute(
-                "DELETE FROM orders WHERE customer_id = $1", cid)
-            await conn.execute(
-                "INSERT INTO orders (customer_id, store_id, ordered_at,"
-                " total_cents, status) VALUES ($1, $2,"
-                " TIMESTAMPTZ '2027-03-01 20:00:00+00', 4321, 'completed')",
-                cid, sid)
-            as_of = date(2027, 3, 2)
-            await conn.execute(
-                "DELETE FROM kpi_daily_snapshots WHERE snapshot_date = $1"
-                " AND brand_id IS NULL AND group_id IS NULL", as_of)
-            await conn.fetchrow(KPI_DAILY_UPSERT_SQL, as_of, None, None)
-            row = await conn.fetchrow(
-                "SELECT orders_day, revenue_day_cents FROM"
-                " kpi_daily_snapshots WHERE snapshot_date = $1"
-                " AND brand_id IS NULL AND group_id IS NULL", as_of)
-            assert row is not None
-            assert int(row["orders_day"]) == 1, (
-                "a +08 evening order must land on the next business day")
-            assert int(row["revenue_day_cents"]) == 4321
+            as_of = date(2022, 3, 2)
+            sid = cid = None
+            try:
+                sid = await conn.fetchval(
+                    "INSERT INTO stores (code, name, brand_id)"
+                    " VALUES ('KPI-TZ-T', 'KPI TZ Store', $1)"
+                    " ON CONFLICT (code) DO UPDATE SET name = EXCLUDED.name"
+                    " RETURNING id", demo_brand)
+                cid = await conn.fetchval(
+                    "INSERT INTO customers (member_id, full_name)"
+                    " VALUES ('M-009902', 'KPI TZ C1')"
+                    " ON CONFLICT (member_id) DO UPDATE"
+                    " SET full_name = EXCLUDED.full_name RETURNING id")
+                await conn.execute(
+                    "INSERT INTO orders (customer_id, store_id, ordered_at,"
+                    " total_cents, status) VALUES ($1, $2,"
+                    " TIMESTAMPTZ '2022-03-01 20:00:00+00', 4321, 'completed')",
+                    cid, sid)
+                await conn.execute(
+                    "DELETE FROM kpi_daily_snapshots WHERE snapshot_date = $1"
+                    " AND brand_id IS NULL AND group_id IS NULL", as_of)
+                await conn.fetchrow(KPI_DAILY_UPSERT_SQL, as_of, None, None)
+                row = await conn.fetchrow(
+                    "SELECT orders_day, revenue_day_cents FROM"
+                    " kpi_daily_snapshots WHERE snapshot_date = $1"
+                    " AND brand_id IS NULL AND group_id IS NULL", as_of)
+                assert row is not None
+                assert int(row["orders_day"]) == 1, (
+                    "a +08 evening order must land on the next business day")
+                assert int(row["revenue_day_cents"]) == 4321
+            finally:
+                await conn.execute(
+                    "DELETE FROM kpi_daily_snapshots WHERE snapshot_date = $1"
+                    " AND brand_id IS NULL AND group_id IS NULL", as_of)
+                if cid is not None:
+                    await conn.execute(
+                        "DELETE FROM order_items WHERE order_id IN"
+                        " (SELECT id FROM orders WHERE customer_id = $1)", cid)
+                    await conn.execute(
+                        "DELETE FROM orders WHERE customer_id = $1", cid)
+                    await conn.execute(
+                        "DELETE FROM customers WHERE id = $1", cid)
+                if sid is not None:
+                    await conn.execute(
+                        "DELETE FROM stores WHERE id = $1", sid)
     finally:
         await pool.close()
 

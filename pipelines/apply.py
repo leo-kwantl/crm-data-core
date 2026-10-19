@@ -267,6 +267,17 @@ async def _apply_order(conn, norm: dict, raw: dict, source: str,
     # Parse the timestamp before touching anything else: an unparseable or
     # zoneless value is a quarantine, and it must not depend on state.
     ordered_at = _ordered_at(raw, feed_tz)
+    status = (raw.get("status") or "completed")[:20]
+    if status == "completed" and ordered_at > datetime.now(timezone.utc):
+        # A completed sale cannot happen after now. Refused, not clamped:
+        # clamping to now() files a fiction under today's revenue that no
+        # later reader can tell from a real sale, and keeping it ranks the
+        # customer first on every `last_order_at` surface forever, because
+        # its recency never lapses. (A future *scheduled* row is a different
+        # fact and is not refused here.)
+        raise RowRejected(
+            f"completed order dated {ordered_at.isoformat()} is in the future",
+            "future_dated")
     store_id = await resolve_store(conn, norm["store_id"])
     if store_id is None:
         raise RowMissing(f"unknown store {norm['store_id']!r}",
@@ -286,8 +297,7 @@ async def _apply_order(conn, norm: dict, raw: dict, source: str,
         product_ids.append((str(pid), line["qty"], line["unit_cents"]))
     oid = await conn.fetchval(
         INSERT_ORDER_SQL, cid, store_id, ordered_at,
-        norm["total_cents"], (raw.get("status") or "completed")[:20],
-        source, ext)
+        norm["total_cents"], status, source, ext)
     if oid is None:
         # The partial unique index caught a row a concurrent apply inserted
         # between the find above and this insert. One replay lost the race:

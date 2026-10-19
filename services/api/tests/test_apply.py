@@ -602,6 +602,65 @@ async def test_naive_ordered_at_reads_the_feed_zone_not_utc(
 
 
 @pytest.mark.asyncio
+async def test_a_completed_order_dated_in_the_future_is_quarantined(
+        database_url: str, tmp_path: Path, monkeypatch) -> None:
+    """A completed sale cannot be dated after now.
+
+    Measured on the live demo data (2026-10-20, manager's sweep): one order
+    at 2027-03-01T20:00Z, `status='completed'`, put its customer above every
+    real one on any `last_order_at` surface and never lapsed, because its
+    recency is negative. The row is refused with its own code (not clamped to
+    now(): a clamp files a fiction under today's revenue), and a future row
+    that is *not* completed is still accepted -- a scheduled order is a
+    different fact and refusing it would drop real data.
+    """
+    import asyncpg
+
+    monkeypatch.setenv("DATABASE_URL", database_url)
+    pool = await asyncpg.create_pool(database_url)
+    assert pool is not None
+    try:
+        async with pool.acquire() as conn:
+            await _seed(conn)
+            await conn.execute(
+                "INSERT INTO customers (member_id, full_name)"
+                " VALUES ('M-900013', 'Future Dated')"
+                " ON CONFLICT (member_id) DO NOTHING")
+    finally:
+        await pool.close()
+
+    lines = json.dumps([{"sku": "APPLY-SKU", "qty": 1,
+                         "unit_cents": 100}]).replace('"', '""')
+    # 2099 is far enough out to stay in the future for the life of the test.
+    csv = ("store_id,external_order_id,member_id,lines,ordered_at,status\n"
+           f"APPLY-S1,E-FUTURE,M-900013,\"{lines}\",2099-01-02T10:00:00Z,completed\n"
+           f"APPLY-S1,E-SCHEDULED,M-900013,\"{lines}\",2099-01-03T10:00:00Z,pending\n")
+    out = await run_upload.run(
+        _write(tmp_path, "future.csv", csv), "orders", "pos", None,
+        None, None, apply=True)
+    assert out["quarantined"] == 1, out
+    assert out["applied"] == 1, out
+    assert out["quarantine_reasons"] == {"future_dated": 1}, out
+
+    pool = await asyncpg.create_pool(database_url)
+    assert pool is not None
+    try:
+        async with pool.acquire() as conn:
+            code = await conn.fetchval(
+                "SELECT code FROM quarantine_rows WHERE upload_job_id = $1"
+                " AND row_number = 1", out["job_id"])
+            assert code == "future_dated", code
+            kept = await conn.fetch(
+                "SELECT external_order_id, status FROM orders"
+                " WHERE source = 'pos' AND external_order_id LIKE 'E-FUTURE%'"
+                " OR source = 'pos' AND external_order_id = 'E-SCHEDULED'")
+            assert [r["external_order_id"] for r in kept] == ["E-SCHEDULED"], \
+                f"only the non-completed future row may be stored, got {kept}"
+    finally:
+        await pool.close()
+
+
+@pytest.mark.asyncio
 async def test_run_summary_counts_quarantines_by_reason(
         database_url: str, tmp_path: Path, monkeypatch) -> None:
     """A run that drops rows must say so, by reason, on its own summary.

@@ -77,7 +77,12 @@ dropped. `code` is a stable token from `pipelines/ingest/errors.py`
 it dropped a row: the job carries `quarantine_reasons` = `{code: count}`
 (`043_quarantine_codes.sql`, `up.reason_counts`), which is how a run that
 quarantined stops reading as a clean pass — `{}` on a clean run, asserted in
-`services/api/tests/test_apply.py`. The row is dead but the data is not: 014
+`services/api/tests/test_apply.py`. One code is a data rule rather than a parse
+failure: `future_dated` quarantines a `status='completed'` order whose
+`ordered_at` is after `now()` — a sale that has not happened cannot be a fact,
+and keeping it ranks that customer first on every recency surface forever, since
+the row's recency never lapses. A future *scheduled* row is a different fact and
+is applied. The row is dead but the data is not: 014
 revoked UPDATE/DELETE and 043 grants UPDATE on `resolved_at` alone, so the
 record is never edited or deleted, and re-applying the same `(source, key)`
 after the feed is fixed applies the row and stamps `resolved_at` on the open
