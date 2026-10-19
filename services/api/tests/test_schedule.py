@@ -312,7 +312,7 @@ async def test_manifest_seeds_parse_and_order(database_url: str):
     assert nightly[0] == "apply"  # everything else depends on apply
     assert set(nightly) == {"apply", "rfm", "churn", "clv",
                             "segments_purchase", "segments_overall",
-                            "segments_behavior"}
+                            "segments_behavior", "forecast"}
     # 041: the two derived segment modes wait for the purchase run.
     assert (nightly.index("segments_purchase")
             < nightly.index("segments_overall"))
@@ -436,8 +436,8 @@ async def test_runner_labels_a_failed_job_too(database_url: str, monkeypatch,
                                               tmp_path: Path):
     """A failed row still says which code ran -- that is when it matters.
 
-    The label is resolved before the engine is invoked (`_upstream_payload` `pipelines/schedule.py:819`)
-    and both finish paths persist it (`FINISH_RUN_SQL` `pipelines/schedule.py:118`, `:903`, `:910`), so a non-zero exit cannot leave
+    The label is resolved before the engine is invoked (`_upstream_payload` `pipelines/schedule.py:825`)
+    and both finish paths persist it (`FINISH_RUN_SQL` `pipelines/schedule.py:119`, `:928`, `:935`), so a non-zero exit cannot leave
     an error whose revision is unknown.
     """
     monkeypatch.setitem(sched.ENGINE_BUILDERS, "fake_fail", _fake_fail)
@@ -1110,3 +1110,27 @@ async def test_watch_pinned_scope_does_not_fan_out(
             async with pool.acquire() as conn:
                 await _drop_seeded_brands(conn, gid, ids)
     assert calls == [(pipeline, str(pinned), "None")], calls
+
+
+# ---- as_of may not be ahead of the business day (app #54) ----
+
+def test_a_scheduled_tick_may_not_stamp_a_future_as_of():
+    """A batch dated ahead of today wins every `as_of DESC` reader.
+
+    Measured on the live cluster 2026-10-20: 13 `forecast_batches` had an
+    `as_of` in 10-21..10-25 and the newest by that order for Demo
+    Flagship was a 10-23 rehearsal -- so the schedule could mint a batch
+    that buries the live number for every reader that does not filter.
+    """
+    from pipelines.snapshot import business_today
+
+    today = business_today()
+    ahead = _ctx(as_of=today + timedelta(days=1))
+    with pytest.raises(ValueError, match="is in the future"):
+        sched.guard_as_of(ahead)
+    # The escape is a named flag, so a rehearsal has to say so out loud.
+    sched.guard_as_of(_ctx(as_of=today + timedelta(days=1),
+                           allow_future=True))
+    # Today and every past day stay legal (backfills replay the window).
+    sched.guard_as_of(_ctx(as_of=today))
+    sched.guard_as_of(_ctx(as_of=today - timedelta(days=400)))

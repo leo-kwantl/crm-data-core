@@ -60,6 +60,7 @@ from pipelines.snapshot import (  # noqa: E402
     COHORT_GRANULARITIES,
     COHORT_SNAPSHOT_UPSERT_SQL,
     KPI_DAILY_UPSERT_SQL,
+    business_today,
 )
 
 # Data-owned engines run in-process (ml engines go through argv builders).
@@ -230,6 +231,11 @@ class JobCtx:
     ml_repo: Path | None = None
     db_url: str | None = None
     timeout_s: float = 1800.0
+    # A rehearsal may deliberately stamp a future as_of (a demo of next
+    # week's forecast). A scheduled tick may not: a batch dated ahead of
+    # today wins every `as_of DESC` reader and the live number disappears
+    # behind a rehearsal. Off by default so the trap needs a named flag.
+    allow_future: bool = False
     extra_env: dict = field(default_factory=dict)
 
 
@@ -838,9 +844,28 @@ def _upstream_payload(engine: str, ctx: JobCtx, cache: dict) -> str:
     return json.dumps(payload)
 
 
+def guard_as_of(ctx: JobCtx) -> None:
+    """Refuse a tick whose as_of is ahead of the business day.
+
+    Nothing in the reader contract may depend on remembering to filter
+    `as_of <= current_date`: a batch stamped ahead of today wins every
+    `as_of DESC` reader, so a rehearsal silently becomes the published
+    number. The write is where that is decidable, so it is refused here.
+    """
+    today = business_today()
+    if ctx.as_of > today and not ctx.allow_future:
+        raise ValueError(
+            f"as_of {ctx.as_of.isoformat()} is in the future (business today"
+            f" {today.isoformat()}): a scheduled tick must not stamp a batch"
+            " ahead of today -- an `as_of DESC` reader would publish the"
+            " rehearsal instead of the live number. Pass allow_future=True"
+            " for a deliberate rehearsal.")
+
+
 async def run_pipeline(conn, pipeline: str, jobs: dict[str, dict],
                        ctx: JobCtx, force: bool = False) -> dict[str, Any]:
     """Execute one pipeline's jobs in topo order, recording pipeline_runs."""
+    guard_as_of(ctx)
     order = topo_sort(jobs)
     outcomes: dict[str, dict[str, Any]] = {}
     ml_revision: dict[str, Any] = {}  # resolved once, first ml-engine job
