@@ -132,10 +132,42 @@ ALL_TABLES: dict[str, str] = {**AGED, **CASCADE, **NEVER}
 # The aged tables whose time column is an analytic anchor rather than a write
 # timestamp: a row dated after the tick's own day is a rehearsal, and it wins
 # every `as_of DESC` reader (`created_at` cannot be in the future, `as_of` can).
+# Tables whose rows are *dated* by a business anchor, and which column carries
+# it. Written out, never derived from `AGED`: a derived list inherits the purpose
+# of its source, and these are two different questions -- AGED asks "what ages
+# out, and by which timestamp", this asks "what must never be dated ahead".
+# `pipeline_runs` is the case that proves it: it ages out by `created_at` and is
+# therefore unreachable from a name filter over AGED, yet its `as_of` is the
+# column whose future value is the worst failure in the set -- a `succeeded`
+# claim for a day that has not happened makes the real tick skip the job and
+# leaves the page empty instead of wrong. Caught by the drift test below,
+# which compares this map against the catalog rather than against AGED.
 FUTURE_DATED: dict[str, str] = {
-    table: column for table, column in AGED.items()
-    if column in ("as_of", "scored_at")
+    "btyd_params": "as_of",
+    "churn_snapshots": "as_of",
+    "clv_snapshots": "as_of",
+    "forecast_batches": "as_of",
+    "pipeline_runs": "as_of",
+    "rfm_segment_movement": "as_of",
+    "rfm_segment_sizes": "as_of",
+    "rfm_snapshots": "scored_at",
+    "segment_runs": "as_of",
 }
+
+# Deliberately NOT here, with the measurement that decided it: `orders`.
+#
+# `orders.ordered_at` is an anchor the KPI and cohort buckets key on, so it
+# looks like it belongs. It is not in this map because a future value is legal
+# for one status: a *pending* (scheduled / pre-ordered) order is dated ahead on
+# purpose, and `test_apply.py`'s `E-SCHEDULED` case (2099, `pending`, kept by
+# design) is the row that would make this guard fire on correct data. The
+# completed-order hole it was raised for is already closed at ingest:
+# `pipelines/upload.py` quarantines a future-dated `completed` order as
+# `future_dated` (migration 043) rather than storing it, which is a better
+# place for the rule -- it names the row, not just the count. Re-adding `orders`
+# here without that status distinction turns the nightly tick red on every
+# scheduled order in the book.
+FUTURE_DATED_EXTRA: frozenset[str] = frozenset()
 
 
 async def future_rows(conn, today) -> dict[str, int]:

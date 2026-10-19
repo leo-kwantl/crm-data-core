@@ -193,3 +193,41 @@ def test_a_failing_parent_is_reported_not_raised() -> None:
     assert counts, "the sweep reports every parent it attempted"
     assert set(counts.values()) == {-1}, (
         "a failing parent must be marked -1 and not stop the sweep")
+
+
+def test_future_dated_covers_every_anchor_column_in_the_catalog(
+        database_url: str) -> None:
+    """The dated set is written out, and the catalog is what checks it.
+
+    Deriving it from `AGED` was the bug this test exists for: AGED picks one
+    column per table for retention (`pipeline_runs` -> `created_at`), so a name
+    filter silently dropped `pipeline_runs.as_of` -- the single column whose
+    future value is the worst failure in the set. The map is now literal, and
+    this compares it against `information_schema` instead of against AGED, so
+    the two lists can only agree by both being right.
+    """
+    async def _anchors():
+        conn = await _connect(database_url)
+        try:
+            rows = await conn.fetch(
+                "SELECT table_name, column_name FROM information_schema.columns"
+                " WHERE table_schema = 'public'"
+                "   AND column_name IN ('as_of', 'scored_at')"
+                " ORDER BY 1")
+            return {r["table_name"]: r["column_name"] for r in rows}
+        finally:
+            await conn.close()
+
+    catalog = _run(_anchors())
+    assert catalog, "no as_of/scored_at column found -- the query, not the map"
+    missing = {t: c for t, c in catalog.items()
+               if retention.FUTURE_DATED.get(t) != c}
+    assert not missing, (
+        f"table(s) dated by an anchor the guard never reads: {missing} "
+        f"-- add each to FUTURE_DATED with the column it is dated by")
+    stray = set(retention.FUTURE_DATED) - set(catalog) \
+        - set(retention.FUTURE_DATED_EXTRA)
+    assert not stray, (
+        f"FUTURE_DATED names {sorted(stray)}, which carry no as_of/scored_at "
+        f"and are not in FUTURE_DATED_EXTRA -- a typo here would make the "
+        f"guard count a column that does not exist")

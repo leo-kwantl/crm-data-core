@@ -1178,3 +1178,40 @@ async def test_future_rows_guard_fails_naming_the_table_and_count(
             # and the row's removal is what clears the finding, not a flag
             assert await sched._run_data_engine(
                 "future_rows_guard", {}, conn, ctx) is None
+
+
+@pytest.mark.asyncio
+async def test_future_rows_guard_reads_the_run_ledger(database_url: str):
+    """`pipeline_runs.as_of` is the row whose future value hurts most.
+
+    A `succeeded` claim for a day that has not happened makes the real tick
+    skip that job when the day arrives, and the page renders nothing rather
+    than a wrong number -- silence dated in the future. The guard missed it
+    while its table list was derived from `AGED` (`pipeline_runs` ages by
+    `created_at`), so this plants the exact row and requires it to be named.
+    """
+    from datetime import timedelta
+
+    from pipelines.snapshot import business_today
+
+    ctx = _ctx(as_of=business_today())
+    async with _pool(database_url) as pool:
+        async with pool.acquire() as conn:
+            before = await conn.fetchval(
+                "SELECT count(*) FROM pipeline_runs WHERE as_of > $1",
+                ctx.as_of)
+            rid = await conn.fetchval(
+                "INSERT INTO pipeline_runs (pipeline, job, as_of, status)"
+                " VALUES ('nightly', 'apply', $1, 'succeeded') RETURNING id",
+                ctx.as_of + timedelta(days=4))
+            try:
+                with pytest.raises(
+                        RuntimeError,
+                        match=f"pipeline_runs: {before + 1}"):
+                    await sched._run_data_engine(
+                        "future_rows_guard", {}, conn, ctx)
+            finally:
+                await conn.execute(
+                    "DELETE FROM pipeline_runs WHERE id = $1", rid)
+            assert await sched._run_data_engine(
+                "future_rows_guard", {}, conn, ctx) is None
