@@ -61,3 +61,46 @@ async def test_every_dependency_name_resolves(database_url: str):
                 for job, spec in jobs.items()
                 for dep in spec["depends_on"] if dep not in jobs]
     assert not dangling, f"dangling depends_on: {dangling}"
+
+
+# The surfaces a brand-scoped session reads, each written by its own engine.
+BRAND_SURFACES = {
+    "ld8_snapshot", "churn_snapshot", "clv_snapshot", "forecast_snapshot",
+}
+
+
+async def test_nightly_writes_every_brand_scoped_surface(database_url: str):
+    """045: every surface the brand session reads is refreshed by the tick.
+
+    `forecast` sat only in `weekly`, so the demo brand's newest batch could be
+    seven days old while `churn`/`clv`/`rfm` refreshed nightly -- the rank a
+    brand sees changed daily while its forecast did not. The brand scope is
+    half of the fix: without `brands: ['*']` the tick writes one hq roll-up
+    and the brand session still 404s.
+    """
+    import asyncpg
+    import yaml
+
+    pool = await asyncpg.create_pool(database_url)
+    try:
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT pipeline, yaml FROM pipeline_manifests"
+                " WHERE pipeline IN ('nightly', 'weekly')")
+    finally:
+        await pool.close()
+    docs = {r["pipeline"]: yaml.safe_load(r["yaml"])["pipelines"][r["pipeline"]]
+            for r in rows}
+    nightly = docs["nightly"]
+    assert "*" in nightly["scopes"]["brands"], (
+        "nightly does not declare a brand scope, so the fan-out writes one hq"
+        " row and every brand-scoped page stays empty")
+    engines = {spec["engine"] for spec in nightly["jobs"].values()}
+    assert BRAND_SURFACES <= engines, (
+        f"nightly writes {sorted(engines)}; missing"
+        f" {sorted(BRAND_SURFACES - engines)}")
+    # Same job in both crons must carry the same params: a nightly run with a
+    # different horizon would flip the batch's `horizon_days` every night.
+    assert (nightly["jobs"]["forecast"]["params"]
+            == docs["weekly"]["jobs"]["forecast"]["params"]), (
+        "the nightly and weekly forecast jobs disagree on params")
