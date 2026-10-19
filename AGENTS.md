@@ -6,7 +6,8 @@
 
 ```bash
 pip install -r services/api/requirements.txt
-pytest services/api/tests/test_orders.py services/api/tests/test_customer_events.py services/api/tests/test_identity.py -q -p no:cacheprovider
+python -m pytest services/api/tests/test_orders.py services/api/tests/test_customer_events.py services/api/tests/test_identity.py -q -p no:cacheprovider
+python -c "import pipelines.ingest.orders, pipelines.ingest.events, pipelines.ingest.identity"
 ```
 
 ## Repo rules

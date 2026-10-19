@@ -27,7 +27,7 @@ and ML (`crm-cdp-ml`) consume; they never write ingestion logic.
 
 ```bash
 pip install -r services/api/requirements.txt
-pytest services/api/tests/test_orders.py services/api/tests/test_customer_events.py services/api/tests/test_identity.py
+python -m pytest services/api/tests/test_orders.py services/api/tests/test_customer_events.py services/api/tests/test_identity.py
 ```
 
 ## Roadmap
