@@ -49,6 +49,13 @@ ADD_COLUMN_RE = re.compile(
 CREATE_INDEX_RE = re.compile(
     r"CREATE\s+(?:UNIQUE\s+)?INDEX\s+(?:IF\s+NOT\s+EXISTS\s+)?"
     r"([a-z_][a-z0-9_]*)", re.I)
+# Append-only tables declare their immutability as a grant revocation, next to
+# the CREATE TABLE (027, 029, 037). A `REVOKE` is DDL that no `CREATE TABLE`
+# check can see, and it is skippable the same way a column is: a cluster that
+# recorded the version before the line was added never runs it, and the table
+# looks identical either way.
+REVOKE_RE = re.compile(
+    r"REVOKE\s+UPDATE\s*,\s*DELETE\s+ON\s+([a-z_][a-z0-9_]*)", re.I)
 
 # Clauses, not statements: interpolated into other SQL, so PREPARE cannot run
 # them alone. The statements that embed them are checked on their own.
@@ -81,6 +88,15 @@ def declared_objects() -> tuple[set[str], set[tuple[str, str]], set[str]]:
         indexes.update(m.group(1).lower()
                        for m in CREATE_INDEX_RE.finditer(sql))
     return tables, columns, indexes
+
+
+def append_only_tables() -> set[str]:
+    """Tables whose migrations revoke UPDATE/DELETE from PUBLIC."""
+    tables: set[str] = set()
+    for mig in sorted(MIGRATIONS_DIR.glob("*.sql")):
+        sql = STRING_RE.sub("", DO_BLOCK_RE.sub("", _up_sql(mig)))
+        tables.update(m.group(1).lower() for m in REVOKE_RE.finditer(sql))
+    return tables
 
 
 def sql_constants() -> dict[str, str]:
@@ -129,6 +145,44 @@ async def test_declared_ddl_exists_in_database(database_url: str) -> None:
     assert not missing_indexes, (
         "declared indexes missing (an applied migration was edited after this"
         f" database ran it): {missing_indexes}")
+
+
+async def test_append_only_revokes_ran_on_this_database(
+        database_url: str) -> None:
+    """A table whose REVOKE never ran still looks append-only by name only.
+
+    `relacl` is NULL while a table keeps default privileges, so an un-applied
+    revoke is invisible to the declared-object check above: after
+    `REVOKE UPDATE, DELETE ... FROM PUBLIC` PostgreSQL stores an explicit ACL
+    (the owner's entry, without the PUBLIC one). Either signal -- NULL acl, or
+    an ACL still granting PUBLIC UPDATE/DELETE -- means the line did not reach
+    this database.
+    """
+    tables = append_only_tables()
+    assert tables, "no REVOKE UPDATE, DELETE statement found in db/migrations"
+    conn = await asyncpg.connect(database_url)
+    try:
+        rows = await conn.fetch(
+            "SELECT c.relname, c.relacl::text AS acl,"
+            "       e.grantee::regrole::text AS grantee,"
+            "       e.privilege_type AS priv"
+            "  FROM pg_class c"
+            "  JOIN pg_namespace n ON n.oid = c.relnamespace"
+            "  LEFT JOIN LATERAL aclexplode(c.relacl) e ON TRUE"
+            " WHERE c.relkind = 'r' AND n.nspname = 'public'"
+            "   AND c.relname = ANY($1::text[])", sorted(tables))
+    finally:
+        await conn.close()
+    seen = {r["relname"] for r in rows}
+    assert not (tables - seen), f"append-only tables missing: {sorted(tables - seen)}"
+    acl_null = sorted(r["relname"] for r in rows if r["acl"] is None)
+    public_rw = sorted(
+        f"{r['relname']}:{r['priv']}" for r in rows
+        if r["grantee"] == "-" and r["priv"] in ("UPDATE", "DELETE"))
+    assert not acl_null, (
+        "append-only table still has default privileges, so its "
+        f"REVOKE UPDATE, DELETE never ran here: {acl_null}")
+    assert not public_rw, f"PUBLIC still holds UPDATE/DELETE on: {public_rw}"
 
 
 async def test_pipelines_statements_resolve_against_database(

@@ -13,9 +13,10 @@
 -- One reshape from the request: the group FK points at `groups` (011), not a
 -- `customer_groups` table -- no such table exists in this schema.
 --
--- Append-only by intent: no updated_at, and the unique key is the window
--- identity, so a re-run of the same window overwrites nothing and duplicates
--- nothing.
+-- Append-only by intent: no updated_at, the unique key is the window
+-- identity, and the grant is revoked at the end of the up-section (038
+-- re-states that revoke for any cluster that recorded this version before
+-- it was added).
 
 -- migrate:up
 CREATE TABLE IF NOT EXISTS backtest_outcomes (
@@ -44,6 +45,11 @@ CREATE UNIQUE INDEX IF NOT EXISTS backtest_outcomes_window_uidx
 
 CREATE INDEX IF NOT EXISTS backtest_outcomes_scope_idx
     ON backtest_outcomes (brand_id, group_id, anchor_as_of DESC);
+
+-- Identity is not immutability: the unique key stops a duplicate window row,
+-- this stops an UPDATE/DELETE on one (027/029 shape). ml only inserts
+-- (`INSERT ... ON CONFLICT DO NOTHING`, ml_engine/backtest.py:117-123).
+REVOKE UPDATE, DELETE ON backtest_outcomes FROM PUBLIC;
 
 -- migrate:down
 DROP INDEX IF EXISTS backtest_outcomes_scope_idx;
