@@ -46,6 +46,9 @@ def test_cohort_sql_shape():
         not in COHORT_SNAPSHOT_UPSERT_SQL
 
 
+COHORT_MEMBERS = ("M-000021", "M-000022", "M-000023")
+
+
 @pytest.mark.asyncio
 async def test_cohort_month_upsert_and_rerun_noop(database_url: str):
     """Jan cohort {c1, c2}, Feb cohort {c3}; c1 re-orders in Feb."""
@@ -116,6 +119,26 @@ async def test_cohort_month_upsert_and_rerun_noop(database_url: str):
             assert any(r["cohort_period"].isoformat() == "2026-01-01"
                        for r in trend)
     finally:
+        # Purge what this file created, matched by the predicates that
+        # created it: the orders, the three customers and the store. A
+        # leaked store survives every run and shows up on /stores as a
+        # product row nobody owns.
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "DELETE FROM order_items WHERE order_id IN ("
+                " SELECT o.id FROM orders o JOIN customers c"
+                " ON c.id = o.customer_id"
+                " WHERE c.member_id = ANY($1::text[]))",
+                COHORT_MEMBERS)
+            await conn.execute(
+                "DELETE FROM orders WHERE customer_id IN ("
+                " SELECT id FROM customers"
+                " WHERE member_id = ANY($1::text[]))",
+                COHORT_MEMBERS)
+            await conn.execute(
+                "DELETE FROM customers WHERE member_id = ANY($1::text[])",
+                COHORT_MEMBERS)
+            await conn.execute("DELETE FROM stores WHERE code = 'COHORT-T'")
         await pool.close()
 
 
