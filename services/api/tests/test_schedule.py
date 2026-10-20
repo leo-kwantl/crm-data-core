@@ -310,10 +310,22 @@ async def test_manifest_seeds_parse_and_order(database_url: str):
     manifests.update(sched.parse_manifest(rows[1]["yaml"]))
     nightly = sched.topo_sort(manifests["nightly"])
     assert nightly[0] == "apply"  # everything else depends on apply
-    assert set(nightly) == {"apply", "rfm", "churn", "clv",
+    assert set(nightly) == {"apply", "kpi", "rfm", "churn", "clv",
                             "segments_purchase", "segments_overall",
                             "segments_behavior", "forecast",
                             "future_rows"}
+    # 051: the KPI writer was scheduled by nothing, so its table held one row
+    # from 2026-09-30 while a page would have shown a single point. A re-stated
+    # manifest owns every job in it -- this is the line that fails if a later
+    # migration drops the job again.
+    assert "kpi_daily" in {j.get("engine") for j in manifests["nightly"].values()}
+    # Every data-owned engine must be reachable from a manifest: an engine in
+    # DATA_ENGINES that no job names is a writer nobody calls (the kpi_daily
+    # shape), and it is invisible without this check.
+    named = {j.get("engine")
+             for m in ("nightly", "weekly") for j in manifests[m].values()}
+    assert set(sched.DATA_ENGINES) <= named, (
+        f"unscheduled data engines: {sorted(set(sched.DATA_ENGINES) - named)}")
     # 041: the two derived segment modes wait for the purchase run.
     assert (nightly.index("segments_purchase")
             < nightly.index("segments_overall"))

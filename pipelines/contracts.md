@@ -951,10 +951,15 @@ params?}}}}}` — `jobs` is a mapping, not a list).
 A job's cadence is the cron of the **most frequent** manifest that names it, because a job
 may appear in several: `forecast` is in both `nightly` (`0 1 * * *` — the default grain is
 `daily`, so "daily") and `weekly` (`0 2 * * 1`), and the frequent one is what a reader
-should claim. Nightly jobs: `apply`, `rfm`, `churn`, `clv`, `segments_purchase`,
+should claim. Nightly jobs: `apply`, `kpi`, `rfm`, `churn`, `clv`, `segments_purchase`,
 `segments_overall`, `segments_behavior`, `forecast`, `future_rows`. Weekly only: `recs`,
-`assoc`, `explain`, `cohort`, `matrix`. Nothing names `kpi_daily`, so an absence of KPI rows
-is expected rather than missed.
+`assoc`, `explain`, `cohort`, `matrix`.
+
+`kpi` (engine `kpi_daily`) joined nightly in `051`: the writer and the engine already
+existed, but no manifest named it, so `kpi_daily_snapshots` held a single 2026-09-30 row and
+the table was dead on both ends (nobody scheduled it, nothing served it). The job runs right
+after `apply`, so KPI history accumulates from the tick rather than from the day a page
+appears. Its absence in a row-less cell is therefore a missed run like any other.
 
 App already serves this without a new data surface: `GET /api/v1/pipelines/manifests`
 (`services/api/routers/pipelines.py`, pipeline + `yaml` + pipeline-level cron) and
