@@ -84,7 +84,11 @@ async def main() -> None:
             values = wanted[flag]
             if not values:
                 continue
-            extra = ", created_at::text" if table != "products" else ""
+            # `created_at` alone cannot separate a fixture from a real customer
+            # onboarded the same day; the name is the signature (`Ext User
+            # <hash>`), so print it and let the reader check the rule.
+            extra = {"customers": ", full_name, created_at::text"}.get(
+                table, "" if table == "products" else ", created_at::text")
             rows = await conn.fetch(
                 f"SELECT id::text, {column}{extra} FROM {table}"
                 f" WHERE {column} = ANY($1::text[]) ORDER BY {column}", values)
@@ -92,8 +96,9 @@ async def main() -> None:
             print(f"{table:<14} {len(rows):4d} matched by {column} "
                   f"({len(values)} named)")
             for row in matched[table]:
-                extra_col = next((k for k in row if k not in ("id", column)), None)
-                print(f"   {row[column]:<14} {row[extra_col] if extra_col else ''}")
+                rest = "  ".join(str(v) for k, v in row.items()
+                                 if k not in ("id", column))
+                print(f"   {row[column]:<14} {rest}")
 
         missing = [
             v for flag, table, column in FAMILIES for v in wanted[flag]

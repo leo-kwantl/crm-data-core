@@ -31,7 +31,6 @@ This line is a **subset** and cannot see residue or second-run collisions — a 
   For any file present in **both** trees, app's checkout is the base (`db/`, `services/api/**`) — sync byte-for-byte, never fork; never delete a data-only harness file.
   `services/api/tests/**` is data's own harness and is **not** in a sync's scope; `pipelines/**` is data's (app vendors `pipelines/ingest/connectors.py` for serving).
   A mirrored module must be mirrored with the files it reads at import (`db/queries/*.sql`), or the tree imports and cannot boot.
-  See `pipelines/contracts.md` §"Tree ownership & the mirror boundary".
 - `scripts/bootstrap_db.py` is DEV/CI ONLY — NEVER run against a live DB (TRUNCATEs every table + reseeds demo; live = migrate-only).
 - `pytest` writes freely and does not clean up after every fixture, so `DATABASE_URL` is refused unless `CRM_CDP_ALLOW_SHARED_DB=1`; an opted-in run is audited and fails on any table's row-count drift (`services/api/tests/shared_db_guard.py`).
 - `db/migrations/` is applied in filename order and the version key is the file stem; a number is never reused and dbmate is not installed — `../docs/conventions.md` § Naming.
@@ -49,6 +48,7 @@ This line is a **subset** and cannot see residue or second-run collisions — a 
 
 - Runtime traps (cmd shell: `set "VAR=..." && ...`, no `export`; pgembed; the one-backend rule; login-vs-health): `../docs/environment.md`.
 - A long run gets its environment **in process** (an explicit `os.environ[...]`/kwarg before the call), never via `set` in a background command: the wrapper is `cmd /d /s /c "…"`, where `set "VAR=x" && cmd` does not survive the second `&`, so the command silently ran against the *shared* database while claiming the throwaway one. Read the target back from the run's own log line before trusting its numbers.
+- No script may default to a DSN — a default is a silent target, and a `DELETE`/`UPDATE` aimed at the wrong cluster is the one mistake a second run cannot fix: resolve from `DATABASE_URL` only, refuse when it is unset, and print `host:port/db` before the first write (`scripts/clean_test_debris.py`, `scripts/repair_created_by_2026_10_20.py`).
 
 ## Cross-team
 

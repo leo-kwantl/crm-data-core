@@ -58,7 +58,22 @@ import pathlib
 
 import asyncpg
 
-DSN = os.environ.get("DATABASE_URL", "postgresql://postgres@127.0.0.1:59531/postgres")
+def _dsn() -> str:
+    """`DATABASE_URL` only -- this script *writes* provenance.
+
+    A default here is a silent target: it would backstamp `created_by` on the
+    shared cluster when the variable is missing, and forged attribution is not
+    debris a second run can clean up. Same rule as
+    `scripts/clean_test_debris.py`; the target is printed as `host:port/db`
+    before the first UPDATE.
+    """
+    url = os.environ.get("DATABASE_URL")
+    if not url:
+        raise SystemExit(
+            "DATABASE_URL is not set -- refusing to backstamp a cluster it "
+            "guessed (this script rewrites provenance).")
+    print("target:", url.split("@")[-1])
+    return url
 
 PROBE_AUTHORS = ("provenance-probe", "cost-probe", "probe", "ml-rehearsal", "crm-ml")
 BACKSTAMP_LITERAL = "pre-provenance"
@@ -207,7 +222,7 @@ async def log_row(conn, counts, fossils, keepers, blank_left):
 
 async def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--dsn", default=DSN)
+    ap.add_argument("--dsn", default=None)
     ap.add_argument("--apply", action="store_true",
                     help="perform the repair (default: measure and report only)")
     ap.add_argument("--allow-drift", action="store_true",
@@ -221,7 +236,7 @@ async def main():
     ap.add_argument("--dump", default=".pi/repair-created-by-2026-10-20.json")
     args = ap.parse_args()
 
-    conn = await asyncpg.connect(args.dsn)
+    conn = await asyncpg.connect(args.dsn or _dsn())
     try:
         measured, fossils, keepers = await measure(conn)
         problems = drift(measured)
