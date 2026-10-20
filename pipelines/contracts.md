@@ -938,3 +938,27 @@ signal that it never started, and a `running` row is the only one that needs a s
 `STALE_RUNNING_SQL`/`stale_running()`, so a health view cannot call a 3-hour row healthy while the tick calls it abandoned.
 **`upstream` names the engine and, for an ml job, the revision it ran at** (`{engine, tick?, ml_repo_sha?, ml_repo_dirty?}`,
 built before the try, so a *failed* row still carries the sha; absent means "could not resolve", never "old row").
+
+## The expectation floor: what "no row" means per job (2026-10-20)
+
+A `pipeline_runs` row exists only when the tick fired the job, so a reader that shows an
+empty cell cannot tell "never ran" from "not yet due" without knowing what the schedule
+expects. That expectation is **not** a constant in `pipelines/schedule.py`: it is the
+manifest row, so a cadence edit needs no code change. Shape of `pipeline_manifests.yaml`
+(`{version, pipelines: {<name>: {schedule, scopes, jobs: {<job>: {engine, depends_on?,
+params?}}}}}` — `jobs` is a mapping, not a list).
+
+A job's cadence is the cron of the **most frequent** manifest that names it, because a job
+may appear in several: `forecast` is in both `nightly` (`0 1 * * *` — the default grain is
+`daily`, so "daily") and `weekly` (`0 2 * * 1`), and the frequent one is what a reader
+should claim. Nightly jobs: `apply`, `rfm`, `churn`, `clv`, `segments_purchase`,
+`segments_overall`, `segments_behavior`, `forecast`, `future_rows`. Weekly only: `recs`,
+`assoc`, `explain`, `cohort`, `matrix`. Nothing names `kpi_daily`, so an absence of KPI rows
+is expected rather than missed.
+
+App already serves this without a new data surface: `GET /api/v1/pipelines/manifests`
+(`services/api/routers/pipelines.py`, pipeline + `yaml` + pipeline-level cron) and
+`GET /api/v1/pipelines/manifests/{pipeline}` (parsed jobs + dependency edges). Combine those
+with `pipeline_runs` and a page can say "`forecast` runs daily, last row 3 days ago" and
+"`cohort` runs weekly, last row 3 days ago — not yet due" instead of rendering the same
+empty cell for both.
