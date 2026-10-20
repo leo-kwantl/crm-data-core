@@ -21,6 +21,7 @@ This line is a **subset** and cannot see residue or second-run collisions — a 
 - `customers` has no `brand_id`: brand reaches a customer through `orders`/`stores`, so a leftover customer is visible from every brand holding one of its orders and invisible from the rest — a brand-isolation test must scope customers through orders.
 - A test file that writes to a database purges its own rows in a `finally`, matched by the predicate that created them — and seeds outside `demo.sql`'s space (`M-000101..108`, `S101`, `FRM-/CLT-/CSE-1xx`), because a fixed id there fails the *first* run on a demo-seeded cluster. A throwaway-cluster green is not evidence about residue: `conftest.py` disarms the row-count audit unless `DATABASE_URL` is the shared one.
   Where the table is append-only by `REVOKE` (`customer_events`, `customer_access_logs`), deletion cannot be the rule — those files owe **scope** instead: write outside the seeded space and bound every assertion to the id just created, so no check counts a global total a previous run could move.
+- A script executed by a test is test code: `importlib.util.spec_from_file_location` loads `scripts/run_upload.py` (`services/api/tests/test_apply.py:19`) and `scripts/repair_created_by_2026_10_20.py` (`services/api/tests/test_created_by_repair.py:23`) by path on every run, so a script's **module scope stays side-effect free** — a `SystemExit`, a connection or a `raise` at import breaks the suite from a file nobody thinks of as test-adjacent, and `grep import scripts` will not see it (grep `spec_from_file_location|importlib|runpy|subprocess` instead).
 - Events/consents append-only; dedup key `(source, source_event_id)`; money in integer cents.
 - The order timestamp is `ordered_at` — there is **no** `orders.placed_at`, so a check that greps for that name passes on data it never read.
   No fact may be dated after `now()`: `apply` quarantines a *completed* future order as `future_dated`, seeds date every fact `now()`-relative, and `services/api/tests/test_no_future_facts.py` holds both rules.
@@ -29,8 +30,8 @@ This line is a **subset** and cannot see residue or second-run collisions — a 
   Cast `$1::date` explicitly (a bare `$1` is an unknown parsed at the session zone). Third repo to hit this after ml's `forecast._as_of_bound` and app's `test_observed_anchor.py`; data's implementation is `FUTURE_DATED_INSTANT` in `pipelines/retention.py`.
 - Owns future `01x_ingest_*` migrations.
   For any file present in **both** trees, app's checkout is the base (`db/`, `services/api/**`) — sync byte-for-byte, never fork; never delete a data-only harness file.
-  `services/api/tests/**` is data's own harness and is **not** in a sync's scope; `pipelines/**` is data's (app vendors `pipelines/ingest/connectors.py` for serving).
   A mirrored module must be mirrored with the files it reads at import (`db/queries/*.sql`), or the tree imports and cannot boot.
+  `services/api/tests/**` is data's own harness and is **not** in a sync's scope; `pipelines/**` is data's (app vendors `pipelines/ingest/connectors.py` for serving).
 - `scripts/bootstrap_db.py` is DEV/CI ONLY — NEVER run against a live DB (TRUNCATEs every table + reseeds demo; live = migrate-only).
 - `pytest` writes freely and does not clean up after every fixture, so `DATABASE_URL` is refused unless `CRM_CDP_ALLOW_SHARED_DB=1`; an opted-in run is audited and fails on any table's row-count drift (`services/api/tests/shared_db_guard.py`).
 - `db/migrations/` is applied in filename order and the version key is the file stem; a number is never reused and dbmate is not installed — `../docs/conventions.md` § Naming.
@@ -42,12 +43,11 @@ This line is a **subset** and cannot see residue or second-run collisions — a 
 
 ## PII
 
-- Policy is cross-repo: `../docs/conventions.md` § PII policy (exact-first, append-only audit, soft delete); data's own delta — normalization + the searchable-column contract — is `docs/conventions.md` (the same rule two sections down, not repeated here).
+- Policy: `../docs/conventions.md` § PII policy (exact-first, append-only audit, soft delete); data's delta: normalization + the searchable-column contract, `docs/conventions.md`.
 
 ## Environment
 
-- Runtime traps (cmd shell: `set "VAR=..." && ...`, no `export`; pgembed; the one-backend rule; login-vs-health): `../docs/environment.md`.
-- A run that resolves a target (a DSN, a cluster, a repo path) prints it as `host:port/db`, and no number is trusted before that line is read back: measured 2026-10-20, `set "VAR=x" && cmd` **does** survive a following `&` in the `cmd /d /s /c` wrapper, and neither shell inherits `DATABASE_URL` — yet the same command shape produced runs that reported different clusters, so the command you typed is not evidence of the target the process used.
+- Runtime traps (pgembed, one-backend rule, login-vs-health; `cmd` is `/d /s /c`, no `export`): `../docs/environment.md` — and a run that resolves a target (a DSN, a cluster, a repo path) prints it as `host:port/db`, because measured 2026-10-20 the same command shape produced runs reporting different clusters: what you typed is not evidence of the target the process used.
 - No script may default to a DSN — a default is a silent target, and a `DELETE`/`UPDATE` aimed at the wrong cluster is the one mistake a second run cannot fix: resolve from `DATABASE_URL` only, refuse when it is unset, and print `host:port/db` before the first write (`scripts/clean_test_debris.py`, `scripts/repair_created_by_2026_10_20.py`).
 
 ## Cross-team
