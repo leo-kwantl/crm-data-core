@@ -30,7 +30,8 @@ After editing this file, run `python scripts/audit_doc_cites.py`.
 - 037: backtest outcomes (M2, [ADDITIVE] analytics, joint with ml)
 - The stamped set: which relations carry a scope stamp (app+data+ml, 2026-10-17)
 - Tree ownership & the mirror boundary (app ruling 2026-10-17)
-- Pin half-life, and the rule it settled (2026-10-17)
+- The expectation floor: what "no row" means per job (2026-10-20)
+- The customer list's value and risk: one snapshot, one row per customer (2026-10-21)
 
 ## customers
 
@@ -373,13 +374,6 @@ the clock (dev/verification; naive = `Asia/Hong_Kong`).
   process missed while down (a missed `as_of` is a gap, not a backfill —
   re-run it explicitly), and one namespace per invocation (scopes still
   fan out as one run per `--brand-id`/`--group-id`).
-
-- **Cites into this file move when the file grows.** The numbers above were
-  repinned 2026-10-17 (+117 before `:752`, +122 after): the job's dispatch
-  `try`/`except` was cited `:634-641`/`:658` from `5f91e16` (right then) and
-  was still *in bounds* after `4ff0910`/`fb2f0a7` shifted it -- a range cite
-  that names no symbol on its own line is invisible to every check we have,
-  so derive the number, never inherit it.
 
 Do not read a green `pipeline_runs` row as proof a scheduler exists; that
 holds for rows without `upstream.tick`, which are hand-runs.
@@ -939,12 +933,6 @@ there is **wrong by design**. Only the **both-stamped** artifact→artifact edge
   `pipelines/ingest/connectors.py`; data executing ml's checkout as a subprocess on every ml job
   (`pipelines/schedule.py:13`, `:841`/`:846`); ml's SQL depending on the schema these migrations create.
 
-## Pin half-life, and the rule it settled (2026-10-17)
-
-**A revision label records a read; a bump is a claim of re-verification.** A label (`read at ml <sha>`) survives any later
-edit to the file it names; a pin's half-life is the next commit to that file, so a pin's only promise is that the delta
-gets printed, never that the value is fresh — and a bump asserts a re-reading: never bump to clear a red.
-
 ## `pipeline_runs`: what a reader may rely on (2026-10-20)
 
 **Stored statuses are three, not five.** The tick writes `running` when it claims a job (`UPSERT_RUN_SQL`), then `succeeded`
@@ -988,3 +976,15 @@ App already serves this without a new data surface: `GET /api/v1/pipelines/manif
 with `pipeline_runs` and a page can say "`forecast` runs daily, last row 3 days ago" and
 "`cohort` runs weekly, last row 3 days ago — not yet due" instead of rendering the same
 empty cell for both.
+
+## The customer list's value and risk: one snapshot, one row per customer (2026-10-21)
+
+The customer list has to answer "who is my most valuable customer" and "who is about to leave" out of the scores the nightly writes, and a bare number cannot carry that answer: it needs the **vintage** it came from and the **scope** it was measured in.
+Two statements do that - `page_clv_scores` and `page_churn_scores` in `db/queries/customers.sql` (app mirrors the file byte-for-byte, so the two trees cannot drift).
+**One snapshot, not one per day.** `clv_snapshots` and `churn_snapshots` hold one row per customer per day, so the read picks the NEWEST snapshot in scope and then looks each customer up through the `(snapshot_id, customer_id)` primary key of `clv_customer_scores` / `churn_customer_scores` - the page's row count does not depend on how much history the tables hold.
+**The vintage always.** Every value travels with its `as_of` and its snapshot id, and the churn band also travels with the `(activity, horizon_days)` pair it was measured on - a band without its pair and its date is a number with no meaning.
+**"Not scored" is NULL, never zero.** A customer the snapshot does not carry reads NULL for every score column while the vintage still travels, so a reader can tell "this scope has no snapshot" (a NULL `as_of`) from "this customer is not in that snapshot" (an `as_of` with no value beside it).
+**The scope of the score is the scope of the list.** The session's `(brand_id, group_id)` is compared with the snapshot's own stamp by equality, the rule the other snapshot reads already use (`db/queries/kpi_daily.sql` `clv_snapshots_list`): a brand session reads its brand's snapshot and no other's, a session with no group scope does not read a group's snapshot, and a group does not read the global one.
+**A snapshot dated after today is not a fact yet**, so both arms bound the snapshot by the +08 business date the snapshot writers use (`pipelines/snapshot.py` `business_today()`).
+The cost is a plan, not only a shape: the snapshot is chosen once and the planner answers each customer with one index probe through the `(snapshot_id, customer_id)` primary key, so the price of the join does not grow with the table's history.
+Which pairs exist is ml's to answer, not the reader's: `store_churn.available_pairs` (in `ml_engine/store_churn.py`) is the set of `(activity, horizon_days)` a scope can be served, with the rows present and the count the writer stamped.

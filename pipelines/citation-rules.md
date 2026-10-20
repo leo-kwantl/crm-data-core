@@ -68,3 +68,14 @@ other**: run the command **at the revision you cite** and paste its output, usin
 commit's per-file pair cannot be summed as one `+N/-M`. A figure is checkable only when the same
 sentence binds it to a sha; a number written with the commit, before the sha exists, can only be
 re-derived afterwards.
+
+## Two rules that outlive the file they were written in
+
+**A revision label records a read; a bump is a claim of re-verification.** A label (`read at ml <sha>`) survives any later
+edit to the file it names; a pin's half-life is the next commit to that file, so a pin's only promise is that the delta
+gets printed, never that the value is fresh — and a bump asserts a re-reading: never bump to clear a red.
+
+**Cites into a file move when the file grows.** The numbers in `pipelines/contracts.md` were repinned on 2026-10-17
+(+117 before `:752`, +122 after): a dispatch `try`/`except` cited `:634-641`/`:658` from `5f91e16` was still *in bounds*
+after `4ff0910`/`fb2f0a7` shifted it — a range cite that names no symbol on its own line is invisible to every check we
+have, so derive the number, never inherit it.

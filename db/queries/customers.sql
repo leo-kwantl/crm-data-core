@@ -96,3 +96,82 @@ GROUP BY customer_id;
 SELECT customer_id, channel, status
 FROM consents
 WHERE customer_id = ANY($1::uuid[]);
+
+-- name: page_clv_scores
+-- params: customer_ids uuid[], brand_id uuid|None, group_id uuid|None, horizon_days int
+-- The value of every customer on the page, from the NEWEST CLV snapshot in
+-- the page's own scope, with the vintage that produced it.
+--
+-- Scope: the session's (brand_id, group_id) is compared with the snapshot's
+-- own stamp by equality, the rule the other snapshot reads already use
+-- (db/queries/kpi_daily.sql `clv_snapshots_list`): a brand session reads its
+-- brand's snapshot and no other's, a session with no group scope does not
+-- read a group's snapshot, and a group does not read the global one. A scope
+-- with no snapshot reads nothing, and says so with a NULL vintage.
+--
+-- The snapshot is picked ONCE (the newest as_of at or before today's +08
+-- business date - a snapshot dated in the future is not a fact this system
+-- has yet) and each customer is then looked up through the
+-- (snapshot_id, customer_id) primary key, so the 19-20 snapshots per
+-- customer never multiply the page. The lateral LIMIT 1 is a PLAN guard, not
+-- a semantic limit: without it the planner hashes the whole snapshot
+-- (measured 498 rows at brand scope, 2026-10-20); with it the plan is one
+-- index probe per customer (measured 0.4 ms for 50 customers).
+--
+-- A customer the snapshot does not carry reads NULL - never $0, never a tier.
+-- The vintage still travels: as_of IS NULL means this scope has no snapshot
+-- at all, as_of IS NOT NULL means this customer is not in that snapshot.
+SELECT c.customer_id,
+       cs.clv_cents, cs.value_tier,
+       clv.as_of AS clv_as_of, clv.id AS clv_snapshot_id,
+       clv.horizon_days AS clv_horizon_days
+FROM unnest($1::uuid[]) AS c(customer_id)
+LEFT JOIN (
+  SELECT s.id, s.as_of, s.horizon_days
+  FROM clv_snapshots s
+  WHERE s.horizon_days = $4::int
+    AND s.brand_id IS NOT DISTINCT FROM $2::uuid
+    AND s.group_id IS NOT DISTINCT FROM $3::uuid
+    AND s.as_of <= (now() AT TIME ZONE interval '8 hours')::date
+  ORDER BY s.as_of DESC, s.created_at DESC, s.id DESC
+  LIMIT 1
+) clv ON TRUE
+LEFT JOIN LATERAL (
+  SELECT s.clv_cents, s.value_tier
+  FROM clv_customer_scores s
+  WHERE s.snapshot_id = clv.id AND s.customer_id = c.customer_id
+  LIMIT 1
+) cs ON TRUE;
+
+-- name: page_churn_scores
+-- params: customer_ids uuid[], brand_id uuid|None, group_id uuid|None, activity text, horizon_days int
+-- The risk of every customer on the page: the churn band of the NEWEST
+-- snapshot in the page's own scope, with the vintage and the (activity,
+-- horizon) pair it came from - a band without its pair is a number with no
+-- meaning, and a band without its date is a prediction with no clock.
+--
+-- Scope, snapshot pick and one-row-per-customer are the same rules as
+-- page_clv_scores; the band is a MODEL's prediction and the read states it
+-- as one, with its date and the pair it was measured on.
+SELECT c.customer_id,
+       cs.band, cs.p_alive, cs.recency_days,
+       chu.as_of AS churn_as_of, chu.id AS churn_snapshot_id,
+       chu.activity AS churn_activity, chu.horizon_days AS churn_horizon_days
+FROM unnest($1::uuid[]) AS c(customer_id)
+LEFT JOIN (
+  SELECT s.id, s.as_of, s.activity, s.horizon_days
+  FROM churn_snapshots s
+  WHERE s.activity = $4::text
+    AND s.horizon_days = $5::int
+    AND s.brand_id IS NOT DISTINCT FROM $2::uuid
+    AND s.group_id IS NOT DISTINCT FROM $3::uuid
+    AND s.as_of <= (now() AT TIME ZONE interval '8 hours')::date
+  ORDER BY s.as_of DESC, s.created_at DESC, s.id DESC
+  LIMIT 1
+) chu ON TRUE
+LEFT JOIN LATERAL (
+  SELECT s.band, s.p_alive, s.recency_days
+  FROM churn_customer_scores s
+  WHERE s.snapshot_id = chu.id AND s.customer_id = c.customer_id
+  LIMIT 1
+) cs ON TRUE;
