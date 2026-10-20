@@ -11,14 +11,16 @@ python -m pytest services/api/tests -q -p no:cacheprovider
 python -c "import pipelines.ingest.orders, pipelines.ingest.events, pipelines.ingest.identity"
 ```
 
-The whole directory, not a sample, and never a file list: three named files report `21 passed` for a suite that takes ten minutes, and a file named alone can skip where a full run fails (`test_catalog_vocabulary.py` reads the live vocabulary, which only exists once another file has seeded it). `test_apply.py` purges its own namespace on module teardown and asserts nothing future-dated survives it.
+The whole directory, not a sample, and never a file list: three named files report `21 passed` for a suite that takes ten minutes, and a file named alone can skip where a full run fails (`test_catalog_vocabulary.py` reads the live vocabulary, which only exists once another file has seeded it).
+This line is a **subset** and cannot see residue or second-run collisions — a green here means the files run, not that the suite is healthy; that claim needs the full suite twice on a pristine cluster (`1fdd81b` is the measurement). `test_apply.py` purges its own namespace on module teardown and asserts nothing future-dated survives it.
 
 ## Repo rules
 
 - `member_id` must match `^M-[0-9]{6}$` — reject + quarantine, never coerce. `orders.store_id` NOT NULL (resolve store first).
-- The seed space is two writers: `db/seeds/demo.sql` (eight curated `M-000101..108`, fixed `c0000000-…-0000000N` ids, stores `CWB-01`/`TSM-02`) + `scripts/seed_reseed_1200.py` (`M-03%`). "Not like `M-03%`" is not a debris test — it never reaches zero.
+- The seed space is two writers — `db/seeds/demo.sql` (eight curated `M-000101..108`, fixed `c0000000-…-0000000N` ids, stores `CWB-01`/`TSM-02`) and `scripts/seed_reseed_1200.py` (`M-03%`), so "not like `M-03%`" is not a debris test: it never reaches zero.
 - `customers` has no `brand_id`: brand reaches a customer through `orders`/`stores`, so a leftover customer is visible from every brand holding one of its orders and invisible from the rest — a brand-isolation test must scope customers through orders.
 - A test file that writes to a database purges its own rows in a `finally`, matched by the predicate that created them — and seeds outside `demo.sql`'s space (`M-000101..108`, `S101`, `FRM-/CLT-/CSE-1xx`), because a fixed id there fails the *first* run on a demo-seeded cluster. A throwaway-cluster green is not evidence about residue: `conftest.py` disarms the row-count audit unless `DATABASE_URL` is the shared one.
+  Where the table is append-only by `REVOKE` (`customer_events`, `customer_access_logs`), deletion cannot be the rule — those files owe **scope** instead: write outside the seeded space and bound every assertion to the id just created, so no check counts a global total a previous run could move.
 - Events/consents append-only; dedup key `(source, source_event_id)`; money in integer cents.
 - The order timestamp is `ordered_at` — there is **no** `orders.placed_at`, so a check that greps for that name passes on data it never read.
   No fact may be dated after `now()`: `apply` quarantines a *completed* future order as `future_dated`, seeds date every fact `now()`-relative, and `services/api/tests/test_no_future_facts.py` holds both rules.
@@ -31,7 +33,7 @@ The whole directory, not a sample, and never a file list: three named files repo
   A mirrored module must be mirrored with the files it reads at import (`db/queries/*.sql`), or the tree imports and cannot boot.
   See `pipelines/contracts.md` §"Tree ownership & the mirror boundary".
 - `scripts/bootstrap_db.py` is DEV/CI ONLY — NEVER run against a live DB (TRUNCATEs every table + reseeds demo; live = migrate-only).
-- `pytest` writes freely and does not clean up after every fixture, so `DATABASE_URL` is refused unless `CRM_CDP_ALLOW_SHARED_DB=1`; an opted-in run is audited and fails on any table's row-count drift (`services/api/tests/shared_db_guard.py`). Debris a past shared run left behind: `python scripts/clean_test_debris.py` (dry run; `--apply` dumps the rows first).
+- `pytest` writes freely and does not clean up after every fixture, so `DATABASE_URL` is refused unless `CRM_CDP_ALLOW_SHARED_DB=1`; an opted-in run is audited and fails on any table's row-count drift (`services/api/tests/shared_db_guard.py`).
 - `db/migrations/` is applied in filename order and the version key is the file stem; a number is never reused and dbmate is not installed — `../docs/conventions.md` § Naming.
 - After editing `pipelines/contracts.md`, run `python scripts/audit_doc_cites.py`: it checks every cite against the trees it names.
 
@@ -41,8 +43,7 @@ The whole directory, not a sample, and never a file list: three named files repo
 
 ## PII
 
-- Policy is cross-repo: `../docs/conventions.md` § PII policy (exact-first, append-only audit, soft delete).
-- Data-side normalization + the searchable-column contract: `docs/conventions.md`.
+- Policy is cross-repo: `../docs/conventions.md` § PII policy (exact-first, append-only audit, soft delete); data's own delta — normalization + the searchable-column contract — is `docs/conventions.md` (the same rule two sections down, not repeated here).
 
 ## Environment
 
@@ -55,6 +56,5 @@ The whole directory, not a sample, and never a file list: three named files repo
 
 ## Conventions
 
-- `docs/conventions.md` — data deltas only: PII normalization + the searchable-column contract.
 - Doc gate: `.githooks/pre-commit` and `.githooks/pre-push` run `python ../tools/docs_check.py --repo crm-cdp-data` — a doc that breaks the rules is neither committed nor pushed, and `--no-verify` is not the way past it.
 - Cross-repo conventions — naming, master data, git history, PII policy (`../docs/conventions.md`) and the cross-team protocol (`../docs/agent-comms.md`) — are owned by the manager at `../AGENTS.md`; read it, do not retype it.
