@@ -15,8 +15,18 @@ password.
     python scripts/clean_test_debris.py --member M-900123 --upload-file c1.csv
     python scripts/clean_test_debris.py --member M-900123 --apply
 
+A family can be named by VALUE (--member M-900123) or by SHAPE (--staff,
+--user, --store-name): the shape families are the ones a foreign test suite
+leaks, where the operator cannot know the id but the fixture's name is the
+signature (`Test Staff <hash>`, `u-<hash>`, `Store <n>`). A shape family still
+names its predicate on the command line -- the pattern is printed before the
+dry run, so the reader sees exactly which rows are in scope.
+
 Children are deleted before parents (the foreign keys are NO ACTION), and every
-row matched is written to a JSON dump before anything is removed.
+row matched is written to a JSON dump before anything is removed. Users are
+deleted before staff (users.staff_id is ON DELETE RESTRICT) and staff before
+stores (staff.store_id). A store that still has orders, stock or staff is NOT
+deleted: it is reported instead, because a live store is a human's decision.
 """
 
 from __future__ import annotations
@@ -37,6 +47,16 @@ FAMILIES = (
     ("store", "stores", "code"),
     ("connector", "connectors", "name"),
     ("upload_file", "upload_jobs", "filename"),
+)
+
+# Shape families: (flag, table, column, pattern) -- the flag selects the
+# SHAPE, the pattern is the SQL LIKE pattern that names the fixture. The
+# default pattern is the one the foreign suite uses today; `--store-name` may
+# carry its own pattern (e.g. 'Cohort Test Store').
+PATTERN_FAMILIES = (
+    ("staff", "staff", "full_name", "Test Staff %"),
+    ("user", "users", "username", "u-%"),
+    ("store_name", "stores", "name", "Store %"),
 )
 
 # Children of a matched customer / of a matched order, deepest first.
@@ -63,19 +83,47 @@ def dsn() -> str:
     return url
 
 
+async def _store_dependents(conn, store_ids: list[str]) -> list[dict]:
+    """Orders / stock / staff still hanging off these stores."""
+    rows = await conn.fetch(
+        "SELECT s.id::text AS id, s.code, s.name,"
+        " (SELECT count(*) FROM orders o WHERE o.store_id = s.id) AS orders,"
+        " (SELECT count(*) FROM inventory i WHERE i.store_id = s.id) AS stock,"
+        " (SELECT count(*) FROM staff t WHERE t.store_id = s.id) AS staff"
+        " FROM stores s WHERE s.id = ANY($1::uuid[]) ORDER BY s.code",
+        store_ids)
+    return [dict(r) for r in rows]
+
+
 async def main() -> None:
-    ap = argparse.ArgumentParser()
+    ap = argparse.ArgumentParser(
+        description="Delete named test debris from a dev database "
+                    "(dry run unless --apply).")
     for flag, _, _ in FAMILIES:
         ap.add_argument(f"--{flag.replace('_', '-')}", action="append",
                         default=[], dest=flag)
+    for flag, table, column, default_pattern in PATTERN_FAMILIES:
+        ap.add_argument(f"--{flag.replace('_', '-')}", nargs="?",
+                        const=default_pattern, default=None, metavar="PATTERN",
+                        help=f"{table} rows whose {column} matches PATTERN "
+                             f"(default {default_pattern.replace('%', '%%')!r})")
     ap.add_argument("--apply", action="store_true")
     args = ap.parse_args()
 
     wanted = {flag: getattr(args, flag) for flag, _, _ in FAMILIES}
-    if not any(wanted.values()):
+    # Shape families: the flag names the fixture's SHAPE, the pattern names
+    # the rows. The pattern is printed before the dry run, so the reader can
+    # see exactly which rows the shape covers.
+    shapes: dict[str, tuple[str, str, str]] = {}
+    for flag, table, column, default_pattern in PATTERN_FAMILIES:
+        value = getattr(args, flag, None)
+        if value:
+            shapes[flag] = (table, column, value)
+    if not any(wanted.values()) and not shapes:
         raise SystemExit(
             "nothing named -- pass at least one --member/--sku/--store/"
-            "--connector/--upload-file (there is no 'everything else' mode)")
+            "--connector/--upload-file/--staff/--user/--store-name "
+            "(there is no 'everything else' mode)")
 
     conn = await asyncpg.connect(dsn())
     try:
@@ -92,17 +140,32 @@ async def main() -> None:
             rows = await conn.fetch(
                 f"SELECT id::text, {column}{extra} FROM {table}"
                 f" WHERE {column} = ANY($1::text[]) ORDER BY {column}", values)
-            matched[table] = [dict(r) for r in rows]
+            matched[flag] = [dict(r) for r in rows]
             print(f"{table:<14} {len(rows):4d} matched by {column} "
                   f"({len(values)} named)")
-            for row in matched[table]:
+            for row in matched[flag]:
+                rest = "  ".join(str(v) for k, v in row.items()
+                                 if k not in ("id", column))
+                print(f"   {row[column]:<14} {rest}")
+
+        for flag, (table, column, pattern) in shapes.items():
+            extra = ", full_name, created_at::text" if table == "staff" \
+                else ", display_name, created_at::text" if table == "users" \
+                else ", created_at::text"
+            rows = await conn.fetch(
+                f"SELECT id::text, {column}{extra} FROM {table}"
+                f" WHERE {column} LIKE $1 ORDER BY {column}", pattern)
+            matched[flag] = [dict(r) for r in rows]
+            print(f"{table:<14} {len(rows):4d} matched by {column} LIKE "
+                  f"{pattern!r} (shape family)")
+            for row in matched[flag]:
                 rest = "  ".join(str(v) for k, v in row.items()
                                  if k not in ("id", column))
                 print(f"   {row[column]:<14} {rest}")
 
         missing = [
             v for flag, table, column in FAMILIES for v in wanted[flag]
-            if v not in {row[column] for row in matched.get(table, [])}]
+            if v not in {row[column] for row in matched.get(flag, [])}]
         if missing:
             print("named but absent:", ", ".join(missing))
 
@@ -115,7 +178,9 @@ async def main() -> None:
         out.write_text(json.dumps(matched, indent=2), encoding="utf-8")
         print("dumped:", out)
 
-        customer_ids = [r["id"] for r in matched.pop("customers", [])]
+        # Children before parents. users -> staff (RESTRICT) and
+        # staff -> stores are the two orders that bite.
+        customer_ids = [r["id"] for r in matched.get("member", [])]
         if customer_ids:
             for table, where in CHILD_DELETES:
                 tag = await conn.execute(
@@ -124,13 +189,47 @@ async def main() -> None:
             tag = await conn.execute(
                 "DELETE FROM customers WHERE id = ANY($1::uuid[])", customer_ids)
             print(f"  {'customers':<22} {tag}")
+
+        for flag in ("user", "staff"):
+            rows = matched.get(flag, [])
+            if not rows:
+                continue
+            table, column, _ = shapes[flag]
+            ids = [r["id"] for r in rows]
+            tag = await conn.execute(
+                f"DELETE FROM {table} WHERE id = ANY($1::uuid[])", ids)
+            print(f"  {table:<22} {tag}")
+
         for flag, table, column in FAMILIES:
-            if table == "customers" or not wanted[flag]:
+            if table in ("customers", "stores") or not wanted[flag]:
                 continue
             tag = await conn.execute(
                 f"DELETE FROM {table} WHERE {column} = ANY($1::text[])",
                 wanted[flag])
             print(f"  {table:<22} {tag}")
+
+        # Stores last: a store with orders, stock or staff is a live store,
+        # not debris. It is reported, never deleted.
+        store_rows = matched.get("store", []) + matched.get("store_name", [])
+        if store_rows:
+            deps = await _store_dependents(
+                conn, [r["id"] for r in store_rows])
+            blocked = {d["id"] for d in deps
+                       if d["orders"] or d["stock"] or d["staff"]}
+            for d in deps:
+                if d["id"] in blocked:
+                    print(f"  stores SKIPPED {d['code']:<12} has "
+                          f"{d['orders']} orders, {d['stock']} stock, "
+                          f"{d['staff']} staff -- not debris")
+            for flag, column in (("store", "code"), ("store_name", "name")):
+                rows = [r for r in matched.get(flag, [])
+                        if r["id"] not in blocked]
+                if not rows:
+                    continue
+                tag = await conn.execute(
+                    f"DELETE FROM stores WHERE {column} = ANY($1::text[])",
+                    [r[column] for r in rows])
+                print(f"  {'stores':<22} {tag}")
     finally:
         await conn.close()
 
