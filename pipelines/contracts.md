@@ -729,10 +729,18 @@ goes); batches + rows gain `method` (`segment_mean` (all history —
 the default, zero backfill rewrite) | `xgb_surrogate_v1` (gate
 passed) | `surrogate_unfitted` (gate failed, NO shap rows)).
 `validate_explain_write` (merge `844b770`, NOT the label-only
-`validate_explain_method`) is the writer-side gate: unfitted +
-shap_rows>0 raises; v1 requires a fit_id AND accuracy >= 0.90
-(passed explicitly, read back from the fit row). No tick writes
-under `xgb_surrogate_v1` until spec ACK — ACKED with this
+`validate_explain_method`) was the LM1 writer-side gate: unfitted +
+shap_rows>0 raised; v1 required a fit_id AND accuracy >= 0.90.
+**Both labels are historic only as of ml `9072b73`:** that repo's
+`EXPLAIN_METHODS` is now `("segment_mean",)`, so `explain_run` and
+`explain_matrix` refuse `xgb_surrogate_v1` and `surrogate_unfitted`, and
+every new batch carries `fidelity_measured = FALSE` with `accuracy`
+NULL; the gate itself lives at `ml_engine/store_explain.py:359` (ml's
+check), NOT here — data's copy of the labels had no caller and still
+admitted a method ml had deleted, so it was pruned rather than kept in
+step. A reader keys on the row's own `method`: rows written before
+`9072b73` keep `xgb_surrogate_v1` with a real `fit_id`/`accuracy`. No
+tick writes under `xgb_surrogate_v1` until spec ACK — ACKED with this
 migration; ml may write.
 
 ## 031: time-aware RFM storage (LD8, [ADDITIVE] analytics, joint with ml)

@@ -230,10 +230,7 @@ async def test_lm1_lm2_db_roundtrip(database_url: str):
 
 
 def test_surrogate_fit_ok_and_rejects():
-    from pipelines.model_fits import (
-        validate_explain_method,
-        validate_surrogate_fit,
-    )
+    from pipelines.model_fits import validate_surrogate_fit
     out = validate_surrogate_fit(
         {"segment_run_id": "run-1", "accuracy": 0.93,
          "feature_names": ["recency_days", "frequency"],
@@ -245,9 +242,6 @@ def test_surrogate_fit_ok_and_rejects():
     with pytest.raises(ValueError, match="feature_names"):
         validate_surrogate_fit({"segment_run_id": "r", "accuracy": 0.9,
                                 "feature_names": []})
-    assert validate_explain_method("xgb_surrogate_v1") == "xgb_surrogate_v1"
-    with pytest.raises(ValueError, match="unknown explain method"):
-        validate_explain_method("shap_legacy")
 
 
 @pytest.mark.asyncio
@@ -344,23 +338,19 @@ async def test_lm1_fit_table_and_method_labels(database_url: str):
         await pool.close()
 
 
-def test_explain_write_gate():
-    from pipelines.model_fits import validate_explain_write
-    assert validate_explain_write("segment_mean") == "segment_mean"
-    with pytest.raises(ValueError, match="zero shap rows"):
-        validate_explain_write("surrogate_unfitted", n_shap_rows=3)
-    assert validate_explain_write(
-        "surrogate_unfitted") == "surrogate_unfitted"
-    with pytest.raises(ValueError, match="surrogate_fits id"):
-        validate_explain_write("xgb_surrogate_v1", fit_accuracy=0.95)
-    with pytest.raises(ValueError, match=">= 0.90"):
-        validate_explain_write(
-            "xgb_surrogate_v1", fit_id="f1", fit_accuracy=0.89)
-    assert validate_explain_write(
-        "xgb_surrogate_v1", fit_id="f1",
-        fit_accuracy=0.93) == "xgb_surrogate_v1"
-    with pytest.raises(ValueError, match="unknown explain method"):
-        validate_explain_write("shap_legacy")
+def test_method_gate_lives_in_ml_not_here():
+    """One gate, in ml. `9072b73` deleted `xgb_surrogate_v1`, so a copy of the
+    admitted labels here would admit a method the writer refuses -- which is
+    what this module did until it was pruned. The gate is
+    `ml_engine/explainer.py:36 EXPLAIN_METHODS`, enforced at
+    `ml_engine/store_explain.py:359`; a second copy here is the drift this test
+    refuses to let back in."""
+    import pipelines.model_fits as m
+    assert not hasattr(m, "EXPLAIN_METHODS")
+    assert not hasattr(m, "validate_explain_method")
+    assert not hasattr(m, "validate_explain_write")
+    assert hasattr(m, "validate_surrogate_fit")   # historic fit-row shape
+
 
 
 async def test_explain_batches_carry_skipped_reasons(database_url: str):

@@ -195,11 +195,13 @@ def validate_matrix_row(spec: dict[str, Any]) -> dict[str, Any]:
             "layout": layout}
 
 
-# LM1 surrogate-fit discipline: accuracy is the fidelity gate
-# (>= 0.90 or the run explains nothing). method labels travel on the
-# explain rows; the fit row carries the proof.
-EXPLAIN_METHODS = ("segment_mean", "xgb_surrogate_v1",
-                   "surrogate_unfitted")
+# The explain-method gate is ml's (`ml_engine/explainer.py:36 EXPLAIN_METHODS`,
+# enforced at `ml_engine/store_explain.py:359`). This module used to keep a
+# second copy of the admitted labels plus a fidelity gate; `9072b73` deleted
+# `xgb_surrogate_v1` from ml and the copy then admitted a method the writer
+# refuses -- a validator with no caller that contradicted the only gate. It
+# went with the method. What is validated here is the SHAPE of a stored fit row
+# (`seg_surrogate_fits` keeps its historic rows; nothing new writes one).
 
 
 def validate_surrogate_fit(spec: dict[str, Any]) -> dict[str, Any]:
@@ -226,36 +228,3 @@ def validate_surrogate_fit(spec: dict[str, Any]) -> dict[str, Any]:
             "xgb_params": dict(params)}
 
 
-def validate_explain_method(method: str) -> str:
-    """Admit only known explain-method labels (writer-side gate)."""
-    if method not in EXPLAIN_METHODS:
-        raise ValueError(
-            f"unknown explain method {method!r} "
-            f"(expected one of {EXPLAIN_METHODS})")
-    return method
-
-
-def validate_explain_write(method: str, *, fit_accuracy=None,
-                           fit_id=None, n_shap_rows: int = 0) -> str:
-    """Enforce the LM1 fidelity gate on each explain write.
-
-    `surrogate_unfitted` must carry zero shap rows; `xgb_surrogate_v1`
-    requires the run's fit id AND its accuracy (>= 0.90) passed
-explicitly. `segment_mean` needs neither.
-    """
-    validate_explain_method(method)
-    if method == "surrogate_unfitted" and n_shap_rows > 0:
-        raise ValueError(
-            "surrogate_unfitted must carry zero shap rows, "
-            f"got {n_shap_rows}")
-    if method == "xgb_surrogate_v1":
-        if fit_id is None:
-            raise ValueError(
-                "xgb_surrogate_v1 requires the seg_surrogate_fits id")
-        if (isinstance(fit_accuracy, bool)
-                or not isinstance(fit_accuracy, (int, float))
-                or fit_accuracy < 0.90):
-            raise ValueError(
-                "xgb_surrogate_v1 requires fit accuracy >= 0.90, "
-                f"got {fit_accuracy!r}")
-    return method
