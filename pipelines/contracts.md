@@ -539,7 +539,7 @@ as the forecast snapshot). Scheduler also carries argv builders for
 manifests store `segment_run_id` (concrete UUID, `latest`, a missing
 key, or the all-zero UUID — every form resolved at dispatch to the
 newest segment run for `segment_mode` +/- `segment_k` + scope, so
-manifests never hold a stale fixed id).
+manifests never hold a stale fixed id). `052_cohort_money.sql` adds `retained_cents` to the same table - the money cohort members brought back in each period, summed from that period's completed orders - and ARPU is `retained_cents` / `retained`; the column is `NOT NULL DEFAULT 0`, so a row written before the migration reads 0 cents, which is "not measured" and not "no money".
 
 ## 021: SHAP cluster-explainer result tables (M2, [ADDITIVE] analytics)
 

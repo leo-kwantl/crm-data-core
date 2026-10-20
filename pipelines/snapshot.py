@@ -165,7 +165,7 @@ def retention_rate(cohort_size: int, retained: int) -> float | None:
 
 COHORT_SNAPSHOT_UPSERT_SQL = f"""
 WITH scoped_orders AS (
-  SELECT o.customer_id, o.ordered_at
+  SELECT o.customer_id, o.ordered_at, o.total_cents
   FROM orders o
   JOIN stores s ON s.id = o.store_id
   JOIN brands b ON b.id = s.brand_id
@@ -198,7 +198,9 @@ periods AS (
   CROSS JOIN offsets o
 ),
 retained AS (
-  SELECT p.cohort, p.k, COUNT(DISTINCT so.customer_id) AS n
+  SELECT p.cohort, p.k,
+         COUNT(DISTINCT so.customer_id) AS n,
+         COALESCE(SUM(so.total_cents), 0) AS cents
   FROM periods p
   JOIN cohort_of co ON co.cohort = p.cohort
   JOIN scoped_orders so ON so.customer_id = co.customer_id
@@ -207,11 +209,12 @@ retained AS (
 )
 INSERT INTO cohort_snapshots
   (granularity, cohort_period, period_offset, cohort_size, retained,
-   retention_rate, brand_id, group_id)
+   retention_rate, retained_cents, brand_id, group_id)
 SELECT $1::text, p.cohort, p.k, cs.n,
        COALESCE(r.n, 0),
        CASE WHEN cs.n = 0 THEN NULL
             ELSE COALESCE(r.n, 0)::float / cs.n END,
+       COALESCE(r.cents, 0),
        $3::uuid, $4::uuid
 FROM periods p
 JOIN cohort_size cs ON cs.cohort = p.cohort
@@ -220,7 +223,8 @@ ON CONFLICT DO NOTHING
 """
 
 COHORT_TREND_SQL = """
-SELECT cohort_period, period_offset, cohort_size, retained, retention_rate
+SELECT cohort_period, period_offset, cohort_size, retained, retention_rate,
+       retained_cents
 FROM cohort_snapshots
 WHERE granularity = $1::text
   AND brand_id IS NOT DISTINCT FROM $2::uuid
