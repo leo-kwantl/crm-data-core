@@ -18,14 +18,12 @@ MEMBER_RE = re.compile(r"^M-[0-9]{6}$")
 class IdentityPayload(TypedDict):
     """The shape `normalize_binding` hands `apply._apply_identity`.
 
-    `source` is validated here and not written by the binding UPDATE: it is
-    the provenance of the claim, which `customer_contacts`/audit carry, and
-    the shape test allowlists it as deliberately unconsumed.
+    Only the two values the binding UPDATE writes: `source` is validated in
+    `normalize_binding` and then dropped, because no store holds it.
     """
 
     member_id: str
     external_member_id: str
-    source: str
 
 
 def normalize_binding(raw: dict, exclusions: list = ()) -> IdentityPayload:
@@ -37,8 +35,10 @@ def normalize_binding(raw: dict, exclusions: list = ()) -> IdentityPayload:
         raise ValueError(f"bad member_id (want M-NNNNNN): {member_id!r}")
     if not raw.get("external_member_id") or not raw.get("source"):
         raise ValueError("external_member_id + source required")
+    # `source` is required on the wire (provenance of the binding claim) but is
+    # not carried: the binding UPDATE writes two values, and no store holds it,
+    # so carrying it would make the payload claim something nothing reads.
     return {
         "member_id": member_id,
         "external_member_id": raw["external_member_id"],
-        "source": raw["source"],
     }

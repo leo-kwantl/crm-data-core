@@ -31,17 +31,12 @@ UNCONSUMED = {
     "customers": {
         "phone": "the contact writer reads the RAW row, not the payload",
         "email": "the contact writer reads the RAW row, not the payload",
-        "source": "no data-side writer reads a customer's source",
     },
     "orders": {
         "customer_id": "the applier resolves from the RAW row (3 candidate refs)",
     },
-    "events": {
-        "source": "the applier binds the JOB's source, not the payload copy",
-    },
-    "identity": {
-        "source": "validated for provenance; the binding UPDATE writes two values",
-    },
+    "events": {},
+    "identity": {},
 }
 
 CASES = [
@@ -117,6 +112,20 @@ def test_the_normalizer_sets_every_required_key(kind):
     assert not missing, f"{kind}: normalizer produced no {sorted(missing)}"
     extra = set(out) - set(shape.__annotations__)
     assert not extra, f"{kind}: normalizer emitted undeclared {sorted(extra)}"
+
+
+@pytest.mark.asyncio
+async def test_a_payload_source_that_differs_from_the_upload_is_refused():
+    """The upload's source wins; a different claim fails instead of vanishing.
+
+    The row would otherwise be stored under `apply`'s source while the payload
+    said `web` -- wrong provenance, nothing raised, no test able to see it.
+    """
+    from pipelines.ingest.errors import RowRejected
+    norm = normalize_event(dict(SAMPLES["events"][2]))
+    with pytest.raises(RowRejected) as exc:
+        await ap._apply_event(None, norm, {}, "a-different-source")
+    assert "a-different-source" in str(exc.value)
 
 
 def test_order_lines_use_the_declared_line_shape():

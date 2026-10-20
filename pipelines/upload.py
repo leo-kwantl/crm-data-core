@@ -37,16 +37,17 @@ from pipelines.ingest import orders as orders_ingest
 class CustomerPayload(TypedDict):
     """The shape `normalize_customer` hands `apply._apply_customer`.
 
-    `member_id` + `full_name` are the two values the customer UPSERT binds;
-    `phone`/`email` are read from the *raw* row by the contact writer, so they
-    ride along for the reader and are allowlisted as unconsumed — as is
-    `source`, which no data-side writer reads on this path.
+    `member_id` + `full_name` + `external_member_id` are the values the
+    customer UPSERT binds; `phone`/`email` are read from the *raw* row by the
+    contact writer, so they ride along for the reader and are allowlisted as
+    unconsumed. A wire `source` is deliberately NOT carried: nothing stores it
+    on this path and `apply` files the row under the upload's own source, so a
+    carried value could only ever be ignored.
     """
 
     member_id: str
     full_name: str
     external_member_id: NotRequired[str]
-    source: NotRequired[str]
     phone: NotRequired[str]
     email: NotRequired[str]
 
@@ -156,8 +157,6 @@ def normalize_customer(raw: dict) -> CustomerPayload:
     out: dict[str, Any] = {"member_id": member_id, "full_name": full_name}
     if raw.get("external_member_id"):
         out["external_member_id"] = raw["external_member_id"].strip()
-    if raw.get("source"):
-        out["source"] = raw["source"].strip()
     for contact_kind in ("phone", "email"):
         if raw.get(contact_kind):
             out[contact_kind] = raw[contact_kind].strip()

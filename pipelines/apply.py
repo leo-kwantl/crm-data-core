@@ -339,6 +339,14 @@ async def _write_order_placed(conn, cid: str, store_id: str, oid: str,
 
 async def _apply_event(conn, norm: EventPayload, raw: dict,
                        source: str) -> Optional[str]:
+    # The upload's source is authoritative (it is part of the dedup key and the
+    # quarantine reason); a payload that claims a different one would be stored
+    # under the wrong provenance with nothing failing, so refuse the mismatch.
+    claimed = norm.get("source")
+    if claimed is not None and claimed != source:
+        raise RowRejected(
+            f"event {norm['source_event_id']}: payload source {claimed!r}"
+            f" != upload source {source!r}")
     if await conn.fetchval(FIND_EVENT_SQL, source,
                            norm["source_event_id"]):
         return None  # replay: already applied

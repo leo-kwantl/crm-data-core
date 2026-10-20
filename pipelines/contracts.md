@@ -53,7 +53,7 @@ After editing this file, run `python scripts/audit_doc_cites.py`.
 
 ## events / consents
 
-Append-only. Dedup key `(source, source_event_id)`. Consumers (app timeline,
+Append-only. Dedup key `(source, source_event_id)` — the **upload job's** source is the one written, so a row whose payload carries a different `source` is rejected (the alternative is a row filed under provenance the payload did not claim, with nothing failing). Consumers (app timeline,
 ML features) read; nobody updates.
 
 ### kind vocabulary (additive; new kinds need ml ack before writing)
