@@ -310,7 +310,13 @@ async def test_manifest_seeds_parse_and_order(database_url: str):
     manifests.update(sched.parse_manifest(rows[1]["yaml"]))
     nightly = sched.topo_sort(manifests["nightly"])
     assert nightly[0] == "apply"  # everything else depends on apply
-    assert set(nightly) == {"apply", "kpi", "rfm", "churn", "clv",
+    # 055: `churn_all` is the `activity = all` leg the portal's "All
+    # activity" tab reads; without it the tab 404s and the empty state says
+    # "run the pipeline first" on a system whose pipeline has run. It is a
+    # second leg of the churn engine, not a new engine, so it is named in
+    # the job set - a re-stated manifest owns every job in it, and this is
+    # the line that fails if a later migration drops the leg again.
+    assert set(nightly) == {"apply", "kpi", "rfm", "churn", "churn_all", "clv",
                             "segments_purchase", "segments_overall",
                             "segments_behavior", "forecast",
                             "future_rows"}
