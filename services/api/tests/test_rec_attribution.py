@@ -44,7 +44,7 @@ BATCH_ALGOS = "rec-attr-test"
 ORDER_KEYS = "RA-%"
 
 _UPLOAD_FILES = ("ra1.csv", "ra2.csv", "ra3.csv", "ra4.csv", "ra5.csv",
-                 "ra6.csv", "ra7.csv")
+                 "ra6.csv", "ra7.csv", "ra8.csv")
 
 
 async def _purge(dsn: str, since: datetime) -> list[str]:
@@ -58,10 +58,15 @@ async def _purge(dsn: str, since: datetime) -> list[str]:
             await conn.execute(
                 "DELETE FROM upload_jobs WHERE filename = ANY($2::text[])"
                 " AND created_at >= $1", since, list(_UPLOAD_FILES))
+            # The clicks are found by CUSTOMER, not by batch: a click outlives
+            # the batch it came from (the retention job ages the batch), so a
+            # click with a NULL batch_id would slip past a batch-keyed purge
+            # and leak into the next run.
             await conn.execute(
                 "DELETE FROM order_recommendations WHERE rec_ref IN"
-                " (SELECT rec_ref FROM rec_clicks WHERE batch_id IN"
-                "  (SELECT id FROM rec_batches WHERE algos = $1))", BATCH_ALGOS)
+                " (SELECT rec_ref FROM rec_clicks WHERE customer_id IN"
+                "  (SELECT id FROM customers WHERE member_id LIKE $1))",
+                CUSTOMER_KEYS)
             await conn.execute(
                 "DELETE FROM order_items WHERE order_id IN"
                 " (SELECT id FROM orders WHERE external_order_id LIKE $1)",
@@ -69,8 +74,9 @@ async def _purge(dsn: str, since: datetime) -> list[str]:
             await conn.execute(
                 "DELETE FROM orders WHERE external_order_id LIKE $1", ORDER_KEYS)
             await conn.execute(
-                "DELETE FROM rec_clicks WHERE batch_id IN"
-                " (SELECT id FROM rec_batches WHERE algos = $1)", BATCH_ALGOS)
+                "DELETE FROM rec_clicks WHERE customer_id IN"
+                " (SELECT id FROM customers WHERE member_id LIKE $1)",
+                CUSTOMER_KEYS)
             await conn.execute(
                 "DELETE FROM rec_batches WHERE algos = $1", BATCH_ALGOS)
             # customers cascade to customer_events (the derived order_placed
@@ -431,5 +437,56 @@ async def test_two_lines_two_tokens_are_two_attributions(
             assert len(rows) == 2, rows
             assert {str(r["rec_ref"]) for r in rows} == {first, second}
             assert len({str(r["product_id"]) for r in rows}) == 2
+    finally:
+        await pool.close()
+
+
+@pytest.mark.asyncio
+async def test_a_click_outlives_the_batch_it_came_from(
+        database_url: str, tmp_path: Path, monkeypatch) -> None:
+    """The retention job ages `rec_batches`; a click must survive that.
+
+    If the click went with its batch, the token would stop resolving and
+    every order line naming it would be quarantined - housekeeping would
+    cost a shop a sale. So the click outlives the batch (its `batch_id`
+    goes NULL) and the line still lands.
+    """
+    import asyncpg
+
+    monkeypatch.setenv("DATABASE_URL", database_url)
+    pool = await asyncpg.create_pool(database_url)
+    try:
+        async with pool.acquire() as conn:
+            await _seed(conn, "M-900109")
+            batch_id = await _batch(conn)
+            rec_ref = await _click(conn, batch_id, "M-900109", PRODUCT_SKU)
+            # what the retention job does to a batch that is 365 days old
+            await conn.execute("DELETE FROM rec_batches WHERE id = $1::uuid",
+                               batch_id)
+            survivor = await conn.fetchrow(
+                "SELECT batch_id FROM rec_clicks WHERE rec_ref = $1::uuid",
+                rec_ref)
+            assert survivor is not None, "the click went with its batch"
+            assert survivor["batch_id"] is None, survivor
+    finally:
+        await pool.close()
+
+    csv = _order_csv(tmp_path, "ra8.csv", [("RA-8", "M-900109", [
+        {"sku": PRODUCT_SKU, "qty": 1, "unit_cents": 100,
+         "rec_ref": rec_ref}])])
+    out = await run_upload.run(
+        csv, "orders", "rec-attr", None, None, None, apply=True)
+    assert out["status"] == "committed", out
+    assert out["committed"] == 1 and out["quarantined"] == 0, out
+
+    pool = await asyncpg.create_pool(database_url)
+    try:
+        async with pool.acquire() as conn:
+            attributed = await conn.fetchval(
+                "SELECT count(*) FROM order_recommendations orr"
+                " JOIN order_items oi ON oi.id = orr.order_item_id"
+                " JOIN orders o ON o.id = oi.order_id"
+                " WHERE o.external_order_id = 'RA-8'")
+            assert int(attributed) == 1, attributed
     finally:
         await pool.close()
