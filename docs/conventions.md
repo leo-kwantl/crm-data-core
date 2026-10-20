@@ -14,3 +14,11 @@ A conventions file carries norms only: no pointers, no interface listings, no re
   `gender` / `district` are quasi-identifiers, never combined with PII in one GET predicate; age is derived (`age(date_of_birth)`), never stored.
 - Identity search: `external_member_id` + `member_id` substring fallback (escaped ILIKE, LIMIT 20).
 - The append-only grants (`consent_events`, `customer_access_logs`) and customer soft-delete are enforced in data-owned migrations; the policy they implement is `../../docs/conventions.md` § PII policy.
+
+## Time bounds (data side)
+
+- A `date` anchor takes `column > $1::date`: a row dated after the business day is future.
+- A `timestamptz` anchor takes the **next business day, exclusive**: `column >= ((($1::date) + 1)::timestamp AT TIME ZONE interval '8 hours')`.
+  `> today` is wrong for it because `timestamptz > date` promotes the date at the session zone, so the bound lands at the *start* of the as_of day and the day's own rows read as future (measured 2026-10-20: 28 clean `rfm_snapshots` rows written by that day's own tick).
+- Cast `$1::date` in both forms: a bare `$1` is an unknown whose parse follows the session zone, which is the same promotion one step earlier.
+- Implementation `pipelines/retention.py` `FUTURE_DATED_INSTANT` + `future_rows`; third repo to hit it after ml's `forecast._as_of_bound` and app's `test_observed_anchor.py`.

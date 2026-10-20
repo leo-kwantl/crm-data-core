@@ -19,6 +19,9 @@ python -c "import pipelines.ingest.orders, pipelines.ingest.events, pipelines.in
 - Events/consents append-only; dedup key `(source, source_event_id)`; money in integer cents.
 - The order timestamp is `ordered_at` — there is **no** `orders.placed_at`, so a check that greps for that name passes on data it never read.
   No fact may be dated after `now()`: `apply` quarantines a *completed* future order as `future_dated`, seeds date every fact `now()`-relative, and `services/api/tests/test_no_future_facts.py` holds both rules.
+- A time bound takes its form from the column's type: a `timestamptz` anchor gets the **next business day, exclusive** (`>= ((($1::date) + 1)::timestamp AT TIME ZONE interval '8 hours')`), a `date` anchor gets `> $1::date`.
+  Never compare an instant column to a bare date — the date is promoted at the session zone, so `> today` lands at the *start* of the day and the day's own rows read as future.
+  Cast `$1::date` explicitly (a bare `$1` is an unknown parsed at the session zone). Third repo to hit this after ml's `forecast._as_of_bound` and app's `test_observed_anchor.py`; data's implementation is `FUTURE_DATED_INSTANT` in `pipelines/retention.py`.
 - Owns future `01x_ingest_*` migrations.
   For any file present in **both** trees, app's checkout is the base (`db/`, `services/api/**`) — sync byte-for-byte, never fork; never delete a data-only harness file.
   `services/api/tests/**` is data's own harness and is **not** in a sync's scope; `pipelines/**` is data's (app vendors `pipelines/ingest/connectors.py` for serving).
