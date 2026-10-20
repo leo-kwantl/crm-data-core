@@ -16,6 +16,7 @@ After editing this file, run `python scripts/audit_doc_cites.py`.
 - 016: modeling-upgrade flag mapping (ml registry / algorithms / signals)
 - 019: source connector framework (D1, [BREAKING ingest])
 - 020: cohort retention snapshots (D2, [ADDITIVE] analytics)
+- 053: recommendation attribution (D3, [BREAKING ingest])
 - 021: SHAP cluster-explainer result tables (M2, [ADDITIVE] analytics)
 - 040: SHAP batch coverage (`clusters_explained`, `clusters_skipped`)
 - 022: demand-forecast snapshot tables (M3, [ADDITIVE] analytics)
@@ -222,6 +223,7 @@ App posts the file edge (`upload_jobs` row); data owns stage → validate
 2. **stage:** raw CSV lines → `staging_rows` (`pending`). CSV only in v1;
    gzip accepted (magic-sniffed, 10MB raw / 64MB decompressed caps).
    orders `lines` column carries a JSON list (cents may be decimal units).
+   A line may carry the optional opaque `rec_ref` token - see "053" below.
 3. **validate:** per-kind `pipelines/ingest` normalize (`customers` /
    `orders` / `events` / `identity`) → `ok` / `rejected`.
 4. **apply (`--apply`, `pipelines/apply.py`):** staged `ok` rows into
@@ -540,6 +542,14 @@ manifests store `segment_run_id` (concrete UUID, `latest`, a missing
 key, or the all-zero UUID — every form resolved at dispatch to the
 newest segment run for `segment_mode` +/- `segment_k` + scope, so
 manifests never hold a stale fixed id). `052_cohort_money.sql` adds `retained_cents` to the same table - the money cohort members brought back in each period, summed from that period's completed orders - and ARPU is `retained_cents` / `retained`; the column is `NOT NULL DEFAULT 0`, so a row written before the migration reads 0 cents, which is "not measured" and not "no money".
+
+## 053: recommendation attribution (D3, [BREAKING ingest])
+
+- **The token.** `rec_clicks.rec_ref` is a uuid minted by the server that serves the recommendation - one row per served recommendation, opaque to the merchant.
+- **The payload.** An order line grows ONE optional field, `rec_ref`, in the `lines` list (`pipelines/ingest/orders.py` `normalize`); its absence is NORMAL, and no token means no attribution row.
+- **The writer.** Data writes the attribution at apply time (`pipelines/apply.py` `_apply_order`), per ORDER LINE (`order_recommendations`): the token is resolved against `rec_clicks` and the click's product and customer are compared with the line's product and the order's customer.
+- **The mismatch rule.** A token that names no served recommendation, or one whose product or customer is not the line's, is a disagreement: it quarantines the row with both values named, the same discipline the feed-total rule already uses. Never attribute a recommendation to a different product, and never drop the line quietly.
+- **The absence rule.** No token, no attribution row, and a reader must say "no attributed revenue yet", never $0 - a $0 page and a "no shop has sent attribution yet" page are different facts, and only the second is true.
 
 ## 021: SHAP cluster-explainer result tables (M2, [ADDITIVE] analytics)
 

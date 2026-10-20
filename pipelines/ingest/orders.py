@@ -10,6 +10,7 @@ Stages: extract (source client) -> normalize (this module) -> load
 """
 from __future__ import annotations
 
+import uuid
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import TypedDict
 
@@ -19,11 +20,12 @@ _CENTS = Decimal("1")
 
 
 class OrderLine(TypedDict):
-    """One normalized line: whole quantity, integer cents."""
+    """One normalized line: whole quantity, integer cents, optional token."""
 
     sku: str
     qty: int
     unit_cents: int
+    rec_ref: str | None
 
 
 class OrderPayload(TypedDict):
@@ -77,6 +79,28 @@ def whole_number(value, *, field: str) -> int:
     return int(dec)
 
 
+def rec_ref_token(value) -> str | None:
+    """The served-recommendation token on a line, or None.
+
+    One opaque uuid string, minted by the server that served the
+    recommendation and echoed back by the shop. Absence is NORMAL - a
+    shop that was never served a recommendation sends no token - so the
+    field is optional and its absence writes no attribution. A value
+    that is present but is not a uuid is a rejected row, never a
+    silently dropped attribution.
+    """
+    if value is None:
+        return None
+    token = str(value).strip()
+    if not token:
+        return None
+    try:
+        return str(uuid.UUID(token))
+    except (ValueError, AttributeError, TypeError):
+        raise RowRejected(f"rec_ref: not a uuid: {value!r}",
+                          "rec_ref_invalid") from None
+
+
 def _declared_total_cents(raw: dict):
     """The feed's own order total if it carries one, else None."""
     val = raw.get("total_cents")
@@ -105,7 +129,9 @@ def normalize(raw: dict, exclusions: list = ()) -> OrderPayload:
         if qty < 1 or unit < 0:
             raise ValueError(f"bad line: {ln!r}")
         total += qty * unit
-        norm_lines.append({"sku": ln.get("sku"), "qty": qty, "unit_cents": unit})
+        norm_lines.append({"sku": ln.get("sku"), "qty": qty,
+                           "unit_cents": unit,
+                           "rec_ref": rec_ref_token(ln.get("rec_ref"))})
     declared = _declared_total_cents(raw)
     if declared is not None and declared != total:
         # A discount, shipping or tax line is exactly this shape. Choosing

@@ -142,7 +142,10 @@ def _coerce_lines(raw_lines: Any) -> list[dict]:
         else:
             unit = orders_ingest.money_cents(ln.get("unit", 0), field="unit",
                                              scale=100)
-        out.append({"sku": ln.get("sku"), "qty": qty, "unit_cents": unit})
+        out.append({"sku": ln.get("sku"), "qty": qty, "unit_cents": unit,
+                    # The served-recommendation token rides here, unvalidated:
+                    # the order normalizer owns the one place that checks it.
+                    "rec_ref": ln.get("rec_ref")})
     return out
 
 

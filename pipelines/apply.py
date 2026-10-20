@@ -91,6 +91,24 @@ RETURNING id
 INSERT_LINE_SQL = """
 INSERT INTO order_items (order_id, product_id, qty, unit_price_cents)
 VALUES ($1, $2, $3, $4)
+RETURNING id
+"""
+
+# The served recommendation a line answers, resolved by its opaque token.
+# The row lives in rec_clicks, which the server that SERVED the
+# recommendation wrote; the token names what was shown (batch, customer,
+# product, rank) and is the only thing a shop can echo back.
+RESOLVE_CLICK_SQL = """
+SELECT product_id, customer_id, batch_id, rank
+FROM rec_clicks WHERE rec_ref = $1::uuid
+"""
+
+# The attribution is per ORDER LINE, not per order: one order can hold
+# several products from several recommendations.
+INSERT_ORDER_RECOMMENDATION_SQL = """
+INSERT INTO order_recommendations (order_item_id, rec_ref)
+VALUES ($1, $2)
+ON CONFLICT DO NOTHING
 """
 
 FIND_EVENT_SQL = """
@@ -293,12 +311,33 @@ async def _apply_order(conn, norm: OrderPayload, raw: dict, source: str,
         raise RowMissing("unresolvable customer (need customer_id, "
                          "member_id or external_member_id)",
                          "customer_unresolved")
-    product_ids: list[tuple[str, int, int]] = []
+    product_ids: list[tuple[str, int, int, str | None]] = []
     for line in norm["lines"]:
         pid = await conn.fetchval(RESOLVE_PRODUCT_SQL, line["sku"])
         if pid is None:
             raise RowMissing(f"unknown sku {line['sku']!r}", "sku_missing")
-        product_ids.append((str(pid), line["qty"], line["unit_cents"]))
+        rec_ref = line.get("rec_ref")
+        if rec_ref:
+            # A token that names no served recommendation, or one that
+            # names a different product or customer, is a disagreement -
+            # and a disagreement quarantines the row with both values
+            # named, never silently attributing the wrong thing.
+            click = await conn.fetchrow(RESOLVE_CLICK_SQL, rec_ref)
+            if click is None:
+                raise RowRejected(
+                    f"rec_ref {rec_ref} names no served recommendation",
+                    "rec_ref_unknown")
+            if str(click["product_id"]) != str(pid):
+                raise RowRejected(
+                    f"rec_ref {rec_ref} served product {click['product_id']} "
+                    f"but the line is product {pid}", "rec_product_mismatch")
+            if str(click["customer_id"]) != str(cid):
+                raise RowRejected(
+                    f"rec_ref {rec_ref} was served to customer "
+                    f"{click['customer_id']} but the order is customer {cid}",
+                    "rec_customer_mismatch")
+        product_ids.append((str(pid), line["qty"], line["unit_cents"],
+                            rec_ref))
     oid = await conn.fetchval(
         INSERT_ORDER_SQL, cid, store_id, ordered_at,
         norm["total_cents"], status, source, ext)
@@ -309,8 +348,11 @@ async def _apply_order(conn, norm: OrderPayload, raw: dict, source: str,
         # whole job on a uniqueness violation.
         return None
     oid = str(oid)
-    for pid, qty, cents in product_ids:
-        await conn.execute(INSERT_LINE_SQL, oid, pid, qty, cents)
+    for pid, qty, cents, rec_ref in product_ids:
+        line_id = await conn.fetchval(INSERT_LINE_SQL, oid, pid, qty, cents)
+        if rec_ref:
+            await conn.execute(INSERT_ORDER_RECOMMENDATION_SQL, str(line_id),
+                               rec_ref)
     await _write_order_placed(conn, cid, store_id, oid,
                               ordered_at, norm["total_cents"], ext)
     return oid

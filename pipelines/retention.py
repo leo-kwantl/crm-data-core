@@ -89,6 +89,15 @@ NEVER: dict[str, str] = {
     # business records -- archival is a different conversation, never a tick
     "orders": "business record",
     "order_items": "business record",
+    # the capture path of the recommendation attribution (migration 053): a
+    # token names what was served, and a token that no longer resolves is a
+    # disagreement that quarantines the order line - so the token has to
+    # outlive every order that can still name it. Aging it would quarantine a
+    # valid order, which is a worse loss than the rows it saves. The growth
+    # this table carries is the price of a token that stays resolvable; a
+    # token-expiry policy on the serving side is what would make it ageable.
+    "rec_clicks": "serving ledger (a token must stay resolvable)",
+    "order_recommendations": "business fact (the money a recommendation earned)",
     "customers": "master data, soft-deleted",
     "customer_contacts": "master data",
     "customer_events": "ingestion ledger",
