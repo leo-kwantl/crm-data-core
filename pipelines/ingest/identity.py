@@ -10,11 +10,25 @@ Contract (mirrors crm-cdp-app identity):
 from __future__ import annotations
 
 import re
+from typing import TypedDict
 
 MEMBER_RE = re.compile(r"^M-[0-9]{6}$")
 
 
-def normalize_binding(raw: dict, exclusions: list = ()) -> dict:
+class IdentityPayload(TypedDict):
+    """The shape `normalize_binding` hands `apply._apply_identity`.
+
+    `source` is validated here and not written by the binding UPDATE: it is
+    the provenance of the claim, which `customer_contacts`/audit carry, and
+    the shape test allowlists it as deliberately unconsumed.
+    """
+
+    member_id: str
+    external_member_id: str
+    source: str
+
+
+def normalize_binding(raw: dict, exclusions: list = ()) -> IdentityPayload:
     """Validate one external-ID binding. Raises ValueError."""
     from pipelines.exclusions import check_excluded
     check_excluded(exclusions, "customer", raw.get("member_id"))

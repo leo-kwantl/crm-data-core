@@ -27,6 +27,9 @@ from typing import Any, Optional
 
 from pipelines import upload as up
 from pipelines.ingest.errors import RowMissing, RowRejected, code_of
+from pipelines.ingest.events import EventPayload
+from pipelines.ingest.identity import IdentityPayload
+from pipelines.ingest.orders import OrderPayload
 
 RESOLVE_STORE_SQL = """
 SELECT id FROM stores WHERE code = $1 OR id::text = $1
@@ -225,7 +228,8 @@ def _ordered_at(raw: dict,
     return dt
 
 
-async def _apply_customer(conn, norm: dict, raw: dict) -> tuple[str, bool]:
+async def _apply_customer(conn, norm: up.CustomerPayload,
+                          raw: dict) -> tuple[str, bool]:
     """Upsert the member row. Returns `(customer_id, revived)`.
 
     `revived` is true when the row was a soft-deleted tombstone and this
@@ -247,7 +251,7 @@ async def _apply_customer(conn, norm: dict, raw: dict) -> tuple[str, bool]:
     return cid, revived
 
 
-async def _apply_identity(conn, norm: dict, raw: dict) -> str:
+async def _apply_identity(conn, norm: IdentityPayload, raw: dict) -> str:
     tag = await conn.execute(
         IDENTITY_BIND_SQL, norm["member_id"], norm["external_member_id"])
     if tag.split()[-1] == "0":
@@ -258,7 +262,7 @@ async def _apply_identity(conn, norm: dict, raw: dict) -> str:
     return cid
 
 
-async def _apply_order(conn, norm: dict, raw: dict, source: str,
+async def _apply_order(conn, norm: OrderPayload, raw: dict, source: str,
                        feed_tz: Optional[timezone] = BUSINESS_TZ
                        ) -> Optional[str]:
     ext = norm["external_order_id"]
@@ -333,7 +337,7 @@ async def _write_order_placed(conn, cid: str, store_id: str, oid: str,
     return None if new_id is None else evid
 
 
-async def _apply_event(conn, norm: dict, raw: dict,
+async def _apply_event(conn, norm: EventPayload, raw: dict,
                        source: str) -> Optional[str]:
     if await conn.fetchval(FIND_EVENT_SQL, source,
                            norm["source_event_id"]):

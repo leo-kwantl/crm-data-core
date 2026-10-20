@@ -11,10 +11,35 @@ Stages: extract (source client) -> normalize (this module) -> load
 from __future__ import annotations
 
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
+from typing import TypedDict
 
 from pipelines.ingest.errors import RowRejected
 
 _CENTS = Decimal("1")
+
+
+class OrderLine(TypedDict):
+    """One normalized line: whole quantity, integer cents."""
+
+    sku: str
+    qty: int
+    unit_cents: int
+
+
+class OrderPayload(TypedDict):
+    """The shape `normalize` hands the writer, one key per value it reads.
+
+    Declared at the write site rather than in a types module: the point is
+    that `apply._apply_order` and this dict are the same contract read from
+    two ends, and `services/api/tests/test_ingest_payload_shapes.py` fails
+    when a key here is not read there (or vice versa).
+    """
+
+    store_id: str
+    external_order_id: str
+    customer_id: str | None
+    lines: list[OrderLine]
+    total_cents: int
 
 
 def decimal_number(value, *, field: str) -> Decimal:
@@ -60,7 +85,7 @@ def _declared_total_cents(raw: dict):
     return whole_number(val, field="total_cents")
 
 
-def normalize(raw: dict, exclusions: list = ()) -> dict:
+def normalize(raw: dict, exclusions: list = ()) -> OrderPayload:
     """Validate + normalize one raw source order. Raises ValueError."""
     from pipelines.exclusions import check_excluded
     check_excluded(exclusions, "order", raw.get("external_order_id"))

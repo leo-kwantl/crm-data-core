@@ -27,11 +27,28 @@ import hashlib
 import io
 import json
 import re
-from typing import Any
+from typing import Any, NotRequired, TypedDict
 
 from pipelines.ingest import events as events_ingest
 from pipelines.ingest import identity as identity_ingest
 from pipelines.ingest import orders as orders_ingest
+
+
+class CustomerPayload(TypedDict):
+    """The shape `normalize_customer` hands `apply._apply_customer`.
+
+    `member_id` + `full_name` are the two values the customer UPSERT binds;
+    `phone`/`email` are read from the *raw* row by the contact writer, so they
+    ride along for the reader and are allowlisted as unconsumed — as is
+    `source`, which no data-side writer reads on this path.
+    """
+
+    member_id: str
+    full_name: str
+    external_member_id: NotRequired[str]
+    source: NotRequired[str]
+    phone: NotRequired[str]
+    email: NotRequired[str]
 
 KINDS = ("customers", "orders", "events", "identity")
 
@@ -128,7 +145,7 @@ def _coerce_lines(raw_lines: Any) -> list[dict]:
     return out
 
 
-def normalize_customer(raw: dict) -> dict:
+def normalize_customer(raw: dict) -> CustomerPayload:
     """Validate one customer upload row. Raises ValueError."""
     member_id = (raw.get("member_id") or "").strip()
     if not MEMBER_RE.match(member_id):
