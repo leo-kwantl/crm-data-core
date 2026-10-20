@@ -452,7 +452,8 @@ async def test_two_lines_two_tokens_are_two_attributions(
 @pytest.mark.asyncio
 async def test_the_mint_is_deterministic_and_in_one_module() -> None:
     """One mint, two answers would meet on the same order line."""
-    from pipelines.rec_ref import NAMESPACE_REC_REF, mint_rec_ref
+    from pipelines.rec_ref import (NAMESPACE_DNS, NAMESPACE_REC_REF,
+                                    mint_rec_ref)
 
     batch, customer, product = ("b" * 8 + "-0000-0000-0000-" + "0" * 12,
                                 "c" * 8 + "-0000-0000-0000-" + "0" * 12,
@@ -464,6 +465,13 @@ async def test_the_mint_is_deterministic_and_in_one_module() -> None:
     assert NAMESPACE_REC_REF == uuid.uuid5(
         uuid.UUID("6ba7b810-9dad-11d1-80b4-00c04fd430c8"), "crm-cdp/rec_ref")
     assert NAMESPACE_REC_REF.version == 5
+    # The constant says DNS and carries the DNS namespace. The VALUE is in
+    # flight (tokens minted with it are in the dev cluster), so it may not
+    # move; a reader who "corrects" it to the URL namespace to match a
+    # name would re-mint every token in flight, and the name was the part
+    # that was wrong. So the pair is pinned on both sides.
+    assert NAMESPACE_DNS == uuid.NAMESPACE_DNS
+    assert NAMESPACE_DNS != uuid.NAMESPACE_URL
 
 
 @pytest.mark.asyncio

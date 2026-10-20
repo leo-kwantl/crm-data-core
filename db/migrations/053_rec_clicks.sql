@@ -46,6 +46,22 @@
 -- click outlives its batch; the customer / product / rank it carries are
 -- what the attribution needs, and a NULL batch says "that batch was
 -- aged" instead of pointing at a row that no longer exists.
+--
+-- THE READER'S RULE - SCOPE COMES FROM THE CUSTOMER, NEVER FROM THE
+-- BATCH. A click that lost its batch has lost the brand that batch was
+-- scoped to, so a scoped attribution read that filters on the batch's
+-- brand would silently under-count from the first retention sweep
+-- onwards - and an under-count that looks like a floor is not a floor.
+-- The scope is still derivable: click -> customer_id -> customers.group_id
+-- (a customer row never ages) and the brand follows the customer's
+-- stores. So the reader joins the customer, not the batch, and the
+-- `batch_id IS NULL` marker means "that batch was aged", not "that click
+-- has no scope". A copied brand column would be exactly the
+-- denormalisation this header refuses above, so it is not added.
+--
+-- The measurement is a FLOOR: order lines that carried no token are
+-- invisible to it, so attributed revenue is a lower bound, never the
+-- batch's revenue. "No token came back" is `not_measured`, never $0.
 
 CREATE TABLE rec_clicks (
   rec_ref uuid PRIMARY KEY DEFAULT gen_random_uuid(),

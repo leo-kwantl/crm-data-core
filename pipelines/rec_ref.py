@@ -13,7 +13,7 @@ module: copy it with the files it reads at import, never fork it). A
 second implementation in the serving repo is a second answer to "what is
 this token", and the two answers would meet on the same order line.
 
-The namespace is derived, not typed: uuid v5 over the RFC 4122 URL
+The namespace is derived, not typed: uuid v5 over the RFC 4122 DNS
 namespace and the name `crm-cdp/rec_ref`. Change it and every token
 already in flight stops resolving - which is the same failure as
 deleting the click rows, so it is not a thing to do quietly.
@@ -23,11 +23,14 @@ from __future__ import annotations
 
 import uuid
 
-#: The RFC 4122 URL namespace (uuid v5 of the DNS namespace).
-NAMESPACE_URL = uuid.UUID("6ba7b810-9dad-11d1-80b4-00c04fd430c8")
+#: The RFC 4122 DNS namespace. The VALUE is in flight (tokens minted with
+#: it are in the dev cluster), so it does not move: only the name was
+#: wrong - it said URL while carrying the DNS namespace, and a reader who
+#: "corrected" the constant to match the name would re-mint every token.
+NAMESPACE_DNS = uuid.UUID("6ba7b810-9dad-11d1-80b4-00c04fd430c8")
 
 #: The token namespace: derived once, so both sides derive the same one.
-NAMESPACE_REC_REF = uuid.uuid5(NAMESPACE_URL, "crm-cdp/rec_ref")
+NAMESPACE_REC_REF = uuid.uuid5(NAMESPACE_DNS, "crm-cdp/rec_ref")
 
 
 def mint_rec_ref(batch_id: str, customer_id: str, product_id: str,
