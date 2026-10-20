@@ -9,7 +9,15 @@ file holds, each with the failure it prevents:
 - a token that names no served recommendation is quarantined, not ignored;
 - a token whose product or customer is not the line's is quarantined with
   BOTH values named - never attributed to the wrong thing;
-- two lines of one order carry two attributions - per line, not per order.
+- two lines of one order carry two attributions - per line, not per order;
+- serving the same recommendation twice is an UPSERT (the mint is
+  deterministic), not an error - "the staff sent this twice" is normal;
+- a click outlives the batch it came from: the retention job ages
+  `rec_batches`, and a token that stopped resolving would quarantine a
+  valid order line;
+- the mint is deterministic and lives in one module
+  (`pipelines/rec_ref.py`), so the serving side and this side cannot
+  answer "what is this token" differently.
 
 Rows written here live in this module's own keyspace and are purged at
 module teardown (the suite shares one database across files and is not
@@ -437,6 +445,80 @@ async def test_two_lines_two_tokens_are_two_attributions(
             assert len(rows) == 2, rows
             assert {str(r["rec_ref"]) for r in rows} == {first, second}
             assert len({str(r["product_id"]) for r in rows}) == 2
+    finally:
+        await pool.close()
+
+
+@pytest.mark.asyncio
+async def test_the_mint_is_deterministic_and_in_one_module() -> None:
+    """One mint, two answers would meet on the same order line."""
+    from pipelines.rec_ref import NAMESPACE_REC_REF, mint_rec_ref
+
+    batch, customer, product = ("b" * 8 + "-0000-0000-0000-" + "0" * 12,
+                                "c" * 8 + "-0000-0000-0000-" + "0" * 12,
+                                "p" * 8 + "-0000-0000-0000-" + "0" * 12)
+    first = mint_rec_ref(batch, customer, product, 1)
+    assert first == mint_rec_ref(batch, customer, product, 1)
+    assert first != mint_rec_ref(batch, customer, product, 2)
+    # the namespace is derived, so both sides derive the same one
+    assert NAMESPACE_REC_REF == uuid.uuid5(
+        uuid.UUID("6ba7b810-9dad-11d1-80b4-00c04fd430c8"), "crm-cdp/rec_ref")
+    assert NAMESPACE_REC_REF.version == 5
+
+
+@pytest.mark.asyncio
+async def test_a_repeat_serve_is_an_upsert_not_an_error(
+        database_url: str) -> None:
+    """The mint is deterministic, so the second serve lands on the same key.
+
+    The upsert here is the one the contract publishes for the serving side
+    (`pipelines/contracts.md` "053"), so this file pins the statement app
+    copies rather than a paraphrase of it.
+    """
+    import asyncpg
+
+    pool = await asyncpg.create_pool(database_url)
+    try:
+        async with pool.acquire() as conn:
+            await _seed(conn, "M-900110")
+            batch_id = await _batch(conn)
+            rec_ref = await _click(conn, batch_id, "M-900110", PRODUCT_SKU)
+            customer_id = await conn.fetchval(
+                "SELECT id FROM customers WHERE member_id = 'M-900110'")
+            product_id = await conn.fetchval(
+                "SELECT id FROM products WHERE sku = $1", PRODUCT_SKU)
+            first = await conn.fetchrow(
+                "SELECT served_at, served_count, last_served_at"
+                " FROM rec_clicks WHERE rec_ref = $1::uuid", rec_ref)
+            assert first is not None
+            assert int(first["served_count"]) == 1, first
+
+            # the published upsert
+            await conn.execute(
+                "INSERT INTO rec_clicks"
+                " (rec_ref, batch_id, customer_id, product_id, rank)"
+                " VALUES ($1, $2, $3, $4, 1)"
+                " ON CONFLICT (rec_ref) DO UPDATE"
+                "  SET served_count = rec_clicks.served_count + 1,"
+                "      last_served_at = now()",
+                rec_ref, batch_id, customer_id, product_id)
+            second = await conn.fetchrow(
+                "SELECT served_at, served_count, last_served_at"
+                " FROM rec_clicks WHERE rec_ref = $1::uuid", rec_ref)
+            assert second is not None
+            assert int(second["served_count"]) == 2, second
+            assert second["served_at"] == first["served_at"], (
+                "the first serve time must not move")
+            assert second["last_served_at"] >= first["last_served_at"]
+
+            # without the upsert the same serve is a unique violation: that
+            # is WHY the write has to be an upsert
+            with pytest.raises(asyncpg.UniqueViolationError):
+                await conn.execute(
+                    "INSERT INTO rec_clicks"
+                    " (rec_ref, batch_id, customer_id, product_id, rank)"
+                    " VALUES ($1, $2, $3, $4, 1)",
+                    rec_ref, batch_id, customer_id, product_id)
     finally:
         await pool.close()
 

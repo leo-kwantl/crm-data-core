@@ -12,11 +12,30 @@
 --
 -- `order_recommendations` is what data writes at apply time, and it is
 -- per ORDER LINE, not per order: one order can hold several products
--- from several recommendations, and the line is the truth.
+-- from several recommendations, and the line is the truth. It is
+-- APPEND-ONLY - one row per order line, never updated: a fact that was
+-- true once.
 --
 -- No denormalisation: batch / customer / product / rank are NOT copied
 -- into `order_recommendations`, because a copied column can drift from
 -- the row it was copied from. The reader joins.
+--
+-- THE MINT IS DETERMINISTIC (uuid v5 over batch_id, customer_id,
+-- product_id, rank), so serving the same recommendation twice lands on
+-- the same primary key. That is the point: "the staff sent this twice"
+-- is a normal thing, and it must not raise. So the write is an UPSERT:
+--
+--   INSERT INTO rec_clicks
+--     (rec_ref, batch_id, customer_id, product_id, rank)
+--   VALUES ($1, $2, $3, $4, $5)
+--   ON CONFLICT (rec_ref) DO UPDATE
+--     SET served_count = rec_clicks.served_count + 1,
+--         last_served_at = now();
+--
+-- `served_at` is when it was FIRST served and never moves; `last_served_at`
+-- is the most recent serve; `served_count` is how many times. The token
+-- is opaque to the merchant either way - it leaks neither the rank nor
+-- the batch.
 --
 -- `rec_clicks.batch_id` is ON DELETE SET NULL, and nullable, for one
 -- reason: the retention job ages `rec_batches` (365 days) and cascades
@@ -34,7 +53,9 @@ CREATE TABLE rec_clicks (
   customer_id uuid NOT NULL REFERENCES customers (id),
   product_id uuid NOT NULL REFERENCES products (id),
   rank integer NOT NULL CHECK (rank >= 1),
-  created_at timestamptz NOT NULL DEFAULT now()
+  served_at timestamptz NOT NULL DEFAULT now(),
+  served_count integer NOT NULL DEFAULT 1 CHECK (served_count >= 1),
+  last_served_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX rec_clicks_lookup_idx ON rec_clicks (customer_id, product_id);
 CREATE INDEX rec_clicks_batch_idx ON rec_clicks (batch_id);
