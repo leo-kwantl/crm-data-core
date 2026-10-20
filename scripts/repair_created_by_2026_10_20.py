@@ -33,6 +33,21 @@ back-stamping because ml's sweep listed four; the owner then ruled them in too
 -- two real assoc batches are history, and a row that cannot name its author is
 a fact about our records, not a reason to erase them.
 
+**2026-10-20, later pass (ml's ask, DM 2026-10-20).** ml's pairing reads now
+refuse a vintage whose `created_by` names no producer, and ml asked what
+`model_training_runs` -- the lineage table -- says: 36 rows carry NULL
+`created_by` (churn 11, forecast 12, segment 10, clv 3) and 23 more carry a
+probe author (`probe`, `ml-rehearsal`, `provenance-probe`, `cost-probe`,
+`crm-ml`). The same ruling therefore applies to that table: the probe rows are
+artefacts and go (dumped first), the NULL rows are history and are back-stamped
+`'pre-provenance'`. ml's own writer already names a producer for every new row
+(`ml_engine/training_runs.py` `INSERT_SQL`), so nothing changes for new rows.
+`forecast_batches`' four NULL rows are NOT touched here: they are ml's rows,
+and two of them are provably from the ad-hoc probe run that also wrote the
+`S101..S105` stores (2026-10-19 12:13:00-12:13:02 UTC, 18 seconds after those
+stores) while the other two sit next to the HK-midnight nightly and cannot be
+attributed from the data side. They are reported to ml, not guessed at.
+
     python scripts/repair_created_by_2026_10_20.py            # dry run
     python scripts/repair_created_by_2026_10_20.py --apply    # do it
 
@@ -84,6 +99,8 @@ EXPECTED_PROBE_DELETE = {
     "churn_snapshots": 3,    # ml-rehearsal 2, provenance-probe 1
     "assoc_batches": 5,      # probe 3, crm-ml 2
     "rec_batches": 1,        # ml-rehearsal 1
+    "model_training_runs": 32,  # probe 7, ml-rehearsal 12, provenance-probe 10,
+                               # cost-probe 2, crm-ml 1 (ml's ask, 2026-10-20)
 }
 EXPECTED_BACKSTAMP = {
     "churn_snapshots": 11,
@@ -91,6 +108,7 @@ EXPECTED_BACKSTAMP = {
     "segment_runs": 10,
     "explain_batches": 5,
     "assoc_batches": 2,      # added by the ruling's second pass: history, not debris
+    "model_training_runs": 36,  # ml's ask, 2026-10-20: the lineage table
 }
 EXPECTED_CLV_NULL = 4            # measured; 1 fossil + 3 accurate
 UNASSIGNED = ()                   # none left: deliver every NULL row it measured
