@@ -46,7 +46,8 @@ The whole directory, not a sample, and never a file list: three named files repo
 
 ## Environment
 
-- Runtime traps (cmd shell: `set "VAR=..." && ...`, no `export`; pgembed; the one-backend rule; login-vs-health): `../docs/environment.md`. Data adds none.
+- Runtime traps (cmd shell: `set "VAR=..." && ...`, no `export`; pgembed; the one-backend rule; login-vs-health): `../docs/environment.md`.
+- A long run gets its environment **in process** (an explicit `os.environ[...]`/kwarg before the call), never via `set` in a background command: the wrapper is `cmd /d /s /c "…"`, where `set "VAR=x" && cmd` does not survive the second `&`, so the command silently ran against the *shared* database while claiming the throwaway one. Read the target back from the run's own log line before trusting its numbers.
 
 ## Cross-team
 
