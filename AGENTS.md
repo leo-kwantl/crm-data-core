@@ -47,7 +47,7 @@ This line is a **subset** and cannot see residue or second-run collisions — a 
 ## Environment
 
 - Runtime traps (cmd shell: `set "VAR=..." && ...`, no `export`; pgembed; the one-backend rule; login-vs-health): `../docs/environment.md`.
-- A long run gets its environment **in process** (an explicit `os.environ[...]`/kwarg before the call), never via `set` in a background command: the wrapper is `cmd /d /s /c "…"`, where `set "VAR=x" && cmd` does not survive the second `&`, so the command silently ran against the *shared* database while claiming the throwaway one. Read the target back from the run's own log line before trusting its numbers.
+- A run that resolves a target (a DSN, a cluster, a repo path) prints it as `host:port/db`, and no number is trusted before that line is read back: measured 2026-10-20, `set "VAR=x" && cmd` **does** survive a following `&` in the `cmd /d /s /c` wrapper, and neither shell inherits `DATABASE_URL` — yet the same command shape produced runs that reported different clusters, so the command you typed is not evidence of the target the process used.
 - No script may default to a DSN — a default is a silent target, and a `DELETE`/`UPDATE` aimed at the wrong cluster is the one mistake a second run cannot fix: resolve from `DATABASE_URL` only, refuse when it is unset, and print `host:port/db` before the first write (`scripts/clean_test_debris.py`, `scripts/repair_created_by_2026_10_20.py`).
 
 ## Cross-team
