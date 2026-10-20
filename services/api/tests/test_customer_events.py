@@ -8,7 +8,6 @@ append-only repo check, cascade FK verified read-only via pg catalog
 
 from __future__ import annotations
 
-import itertools
 import uuid
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -23,7 +22,6 @@ if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 from services.api.tests.auth_helper import AUTH_H as STAFF
-_counter = itertools.count(201)
 
 pytestmark = pytest.mark.asyncio
 
@@ -73,10 +71,16 @@ async def client(db_pool) -> AsyncIterator:  # shadows conftest client
 
 
 async def _make_customer(db_pool) -> tuple[str, str, str]:
-    n = next(_counter) % 900000 + 100000
-    member = f"M-{n:06d}"
+    # A member id unique per CALL, not per session. The counter restarted at
+    # the same number in every run, so the second run against a cluster that
+    # kept the first run's rows hit the unique key and the test failed with
+    # "could not create customer" - a repeat of the suite was not a repeat of
+    # the measurement. `customer_events` is append-only, so these customers
+    # cannot be purged with their events; the space they occupy is the
+    # price, and the id must not repeat.
     async with db_pool.acquire() as conn:
-        for _ in range(3):  # retry on unlikely member_id collision
+        for _ in range(3):  # retry on an unlikely member_id collision
+            member = f"M-{uuid.uuid4().int % 900000 + 100000:06d}"
             try:
                 row = await conn.fetchrow(
                     "INSERT INTO customers (member_id, full_name) VALUES ($1, $2)"
@@ -87,8 +91,7 @@ async def _make_customer(db_pool) -> tuple[str, str, str]:
                 assert row is not None
                 return str(row["id"]), member, "Event Test User"
             except Exception:
-                n = (n + 1) % 900000 + 100000
-                member = f"M-{n:06d}"
+                continue
     raise AssertionError("could not create customer")
 
 
