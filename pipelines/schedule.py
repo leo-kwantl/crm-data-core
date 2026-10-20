@@ -948,10 +948,59 @@ async def run_pipeline(conn, pipeline: str, jobs: dict[str, dict],
                               if engine not in DATA_ENGINES
                               else None}
         except Exception as exc:  # noqa: BLE001 - recorded on the run row
-            await conn.execute(FINISH_RUN_SQL, rid, "failed", None,
-                               upstream,
-                               f"{type(exc).__name__}: {exc}"[:2000])
+            await _finish_failed(conn, rid, upstream, exc)
             outcomes[name] = {"status": "failed",
                               "error": f"{type(exc).__name__}: {exc}"[:500]}
+        except BaseException as exc:  # noqa: BLE001 - SIGINT/SIGTERM/system
+            # exit must not leave the row `running`: the whole point of the
+            # terminal status is that a human can find the death without a log.
+            await _finish_failed(conn, rid, upstream, exc)
+            outcomes[name] = {"status": "failed",
+                              "error": f"{type(exc).__name__}: {exc}"[:500]}
+            raise
     return {"pipeline": pipeline, "as_of": ctx.as_of.isoformat(),
             "outcomes": outcomes}
+
+
+#: The reader's side of the same predicate: a `running` row older than
+#: RUN_STALE_AFTER is a job that died, not one that is busy. One literal for
+#: both, so the claim gate and the health view cannot disagree about what
+#: "stuck" means (a second number in a dashboard is how they drift apart).
+STALE_RUNNING_SQL = f"""
+SELECT pipeline, job, as_of, brand_id, group_id, started_at, run_id,
+       now() - started_at AS running_for
+  FROM pipeline_runs
+ WHERE status = 'running'
+   AND started_at < now() - {RUN_STALE_AFTER}
+ ORDER BY started_at
+"""
+
+
+async def _finish_failed(conn, rid, upstream: str,
+                         exc: BaseException) -> None:
+    """Write the terminal `failed` row for a job that did not finish.
+
+    `KeyboardInterrupt`, `SystemExit` and `asyncio.CancelledError` are
+    `BaseException`s, so an `except Exception` leaves the row `running` -- and
+    a reader cannot tell a job that died at 01:03 from one still working: both
+    read `running`, one of them for two hours until RUN_STALE_AFTER.
+
+    The write itself is a plain await: the cancellation that delivered `exc`
+    has already been delivered once, so a single SIGINT still records the row
+    (measured). A *second* signal during teardown loses it -- escalation to
+    SIGKILL has the same outcome and nothing can defend against it.
+
+    A failing recovery write does not mask the original exception (the caller
+    re-raises it); silence there would only hide a second fault.
+    """
+    error = f"{type(exc).__name__}: {exc}"[:2000]
+    try:
+        await conn.execute(FINISH_RUN_SQL, rid, "failed", None, upstream,
+                           error)
+    except (Exception, asyncio.CancelledError):  # noqa: BLE001
+        return
+
+
+async def stale_running(conn) -> list[dict[str, Any]]:
+    """Jobs `running` past RUN_STALE_AFTER: the predicate a reader may rely on."""
+    return [dict(row) for row in await conn.fetch(STALE_RUNNING_SQL)]

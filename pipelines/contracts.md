@@ -923,3 +923,18 @@ there is **wrong by design**. Only the **both-stamped** artifact→artifact edge
 **A revision label records a read; a bump is a claim of re-verification.** A label (`read at ml <sha>`) survives any later
 edit to the file it names; a pin's half-life is the next commit to that file, so a pin's only promise is that the delta
 gets printed, never that the value is fresh — and a bump asserts a re-reading: never bump to clear a red.
+
+## `pipeline_runs`: what a reader may rely on (2026-10-20)
+
+**Stored statuses are three, not five.** The tick writes `running` when it claims a job (`UPSERT_RUN_SQL`), then `succeeded`
+or `failed` when the job ends; `queued` and `skipped` are in the `status` CHECK (`015:61`) but the tick never writes them — a
+job that did not run leaves **no row at all** (upstream failed, the claim gate refused it, or the tick died before claiming it).
+So a reader must compare the rows against the manifest's job list, not count rows: a missing `(job, as_of, scope)` is the
+signal that it never started, and a `running` row is the only one that needs a staleness test.
+**Every exit writes a terminal row.** `run_pipeline` catches `Exception` per job and `BaseException` (SIGINT / `SystemExit` /
+`CancelledError`) with a re-raise, so a job that is interrupted ends `failed` with `error = "<ExceptionClass>: <message>"`
+(≤2000 chars, `_finish_failed`) instead of staying `running` — the row a human needs to find a death without reading a log.
+**`running` older than `RUN_STALE_AFTER` (`interval '2 hours'`) is dead, not busy** — one literal feeds both the re-run gate and
+`STALE_RUNNING_SQL`/`stale_running()`, so a health view cannot call a 3-hour row healthy while the tick calls it abandoned.
+**`upstream` names the engine and, for an ml job, the revision it ran at** (`{engine, tick?, ml_repo_sha?, ml_repo_dirty?}`,
+built before the try, so a *failed* row still carries the sha; absent means "could not resolve", never "old row").

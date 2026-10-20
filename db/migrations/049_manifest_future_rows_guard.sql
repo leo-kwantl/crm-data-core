@@ -1,9 +1,10 @@
 -- 049_manifest_future_rows_guard.sql
 --
 -- The nightly tick ends with a detection job. Prevention already exists in both
--- writers (`pipelines/schedule.py`'s `guard_as_of`, crm-cdp-ml's `d77a342`
--- refusing a future `--as-of` before it connects), and a trigger was rejected:
--- it would be a third choke point reachable only by a raw INSERT, and it
+-- writers (`guard_as_of` read at `pipelines/schedule.py` HEAD, crm-cdp-ml's
+-- `d77a342` read at -- refusing a future `--as-of` before it connects), and a
+-- trigger was rejected: it would be a third choke point reachable only by a
+-- raw INSERT, and it
 -- hard-codes "a future row can never exist", turning a clock incident into a
 -- migration.
 --

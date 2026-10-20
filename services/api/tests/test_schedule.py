@@ -438,7 +438,7 @@ async def test_runner_labels_a_failed_job_too(database_url: str, monkeypatch,
     """A failed row still says which code ran -- that is when it matters.
 
     The label is resolved before the engine is invoked (`_upstream_payload` `pipelines/schedule.py:841`)
-    and both finish paths persist it (`FINISH_RUN_SQL` `pipelines/schedule.py:121`, `:944`, `:951`), so a non-zero exit cannot leave
+    and every finish path persists it (`FINISH_RUN_SQL` `pipelines/schedule.py:121`, `:944`, and `_finish_failed` `:951`/`:957`), so a non-zero exit cannot leave
     an error whose revision is unknown.
     """
     monkeypatch.setitem(sched.ENGINE_BUILDERS, "fake_fail", _fake_fail)
@@ -913,6 +913,93 @@ async def test_claim_gate_takes_over_a_stale_running_row(database_url: str):
     assert again is not None, (
         "a crashed tick leaves status='running' forever; an abandoned row"
         " must be reclaimable after RUN_STALE_AFTER")
+
+
+@pytest.mark.asyncio
+async def test_a_sigint_mid_job_still_writes_a_terminal_row(
+        database_url: str, monkeypatch):
+    """`KeyboardInterrupt` is a BaseException: `except Exception` misses it and
+    the row stays `running`, which a reader cannot tell from a job at work."""
+
+    async def _engine(engine, params, conn, ctx):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(sched, "_run_data_engine", _engine)
+    jobs = {"j1": {"engine": "kpi_daily", "depends_on": [], "params": {}}}
+    as_of = date(2026, 10, 9)
+    ctx = _ctx(pipeline="test_pipe_sigint", as_of=as_of)
+    async with _pool(database_url) as pool:
+        async with pool.acquire() as conn:
+            with pytest.raises(KeyboardInterrupt):
+                await sched.run_pipeline(conn, "test_pipe_sigint", jobs, ctx)
+            row = await conn.fetchrow(
+                "SELECT status, error, finished_at FROM pipeline_runs"
+                " WHERE pipeline = 'test_pipe_sigint' AND job = 'j1'"
+                " AND as_of = $1", as_of)
+    assert row["status"] == "failed", row["status"]
+    assert "KeyboardInterrupt" in row["error"]
+    assert row["finished_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_tick_still_writes_a_terminal_row(
+        database_url: str, monkeypatch):
+    """SIGINT during a job surfaces as CancelledError; the row must still end
+    terminal, written while the task is being torn down."""
+    import asyncio
+
+    started = asyncio.Event()
+
+    async def _engine(engine, params, conn, ctx):
+        started.set()
+        await asyncio.sleep(3600)
+
+    monkeypatch.setattr(sched, "_run_data_engine", _engine)
+    jobs = {"j1": {"engine": "kpi_daily", "depends_on": [], "params": {}}}
+    as_of = date(2026, 10, 11)
+    ctx = _ctx(pipeline="test_pipe_cancel", as_of=as_of)
+    async with _pool(database_url) as pool:
+        conn = await pool.acquire()
+        try:
+            task = asyncio.ensure_future(
+                sched.run_pipeline(conn, "test_pipe_cancel", jobs, ctx))
+            await started.wait()
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            row = await conn.fetchrow(
+                "SELECT status, error, finished_at FROM pipeline_runs"
+                " WHERE pipeline = 'test_pipe_cancel' AND job = 'j1'"
+                " AND as_of = $1", as_of)
+        finally:
+            await pool.release(conn)
+    assert row["status"] == "failed", row["status"]
+    assert "CancelledError" in row["error"]
+    assert row["finished_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_stale_running_is_the_predicate_a_reader_uses(database_url: str):
+    """`running` past RUN_STALE_AFTER is a dead job; younger is a busy one.
+
+    Same constant as the claim gate, so a dashboard cannot call a 3-hour row
+    healthy while the tick considers it abandoned.
+    """
+    as_of = date(2026, 10, 12)
+    async with _pool(database_url) as pool:
+        async with pool.acquire() as conn:
+            for job in ("old", "fresh"):
+                await conn.fetchrow(sched.UPSERT_RUN_SQL, "test_pipe_health",
+                                    job, as_of, None, None, None)
+            await conn.execute(
+                "UPDATE pipeline_runs SET started_at = now() - interval '3 hours'"
+                " WHERE pipeline = 'test_pipe_health' AND job = 'old'")
+            stale = await sched.stale_running(conn)
+    mine = {r["job"] for r in stale if r["pipeline"] == "test_pipe_health"}
+    assert mine == {"old"}, mine
+    assert next(r for r in stale
+                if r["pipeline"] == "test_pipe_health")["running_for"
+                ].total_seconds() > 2 * 3600
 
 
 @pytest.mark.asyncio

@@ -294,9 +294,28 @@ async def watch(interval: int, ml_repo, brand_id, group_id,
                       "event": "retention failed",
                       "error": f"{type(exc).__name__}: {exc}"})
         if once:
+            # A `running` row past RUN_STALE_AFTER is a job that died; naming
+            # them here is the operator's side of the same predicate a reader
+            # uses, so nobody has to read a log to find a hung night.
+            stale: list[dict] = []
+            try:
+                sconn, _ = await _connect_resolved(db_url)
+                try:
+                    stale = await sched.stale_running(sconn)
+                finally:
+                    await sconn.close()
+            except Exception as exc:       # noqa: BLE001 -- see above
+                _log({"tick": when.isoformat(),
+                      "event": "stale check failed",
+                      "error": f"{type(exc).__name__}: {exc}"})
             _log({"tick": when.isoformat(), "event": "once: done",
                   "fired": sorted(f"{p}@{d}" for p, d in fired),
-                  "failures": failures})
+                  "failures": failures,
+                  "stale": [{"pipeline": r["pipeline"], "job": r["job"],
+                             "as_of": r["as_of"].isoformat(),
+                             "running_for_s": int(
+                                 r["running_for"].total_seconds())}
+                            for r in stale] or None})
             return 1 if failures else 0
         # one line per pass, even when nothing is due: a loop that logs only
         # its fires is indistinguishable from a loop that died
@@ -365,8 +384,9 @@ def main() -> None:
                                    args.created_by, args.force, args.db_url,
                                    args.once, pinned, only))
         except KeyboardInterrupt:
-            print("interrupted: exiting (an in-flight job's row stays"
-                  " 'running' and the next tick retries it)", flush=True)
+            print("interrupted: the in-flight job's row is marked 'failed'",
+                  "with the signal, so the next tick finds it without a log",
+                  flush=True)
             raise SystemExit(130)
         raise SystemExit(rc)
     as_of = (date.fromisoformat(args.as_of) if args.as_of
