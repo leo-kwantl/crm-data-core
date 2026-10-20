@@ -64,7 +64,8 @@ def test_repair_only_deletes_named_probe_authors():
     assert set(module.EXPECTED_PROBE_DELETE) == {
         "clv_snapshots", "churn_snapshots", "assoc_batches", "rec_batches"}
     assert set(module.EXPECTED_BACKSTAMP) == {
-        "churn_snapshots", "rfm_snapshots", "segment_runs", "explain_batches"}
+        "churn_snapshots", "rfm_snapshots", "segment_runs", "explain_batches",
+        "assoc_batches"}
 
 
 def test_the_two_null_groups_stay_split():
@@ -76,6 +77,6 @@ def test_the_two_null_groups_stay_split():
     """
     module = _repair_module()
     joined = set(module.EXPECTED_PROBE_DELETE) & set(module.EXPECTED_BACKSTAMP)
-    assert joined == {"churn_snapshots"}, (
-        "only churn_snapshots legitimately carries both: its probe rows go, its "
+    assert joined == {"churn_snapshots", "assoc_batches"}, (
+        "only these two legitimately carry both: their probe rows go, their "
         f"NULL rows stay. Overlap now: {sorted(joined)}")

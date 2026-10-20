@@ -28,9 +28,10 @@ ml's `require_producer` keeps refusing every name that is not a real producer,
 and `services/api/tests/test_created_by_repair.py` fails if the literal ever
 appears in a writer path.
 
-Two rows in `assoc_batches` are NULL and belong to neither group; the ruling
-names four tables for back-stamping and not that one, so they are counted and
-reported, never touched.
+Two rows in `assoc_batches` are NULL. The first ruling named four tables for
+back-stamping because ml's sweep listed four; the owner then ruled them in too
+-- two real assoc batches are history, and a row that cannot name its author is
+a fact about our records, not a reason to erase them.
 
     python scripts/repair_created_by_2026_10_20.py            # dry run
     python scripts/repair_created_by_2026_10_20.py --apply    # do it
@@ -74,9 +75,10 @@ EXPECTED_BACKSTAMP = {
     "rfm_snapshots": 4,
     "segment_runs": 10,
     "explain_batches": 5,
+    "assoc_batches": 2,      # added by the ruling's second pass: history, not debris
 }
 EXPECTED_CLV_NULL = 4            # measured; 1 fossil + 3 accurate
-UNASSIGNED = ("assoc_batches",)     # NULL rows the ruling did not place
+UNASSIGNED = ()                   # none left: deliver every NULL row it measured
 
 # parent -> (child table, child fk column). All FKs are ON DELETE CASCADE, so
 # the parent DELETE removes the children; they are only dumped, children-first.
@@ -153,7 +155,7 @@ async def apply(conn, dumps):
         child = CHILDREN.get(table)
         if child:
             counts["children_cascaded"][child[0]] = len(
-                dumps[table]["children"]["rows"])
+                dumps[table].get("children", {}).get("rows", []))
     for table in EXPECTED_BACKSTAMP:
         result = await conn.execute(
             f"UPDATE {table} SET created_by = $1 WHERE created_by IS NULL",
@@ -163,16 +165,24 @@ async def apply(conn, dumps):
 
 
 async def log_row(conn, counts, fossils, keepers, blank_left):
-    """One row in the run ledger, upserted, so a re-run updates instead of adding."""
+    """One row in the run ledger; a re-run APPENDS its counts, never replaces them.
+
+    The first run is the one that deleted 15 batches and 9,474 children; a
+    later pass that touches two rows must not overwrite that record -- so
+    `runs` is a list and `latest` names the most recent pass.
+    """
+    entry = {
+        "counts": counts,
+        "clv_null_deleted": [f["as_of"].isoformat() for f in fossils],
+        "clv_null_backstamped": [k["as_of"].isoformat() for k in keepers],
+        "backstamp_literal": BACKSTAMP_LITERAL,
+        "assoc_null_left_untouched": {t: 0 for t in UNASSIGNED},
+    }
     upstream = {
         "repair": "scripts/repair_created_by_2026_10_20.py",
         "ticket": 88,
-        "applied": True,
-        "counts": counts,
-        "clv_null_deleted": [f["as_of"].isoformat() for f in fossils],
-        "clv_null_kept_count_matches": [k["as_of"].isoformat() for k in keepers],
-        "backstamp_literal": BACKSTAMP_LITERAL,
-        "unassigned_left_untouched": blank_left,
+        "latest": entry,
+        "runs": [entry],
     }
     await conn.execute(
         """
@@ -184,7 +194,12 @@ async def log_row(conn, counts, fossils, keepers, blank_left):
         ON CONFLICT (pipeline, job, as_of,
                      COALESCE(brand_id, '00000000-0000-0000-0000-000000000000'::uuid),
                      COALESCE(group_id, '00000000-0000-0000-0000-000000000000'::uuid))
-        DO UPDATE SET upstream = EXCLUDED.upstream,
+        DO UPDATE SET upstream = jsonb_set(
+                        jsonb_set(pipeline_runs.upstream, '{latest}',
+                                  EXCLUDED.upstream->'latest'),
+                        '{runs}',
+                        COALESCE(pipeline_runs.upstream->'runs', '[]'::jsonb)
+                          || (EXCLUDED.upstream->'runs')),
                       finished_at = EXCLUDED.finished_at
         """,
         json.dumps(upstream, default=str))
@@ -230,8 +245,12 @@ async def main():
             print("nothing to do")
             return 0
         if problems:
-            print("aborting: repair with --allow-drift only if the drift is expected")
-            return 3
+            print("DRIFT from the reviewed counts:")
+            for p in problems:
+                print(f"  {p}")
+            if not args.allow_drift:
+                print("aborting: repair with --allow-drift only if the drift is expected")
+                return 3
 
         dumps = {}
         for table in EXPECTED_PROBE_DELETE:
