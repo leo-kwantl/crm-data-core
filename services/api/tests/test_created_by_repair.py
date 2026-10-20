@@ -62,10 +62,16 @@ def test_repair_only_deletes_named_probe_authors():
         "provenance-probe", "cost-probe", "probe", "ml-rehearsal", "crm-ml"}
     assert None not in module.PROBE_AUTHORS
     assert set(module.EXPECTED_PROBE_DELETE) == {
-        "clv_snapshots", "churn_snapshots", "assoc_batches", "rec_batches"}
+        "clv_snapshots", "churn_snapshots", "assoc_batches", "rec_batches",
+        "model_training_runs"}
     assert set(module.EXPECTED_BACKSTAMP) == {
         "churn_snapshots", "rfm_snapshots", "segment_runs", "explain_batches",
-        "assoc_batches"}
+        "assoc_batches", "model_training_runs"}
+    # The lineage table's scope was extended on 2026-10-20 (ml's ask), so its
+    # counts are pinned here as MEASURED numbers, not carried over: a scope
+    # that grows takes new counts with it.
+    assert module.EXPECTED_PROBE_DELETE["model_training_runs"] == 32
+    assert module.EXPECTED_BACKSTAMP["model_training_runs"] == 36
 
 
 def test_the_two_null_groups_stay_split():
@@ -77,6 +83,6 @@ def test_the_two_null_groups_stay_split():
     """
     module = _repair_module()
     joined = set(module.EXPECTED_PROBE_DELETE) & set(module.EXPECTED_BACKSTAMP)
-    assert joined == {"churn_snapshots", "assoc_batches"}, (
-        "only these two legitimately carry both: their probe rows go, their "
+    assert joined == {"churn_snapshots", "assoc_batches", "model_training_runs"}, (
+        "only these legitimately carry both: their probe rows go, their "
         f"NULL rows stay. Overlap now: {sorted(joined)}")
