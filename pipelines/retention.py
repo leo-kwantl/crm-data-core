@@ -169,6 +169,20 @@ FUTURE_DATED: dict[str, str] = {
 # scheduled order in the book.
 FUTURE_DATED_EXTRA: frozenset[str] = frozenset()
 
+# Anchors stored as an INSTANT, not a day. A `> today` bound is wrong for them:
+# `today` is a date and `timestamptz > date` promotes the date to a timestamp at
+# the session's zone, so the bound lands at the *start* of the as_of day and
+# every row the as_of tick writes (00:04 the same night) counts as "future".
+# Measured 2026-10-20 on the dev cluster: 28 clean rfm rows written by the
+# 2026-10-20 tick were named as future-dated. The correct bound is the next
+# business midnight, exclusive -- the same instant form crm-cdp-app's
+# `test_observed_anchor.py` pins.
+FUTURE_DATED_INSTANT: frozenset[str] = frozenset({"rfm_snapshots"})
+
+# The one literal for the business day, next to the reason it exists; the
+# `date`-typed anchors need no zone (a day is a day).
+BUSINESS_DAY = "interval '8 hours'"
+
 
 async def future_rows(conn, today) -> dict[str, int]:
     """Rows dated after `today`, per anchored table.
@@ -178,11 +192,20 @@ async def future_rows(conn, today) -> dict[str, int]:
     a path nobody owns yet wrote one -- and the tick must say so out loud,
     naming the table and the count, rather than leaving the row to outrank the
     live number on a page.
+
+    `today` is a business day (`date`). Both predicates cast it explicitly: a
+    bare `$1` is an unknown whose parse depends on the session zone, which is
+    how the instant case drifted a day.
     """
     found: dict[str, int] = {}
     for table, column in FUTURE_DATED.items():
-        n = await conn.fetchval(
-            f'SELECT count(*) FROM "{table}" WHERE "{column}" > $1', today)
+        if table in FUTURE_DATED_INSTANT:
+            sql = (f'SELECT count(*) FROM "{table}" WHERE "{column}" >= '
+                   f"((($1::date) + 1)::timestamp AT TIME ZONE {BUSINESS_DAY})")
+        else:
+            sql = (f'SELECT count(*) FROM "{table}" '
+                   f'WHERE "{column}" > $1::date')
+        n = await conn.fetchval(sql, today)
         if n:
             found[table] = int(n)
     return found

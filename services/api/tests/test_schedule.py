@@ -1280,6 +1280,48 @@ async def test_future_rows_guard_fails_naming_the_table_and_count(
 
 
 @pytest.mark.asyncio
+async def test_future_rows_guard_does_not_flag_a_row_scored_during_the_day(
+        database_url: str):
+    """A `timestamptz` anchor needs a next-day bound, not `> today`.
+
+    `today` is a date, and `timestamptz > date` promotes it to a timestamp at
+    the session zone, so `> today` lands at the *start* of the as_of day: every
+    row the day's own tick writes after midnight is then "future". Measured on
+    the dev cluster 2026-10-20 -- 28 clean rfm rows written by that day's tick
+    were named. The date-typed anchor tests above never caught it because only
+    a `scored_at` row lands inside the day.
+    """
+    from pipelines.snapshot import business_today
+
+    ctx = _ctx(as_of=business_today())
+    async with _pool(database_url) as pool:
+        async with pool.acquire() as conn:
+            before = await conn.fetchval(
+                "SELECT count(*) FROM rfm_snapshots WHERE scored_at >="
+                " ((($1::date) + 1)::timestamp AT TIME ZONE interval '8 hours')",
+                ctx.as_of)
+            rid = await conn.fetchval(
+                "INSERT INTO rfm_snapshots (mode, window_from, window_to,"
+                " created_by) VALUES ('rolling_365', '2026-08-01',"
+                " '2026-10-20', 'test-scored-today') RETURNING id")
+            try:
+                assert await sched._run_data_engine(
+                    "future_rows_guard", {}, conn, ctx) is None, (
+                        "a row scored during the as_of day is not future-dated")
+                await conn.execute(
+                    "UPDATE rfm_snapshots SET scored_at = now() + interval"
+                    " '3 days' WHERE id = $1", rid)
+                with pytest.raises(
+                        RuntimeError,
+                        match=f"rfm_snapshots: {before + 1}"):
+                    await sched._run_data_engine(
+                        "future_rows_guard", {}, conn, ctx)
+            finally:
+                await conn.execute(
+                    "DELETE FROM rfm_snapshots WHERE id = $1", rid)
+
+
+@pytest.mark.asyncio
 async def test_future_rows_guard_reads_the_run_ledger(database_url: str):
     """`pipeline_runs.as_of` is the row whose future value hurts most.
 
