@@ -49,5 +49,5 @@ python -c "import pipelines.ingest.orders, pipelines.ingest.events, pipelines.in
 ## Conventions
 
 - `docs/conventions.md` — data deltas only: PII normalization + the searchable-column contract.
-- Doc gate: `.githooks/pre-commit` runs `python ../tools/docs_check.py --repo crm-cdp-data` — a doc that breaks the rules is not committed, and `--no-verify` is not the way past it.
+- Doc gate: `.githooks/pre-commit` and `.githooks/pre-push` run `python ../tools/docs_check.py --repo crm-cdp-data` — a doc that breaks the rules is neither committed nor pushed, and `--no-verify` is not the way past it.
 - Cross-repo conventions — naming, master data, git history, PII policy (`../docs/conventions.md`) and the cross-team protocol (`../docs/agent-comms.md`) — are owned by the manager at `../AGENTS.md`; read it, do not retype it.

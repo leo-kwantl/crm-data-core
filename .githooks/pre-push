@@ -1,0 +1,24 @@
+#!/bin/sh
+# crm-cdp doc gate - the last stop before a doc leaves the repo.
+#
+# The pre-commit hook is the first stop; this one closes the bypass (a commit
+# made with --no-verify). Same gate, same command:
+#   python ../tools/docs_check.py --repo crm-cdp-data
+#
+# Fail open when the manager root is absent; fail closed when it is there and
+# it complains.
+GATE="$(cd "$(dirname "$0")/../.." && pwd)/tools/docs_check.py"
+if [ ! -f "$GATE" ]; then
+  echo "doc gate: not found at $GATE - the three repos must sit beside the manager root" >&2
+  exit 0
+fi
+if command -v python >/dev/null 2>&1; then
+  PY=python
+elif command -v py >/dev/null 2>&1; then
+  PY="py -3"
+else
+  echo "doc gate: no python on PATH - skipped" >&2
+  exit 0
+fi
+$PY "$GATE" --repo crm-cdp-data || exit 1
+exit 0
