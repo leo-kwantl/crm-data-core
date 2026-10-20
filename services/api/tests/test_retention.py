@@ -218,7 +218,23 @@ def test_future_dated_covers_every_anchor_column_in_the_catalog(
         finally:
             await conn.close()
 
+    async def _periods():
+        conn = await _connect(database_url)
+        try:
+            rows = await conn.fetch(
+                "SELECT table_name, column_name, data_type FROM"
+                " information_schema.columns WHERE table_schema = 'public'"
+                "   AND column_name IN ('snapshot_date', 'window_from',"
+                "        'window_to', 'period_start', 'period_end',"
+                "        'week_start', 'month_start')"
+                " ORDER BY 1, 2")
+            return {(r["table_name"], r["column_name"]): r["data_type"]
+                    for r in rows}
+        finally:
+            await conn.close()
+
     catalog = _run(_anchors())
+    periods = _run(_periods())
     assert catalog, "no as_of/scored_at column found -- the query, not the map"
     missing = {t: c for t, c in catalog.items()
                if retention.FUTURE_DATED.get(t) != c}
@@ -231,3 +247,28 @@ def test_future_dated_covers_every_anchor_column_in_the_catalog(
         f"FUTURE_DATED names {sorted(stray)}, which carry no as_of/scored_at "
         f"and are not in FUTURE_DATED_EXTRA -- a typo here would make the "
         f"guard count a column that does not exist")
+    # Period bounds: every `window_*`/`period_*`/`snapshot_date` column in the
+    # catalog is either guarded by its own predicate or named in the allowlist
+    # with the reason it may sit ahead of today. `rfm_snapshots.window_to` is
+    # the case that motivated it -- a future window the anchor guard cannot see
+    # (that row's `scored_at` is today), which is how 42 future windows reached
+    # a page that orders by `window_to DESC`.
+    guarded = set(retention.FUTURE_DATED_PERIOD) \
+        | set(retention.FUTURE_DATED_PERIOD_INSTANT)
+    unclassified = {f"{t}.{c}": ty for (t, c), ty in periods.items()
+                    if (t, c) not in guarded
+                    and (t, c) not in retention.FUTURE_PERIOD_ALLOWED}
+    assert not unclassified, (
+        f"period column(s) nothing classifies: {unclassified} -- add each to "
+        f"FUTURE_DATED_PERIOD, FUTURE_DATED_PERIOD_INSTANT or "
+        f"FUTURE_PERIOD_ALLOWED")
+    # and the TYPE decides the predicate, not the name: a `date` bound takes
+    # `> $1::date`, an instant bound takes the next-midnight form
+    wrong = {f"{t}.{c}": periods[(t, c)] for (t, c) in periods
+             if ((t, c) in retention.FUTURE_DATED_PERIOD
+                 and periods[(t, c)] != "date")
+             or ((t, c) in retention.FUTURE_DATED_PERIOD_INSTANT
+                 and periods[(t, c)] != "timestamp with time zone")}
+    assert not wrong, (
+        f"bound typed wrongly in the map: {wrong} -- a `date` map entry over "
+        f"an instant column is the promotion bug 872ceb6 fixed")

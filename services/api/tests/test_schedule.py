@@ -1356,3 +1356,54 @@ async def test_future_rows_guard_reads_the_run_ledger(database_url: str):
                     "DELETE FROM pipeline_runs WHERE id = $1", rid)
             assert await sched._run_data_engine(
                 "future_rows_guard", {}, conn, ctx) is None
+
+
+@pytest.mark.asyncio
+async def test_future_rows_guard_reads_a_period_bound_not_just_the_anchor(
+        database_url: str):
+    """A future *period* was invisible to the instant guard (board `#77`).
+
+    The 2026-10-19 script wrote 42 `rfm_snapshots` whose `scored_at` was the
+    day it ran -- so the anchor guard above saw nothing -- and whose
+    `window_to` was four days ahead; the reader orders by `window_to DESC`, so
+    every brand served a window that had not happened. Both halves are
+    asserted here: a future window is refused, and the one table whose future
+    periods are the product (`forecast_rows`) stays quiet.
+    """
+    from pipelines import retention
+    from pipelines.snapshot import business_today
+
+    ctx = _ctx(as_of=business_today())
+    assert ("forecast_rows", "period_start") in retention.FUTURE_PERIOD_ALLOWED
+    async with _pool(database_url) as pool:
+        async with pool.acquire() as conn:
+            before = (await retention.future_rows(conn, ctx.as_of)).get(
+                "rfm_snapshots.window_to", 0)
+            snapshot = await conn.fetchval(
+                "INSERT INTO rfm_snapshots (mode, window_from, window_to,"
+                " created_by) VALUES ('rolling_365', $1::date - 80,"
+                " $1::date + 4, 'test-future-window') RETURNING id",
+                ctx.as_of)
+            batch = await conn.fetchval(
+                "INSERT INTO forecast_batches (as_of, method, horizon_days,"
+                " lookback_weeks, created_by) VALUES ($1, 'test-future-period',"
+                " 28, 8, 'test-future-window') RETURNING id", ctx.as_of)
+            await conn.execute(
+                "INSERT INTO forecast_rows (batch_id, category, period_start,"
+                " predicted_qty, lower_qty, upper_qty)"
+                " VALUES ($1, 'TOTAL', $2::date + 7, 1, 1, 1)",
+                batch, ctx.as_of)
+            try:
+                with pytest.raises(
+                        RuntimeError,
+                        match=f"rfm_snapshots.window_to: {before + 1}"):
+                    await sched._run_data_engine(
+                        "future_rows_guard", {}, conn, ctx)
+                found = await retention.future_rows(conn, ctx.as_of)
+                assert not [k for k in found if k.startswith("forecast_rows")], (
+                    f"a forecast week ahead of today is the product: {found}")
+            finally:
+                await conn.execute(
+                    "DELETE FROM rfm_snapshots WHERE id = $1", snapshot)
+                await conn.execute(
+                    "DELETE FROM forecast_batches WHERE id = $1", batch)

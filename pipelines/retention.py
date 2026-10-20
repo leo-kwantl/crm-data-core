@@ -179,6 +179,38 @@ FUTURE_DATED_EXTRA: frozenset[str] = frozenset()
 # `test_observed_anchor.py` pins.
 FUTURE_DATED_INSTANT: frozenset[str] = frozenset({"rfm_snapshots"})
 
+# Periods a row COVERS, as (table, column) rather than one column per table: a
+# single row can carry both ends of a window, and both are claims about which
+# days exist. The instant map above could not see these -- the 2026-10-19 script
+# wrote 42 `rfm_snapshots` whose `scored_at` was *today* (so the instant guard
+# reported nothing) and whose `window_to` was four days ahead, and every brand's
+# page served that future window because it orders by `window_to DESC`. A future
+# `as_of` was already refused at dispatch; a future *period* had no guard at all.
+FUTURE_DATED_PERIOD: frozenset[tuple[str, str]] = frozenset({
+    ("kpi_daily_snapshots", "snapshot_date"),
+    ("rfm_snapshots", "window_from"),
+    ("rfm_snapshots", "window_to"),
+})
+
+# The same question for period bounds stored as an INSTANT (ml's backtest
+# windows, `timestamptz`): the next-midnight rule from FUTURE_DATED_INSTANT
+# applies per column here, because a plain `> $1::date` would flag the window
+# that closes today -- the bug 872ceb6 fixed, one table over. No allowlist: a
+# backtest window ahead of today measures days that do not exist.
+FUTURE_DATED_PERIOD_INSTANT: frozenset[tuple[str, str]] = frozenset({
+    ("backtest_outcomes", "window_from"),
+    ("backtest_outcomes", "window_to"),
+})
+
+# Deliberately future, and the reason is the whole entry: without it, the sweep
+# "everything dated ahead is a rehearsal" would be false on this table and the
+# guard would be noise, which is the state that gets it switched off.
+FUTURE_PERIOD_ALLOWED: dict[tuple[str, str], str] = {
+    ("forecast_rows", "period_start"):
+        "a forecast is FOR future weeks -- the coming days are the payload, "
+        "not a claim about the past",
+}
+
 # The one literal for the business day, next to the reason it exists; the
 # `date`-typed anchors need no zone (a day is a day).
 BUSINESS_DAY = "interval '8 hours'"
@@ -208,6 +240,23 @@ async def future_rows(conn, today) -> dict[str, int]:
         n = await conn.fetchval(sql, today)
         if n:
             found[table] = int(n)
+    # `table.column` keys so a period bound is distinguishable from the instant
+    # anchor of the same table (`rfm_snapshots` appears in both maps).
+    for table, column in sorted(FUTURE_DATED_PERIOD):
+        if (table, column) in FUTURE_PERIOD_ALLOWED:
+            continue
+        n = await conn.fetchval(
+            f'SELECT count(*) FROM "{table}" WHERE "{column}" > $1::date',
+            today)
+        if n:
+            found[f"{table}.{column}"] = int(n)
+    for table, column in sorted(FUTURE_DATED_PERIOD_INSTANT):
+        bound = f"((($1::date) + 1)::timestamp AT TIME ZONE {BUSINESS_DAY})"
+        n = await conn.fetchval(
+            f'SELECT count(*) FROM "{table}" WHERE "{column}" >= {bound}',
+            today)
+        if n:
+            found[f"{table}.{column}"] = int(n)
     return found
 
 def _delete_sql(table: str, column: str) -> str:
