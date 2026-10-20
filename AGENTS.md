@@ -5,6 +5,7 @@
 ## Run / verify
 
 ```bash
+python ../tools/docs_check.py --repo crm-cdp-data
 pip install -r services/api/requirements.txt
 python -m pytest services/api/tests/test_orders.py services/api/tests/test_customer_events.py services/api/tests/test_identity.py -q -p no:cacheprovider
 python -c "import pipelines.ingest.orders, pipelines.ingest.events, pipelines.ingest.identity"
@@ -48,4 +49,5 @@ python -c "import pipelines.ingest.orders, pipelines.ingest.events, pipelines.in
 ## Conventions
 
 - `docs/conventions.md` — data deltas only: PII normalization + the searchable-column contract.
+- Doc gate: `.githooks/pre-commit` runs `python ../tools/docs_check.py --repo crm-cdp-data` — a doc that breaks the rules is not committed, and `--no-verify` is not the way past it.
 - Cross-repo conventions — naming, master data, git history, PII policy (`../docs/conventions.md`) and the cross-team protocol (`../docs/agent-comms.md`) — are owned by the manager at `../AGENTS.md`; read it, do not retype it.

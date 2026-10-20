@@ -1,0 +1,24 @@
+#!/bin/sh
+# crm-cdp doc gate - a doc that breaks the rules does not get committed.
+#
+# The gate is the manager's checker, one level up from the three repos:
+#   python ../tools/docs_check.py --repo crm-cdp-data
+# Install it per clone with: git config core.hooksPath .githooks
+#
+# Fail open when the gate is not there (the three repos must sit beside the
+# manager root); fail closed when it is there and it complains.
+GATE="$(cd "$(dirname "$0")/../.." && pwd)/tools/docs_check.py"
+if [ ! -f "$GATE" ]; then
+  echo "doc gate: not found at $GATE - the three repos must sit beside the manager root" >&2
+  exit 0
+fi
+if command -v python >/dev/null 2>&1; then
+  PY=python
+elif command -v py >/dev/null 2>&1; then
+  PY="py -3"
+else
+  echo "doc gate: no python on PATH - skipped" >&2
+  exit 0
+fi
+$PY "$GATE" --repo crm-cdp-data || exit 1
+exit 0

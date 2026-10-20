@@ -10,7 +10,7 @@ and ML (`crm-cdp-ml`) consume; they never write ingestion logic.
 - Identity: `external_member_id` + `member_id` substring fallback (escaped
   ILIKE, LIMIT 20); phone/email are exact-first — after an exact miss a bounded
   substring fallback applies to POST search only (min 3 digits / 3 chars,
-  LIMIT 20, criteria-type-only audit; `docs/conventions.md`).
+  LIMIT 20, criteria-type-only audit; `../../docs/conventions.md`).
 - Events: append-only (`customer_events`, `consents`); never UPDATE/DELETE.
 - All migrations additive-only (`db/migrations`, plain SQL — applied in filename
   order, version key = file stem; dbmate is not installed).
