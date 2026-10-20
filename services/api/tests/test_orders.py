@@ -14,7 +14,59 @@ import pytest
 import pytest_asyncio
 
 from services.api.tests.auth_helper import AUTH_H as STAFF
-_counter = itertools.count(101)
+
+# The demo seed owns `M-000101`..`M-000108`, `S101`.. and the `FRM-/CLT-/CSE-1xx`
+# SKUs (`db/seeds/demo.sql`), so this module's rows start in the 9-series: a fixed
+# id in the demo's own range makes the *first* run fail on any demo-seeded cluster
+# (`duplicate key ... customers_member_id_key ... M-000101`), which is what a
+# full-directory run against `.pgembed` + `demo.sql` did on 2026-10-20.
+_counter = itertools.count(900101)
+
+#: Matched by `_purge` below and by nothing else: 900100-900199 is this module.
+_MEMBER_RE = r"^M-9001[0-9]{2}$"
+_SKU_RE = r"^(FRM|CLT|CSE)-9001[0-9]{2}$"
+_STORE_RE = r"^S9001[0-9]{2}$"
+
+
+@pytest_asyncio.fixture(scope="module", autouse=True)
+async def _purge_own_rows(database_url: str) -> AsyncIterator[None]:
+    """Delete what this module seeded, on pass *and* on failure.
+
+    Matched by the predicate that created the rows (`_counter`), not by unique
+    names per run: the ids are fixed, so a second run on the same cluster has to
+    find them gone. Deleted children first -- `order_items` keeps no cascade to
+    `orders` in every environment, and a leftover item fails the next run on a
+    foreign key rather than on an assertion.
+    """
+    import asyncpg
+
+    async def _purge() -> None:
+        pool = await asyncpg.create_pool(database_url)
+        try:
+            async with pool.acquire() as conn:
+                ids = [r["id"] for r in await conn.fetch(
+                    "SELECT id FROM customers WHERE member_id ~ $1",
+                    _MEMBER_RE)]
+                if ids:
+                    await conn.execute(
+                        "DELETE FROM order_items WHERE order_id IN"
+                        " (SELECT id FROM orders WHERE customer_id = ANY($1::uuid[]))",
+                        ids)
+                    await conn.execute(
+                        "DELETE FROM orders WHERE customer_id = ANY($1::uuid[])",
+                        ids)
+                    await conn.execute(
+                        "DELETE FROM customers WHERE id = ANY($1::uuid[])", ids)
+                await conn.execute(
+                    "DELETE FROM products WHERE sku ~ $1", _SKU_RE)
+                await conn.execute(
+                    "DELETE FROM stores WHERE code ~ $1", _STORE_RE)
+        finally:
+            await pool.close()
+
+    await _purge()
+    yield
+    await _purge()
 
 
 @pytest_asyncio.fixture()

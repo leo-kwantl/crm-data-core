@@ -7,15 +7,18 @@
 ```bash
 python ../tools/docs_check.py --repo crm-cdp-data
 pip install -r services/api/requirements.txt
-python -m pytest services/api/tests/test_orders.py services/api/tests/test_customer_events.py services/api/tests/test_identity.py -q -p no:cacheprovider
+python -m pytest services/api/tests -q -p no:cacheprovider
 python -c "import pipelines.ingest.orders, pipelines.ingest.events, pipelines.ingest.identity"
 ```
+
+The whole directory, not a sample, and never a file list: three named files report `21 passed` for a suite that takes ten minutes, and a file named alone can skip where a full run fails (`test_catalog_vocabulary.py` reads the live vocabulary, which only exists once another file has seeded it). `test_apply.py` purges its own namespace on module teardown and asserts nothing future-dated survives it.
 
 ## Repo rules
 
 - `member_id` must match `^M-[0-9]{6}$` — reject + quarantine, never coerce. `orders.store_id` NOT NULL (resolve store first).
 - The seed space is two writers: `db/seeds/demo.sql` (eight curated `M-000101..108`, fixed `c0000000-…-0000000N` ids, stores `CWB-01`/`TSM-02`) + `scripts/seed_reseed_1200.py` (`M-03%`). "Not like `M-03%`" is not a debris test — it never reaches zero.
 - `customers` has no `brand_id`: brand reaches a customer through `orders`/`stores`, so a leftover customer is visible from every brand holding one of its orders and invisible from the rest — a brand-isolation test must scope customers through orders.
+- A test file that writes to a database purges its own rows in a `finally`, matched by the predicate that created them — and seeds outside `demo.sql`'s space (`M-000101..108`, `S101`, `FRM-/CLT-/CSE-1xx`), because a fixed id there fails the *first* run on a demo-seeded cluster. A throwaway-cluster green is not evidence about residue: `conftest.py` disarms the row-count audit unless `DATABASE_URL` is the shared one.
 - Events/consents append-only; dedup key `(source, source_event_id)`; money in integer cents.
 - The order timestamp is `ordered_at` — there is **no** `orders.placed_at`, so a check that greps for that name passes on data it never read.
   No fact may be dated after `now()`: `apply` quarantines a *completed* future order as `future_dated`, seeds date every fact `now()`-relative, and `services/api/tests/test_no_future_facts.py` holds both rules.

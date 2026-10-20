@@ -149,7 +149,14 @@ def test_identity_and_events_kinds():
 
 @pytest.mark.asyncio
 async def test_upload_idempotent_and_quarantine(database_url: str):
-    """Same customers CSV twice -> one job; 1 ok + 1 quarantined."""
+    """Same customers CSV twice -> one job; 1 ok + 1 quarantined.
+
+    Purges its own job first and last: the dedup key is `(filename, file_hash)`
+    with fixed CSV constants, so a job left by an earlier run makes
+    `CREATE_JOB_SQL` answer NULL and this test fails on a *reused* job that
+    never read the file -- measured 2026-10-20 as one of the full-suite
+    modules that wrote outside a namespace it cleaned.
+    """
     import re
     from pathlib import Path
 
@@ -176,6 +183,16 @@ async def test_upload_idempotent_and_quarantine(database_url: str):
                                 raise
             digest = up.file_hash(CUSTOMERS_CSV.encode())
             rows = up.parse_csv(CUSTOMERS_CSV, "customers")
+
+            async def _purge() -> int:
+                """Rows this module owns, matched by the key that dedups them."""
+                tag = await conn.execute(
+                    "DELETE FROM upload_jobs"
+                    " WHERE filename = $1 AND file_hash = $2",
+                    "members.csv", digest)
+                return int(tag.split()[-1])
+
+            await _purge()
             job_id = await conn.fetchval(
                 up.CREATE_JOB_SQL, "members.csv", digest, "customers",
                 "v1", "upload", len(rows), None, None, None)
@@ -206,5 +223,11 @@ async def test_upload_idempotent_and_quarantine(database_url: str):
                 "SELECT COUNT(*) FROM upload_jobs WHERE file_hash = $1",
                 digest)
             assert int(n) == 1
+            await _purge()
+            left = await conn.fetchval(
+                "SELECT COUNT(*) FROM upload_jobs WHERE file_hash = $1",
+                digest)
+            assert int(left) == 0, "left its job behind; the next run reads a"
+            " reused job and applies nothing"
     finally:
         await pool.close()

@@ -20,6 +20,47 @@ from services.api.tests.auth_helper import make_session
 
 pytestmark = pytest.mark.asyncio
 
+#: Every `name` this module registers, and nothing else: `(source_type, name)`
+#: is unique, so a row left by an earlier run makes the *next* run's create
+#: answer `409 duplicate_connector` instead of `201` -- measured 2026-10-20 as
+#: ten failures in a second full-suite run. The names cannot be randomised:
+#: the 409 route asserts on `'shopify/flagship'` itself, so the name is part of
+#: the contract and deleting the row is the only consistent teardown.
+_CONNECTOR_NAMES = (
+    "beat", "erp", "flagship", "gated", "gone", "leaky", "live-bit",
+    "missing-keys", "nightly-csv", "no-ref", "nope", "paused", "pos-export",
+    "readable", "rot", "sched", "woo",
+)
+
+
+@pytest_asyncio.fixture(scope="module", autouse=True)
+async def _purge_own_connectors(database_url: str) -> AsyncIterator[None]:
+    """Delete this module's connectors on pass *and* on failure.
+
+    `connector_sync_runs.connector_id` is `ON DELETE CASCADE`, so the runs and
+    their heartbeat stamps go with the connector; tearing down by name keeps a
+    cluster's real connectors untouched.
+    """
+    import asyncpg
+
+    async def _purge() -> None:
+        pool = await asyncpg.create_pool(database_url)
+        try:
+            async with pool.acquire() as conn:
+                exists = await conn.fetchval(
+                    "SELECT to_regclass('public.connectors')")
+                if exists is None:
+                    return
+                await conn.execute(
+                    "DELETE FROM connectors WHERE name = ANY($1::text[])",
+                    list(_CONNECTOR_NAMES))
+        finally:
+            await pool.close()
+
+    await _purge()
+    yield
+    await _purge()
+
 
 @pytest_asyncio.fixture()
 async def db_pool(database_url: str):

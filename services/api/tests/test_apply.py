@@ -6,9 +6,12 @@ session pgembed DB (unique keys per test; shared DB across files).
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import json
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Iterator
 
 import pytest
 
@@ -20,6 +23,154 @@ run_upload = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(run_upload)
 
 
+# Every row this module writes, by its namespace. The suite shares one database
+# across files and is not transactional, so a fixture that leaves a row behind
+# leaves it for every other reader: an `APPLY-SKU` product with category 'test'
+# is a sixth feature dimension in the next segment fit (contracts.md § 015),
+# and a 2099 order makes every churn horizon look observed (measured 2026-10-20:
+# `churn_eval.window_is_observed` read true for all 20 stored snapshots off one
+# future row). The purge names the keyspaces; the assertion below is what fails
+# when a future edit writes a row this list does not name.
+CUSTOMER_KEYS = "M-9000%"
+
+# Every dependent of `customers`, discovered rather than listed: the first
+# version named four children and died on `customer_contacts`, which is what a
+# hand-written list does when a later migration adds a table.
+DEPENDENTS_SQL = """
+    select tc.table_name, kcu.column_name
+    from information_schema.table_constraints tc
+    join information_schema.key_column_usage kcu
+      on kcu.constraint_name = tc.constraint_name
+    join information_schema.constraint_column_usage ccu
+      on ccu.constraint_name = tc.constraint_name
+    where tc.constraint_type = 'FOREIGN KEY'
+      and ccu.table_name = $1 and tc.table_name <> $1
+"""
+
+
+async def _children(conn, table: str, ids: list, skip: tuple = ()) -> int:
+    """Delete every row pointing at `ids`, whatever the FK is called."""
+    removed = 0
+    for row in await conn.fetch(DEPENDENTS_SQL, table):
+        if row["table_name"] in skip:
+            continue
+        tag = await conn.execute(
+            f'DELETE FROM "{row["table_name"]}" '
+            f'WHERE "{row["column_name"]}" = ANY($1::uuid[])', ids)
+        removed += int(tag.rsplit(" ", 1)[-1])
+    return removed
+
+
+async def _purge(dsn: str, since: datetime) -> tuple[int, int]:
+    """Delete this module's rows; return (rows removed, future orders left).
+
+    `since` keeps the delete to this module's run and `_UPLOAD_FILES` keeps it
+    to this module's namespace -- `run_upload` dedups on `(filename, file_hash)`,
+    so a job left behind makes the *next* run return `reused: true` with no
+    apply at all -- measured 2026-10-20: 31 tests failed in a cascade from
+    `KeyError: 'committed'`, every one on a reused job whose hash an earlier run
+    had stored. Narrowed after review: a time window alone would delete a
+    developer's in-flight upload on a shared cluster, so the names do the
+    scoping and `since` only guards.
+    """
+    import asyncpg
+
+    pool = await asyncpg.create_pool(dsn)
+    assert pool is not None
+    removed = 0
+    try:
+        async with pool.acquire() as conn:
+            tag = await conn.execute(
+                "DELETE FROM upload_jobs"
+                " WHERE filename = ANY($2::text[]) AND created_at >= $1",
+                since, list(_UPLOAD_FILES))
+            removed += int(tag.rsplit(" ", 1)[-1])
+            ids = [r["id"] for r in await conn.fetch(
+                "SELECT id FROM customers WHERE member_id LIKE $1", CUSTOMER_KEYS)]
+            if ids:
+                removed += await _children(conn, "customers", ids, skip=("orders",))
+                orders = [r["id"] for r in await conn.fetch(
+                    "SELECT id FROM orders WHERE customer_id = ANY($1::uuid[])",
+                    ids)]
+                if orders:
+                    removed += await _children(conn, "orders", orders)
+                    tag = await conn.execute(
+                        "DELETE FROM orders WHERE id = ANY($1::uuid[])", orders)
+                    removed += int(tag.rsplit(" ", 1)[-1])
+                tag = await conn.execute(
+                    "DELETE FROM customers WHERE id = ANY($1::uuid[])", ids)
+                removed += int(tag.rsplit(" ", 1)[-1])
+            # The fixture's own product and store, and anything still pointing
+            # at them: an earlier run's order_items kept the product alive after
+            # its order was gone, which is exactly the "delete the parent, find
+            # the child" order this list exists to get right.
+            for statement in (
+                    "DELETE FROM order_items WHERE product_id IN"
+                    " (SELECT id FROM products WHERE sku LIKE 'APPLY-%')",
+                    "DELETE FROM order_custom_data WHERE order_id IN (SELECT id"
+                    " FROM orders WHERE store_id IN (SELECT id FROM stores"
+                    " WHERE code LIKE 'APPLY-%'))",
+                    "DELETE FROM order_items WHERE order_id IN (SELECT id FROM"
+                    " orders WHERE store_id IN (SELECT id FROM stores"
+                    " WHERE code LIKE 'APPLY-%'))",
+                    "DELETE FROM orders WHERE store_id IN (SELECT id FROM"
+                    " stores WHERE code LIKE 'APPLY-%')",
+                    "DELETE FROM products WHERE sku LIKE 'APPLY-%'",
+                    "DELETE FROM stores WHERE code LIKE 'APPLY-%'"):
+                tag = await conn.execute(statement)
+                removed += int(tag.rsplit(" ", 1)[-1])
+            # The refusals this module caused. They cascade from `upload_jobs`,
+            # but nothing links a quarantine row to the order it refused, so the
+            # match is the id namespace: every order id here starts `E-`. A
+            # revoked DELETE on the table is about app-facing roles writing
+            # audit -- a rehearsal's own refusals are debris, and leaving them
+            # makes a later reader count them as product.
+            tag = await conn.execute(
+                "DELETE FROM quarantine_rows WHERE key LIKE 'E-%'"
+                " OR raw->>'external_order_id' LIKE 'E-%'")
+            removed += int(tag.rsplit(" ", 1)[-1])
+            future = int(await conn.fetchval(
+                "SELECT count(*) FROM orders WHERE ordered_at > now()"))
+            # The guard the namespace delete needs: `since` is the only thing
+            # left that can hold a row this module wrote under a filename the
+            # list does not know, so name it rather than pass.
+            stray = [r["filename"] for r in await conn.fetch(
+                "SELECT filename FROM upload_jobs WHERE created_at >= $1",
+                since)]
+    finally:
+        await pool.close()
+    return removed, future, stray
+
+
+_UPLOAD_FILES = (
+    "badts.csv", "c1.csv", "c2.csv", "c9.csv", "e1.csv", "e2.csv",
+    "future.csv", "i1.csv", "naivets.csv", "o1.csv", "o2.csv", "q.csv",
+    "r1.csv", "r2.csv", "race.csv", "revive.csv", "revive_order.csv",
+    "s1.csv", "s2.csv", "s3.csv", "s4.csv",
+)
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _no_residue(database_url: str) -> Iterator[None]:
+    """Leave the cluster as it was found, and fail here if this module did not.
+
+    Module-scoped rather than per test: the tests share the seeded store and
+    product, so a purge between them would re-seed every time. The assertion
+    after the purge is the point -- a new test that writes a row this list does
+    not name fails next to its own file instead of in another repo's numerics.
+    """
+    started = datetime.now(timezone.utc)
+    yield
+    _, future, stray = asyncio.run(_purge(database_url, started))
+    assert not stray, (
+        f"upload job(s) left under a filename missing from `_UPLOAD_FILES`: "
+        f"{stray} -- left behind, the next run's dedup answers `reused: true` "
+        "and applies nothing, so the next run measures a file it never read")
+    assert future == 0, (
+        f"{future} future-dated order(s) left on the cluster after cleanup: a "
+        "rehearsal row at 2099 makes every churn horizon read as observed and "
+        "puts its customer above every real one on days-since-order")
+
 async def _seed(conn) -> None:  # type: ignore[no-untyped-def]
     await conn.execute(
         "INSERT INTO stores (code, name, brand_id)"
@@ -28,7 +179,7 @@ async def _seed(conn) -> None:  # type: ignore[no-untyped-def]
         " ON CONFLICT (code) DO NOTHING")
     await conn.execute(
         "INSERT INTO products (sku, name, category, price_cents)"
-        " VALUES ('APPLY-SKU', 'Apply Widget', 'test', 100)"
+        " VALUES ('APPLY-SKU', 'Apply Widget', 'frames', 100)"
         " ON CONFLICT (sku) DO NOTHING")
 
 
@@ -167,8 +318,10 @@ async def test_apply_orders_with_failures_and_replay(
                 "SELECT COUNT(*) FROM orders WHERE external_order_id='E-A1'")
             assert int(n) == 1
             nev = await conn.fetchval(
-                "SELECT COUNT(*) FROM customer_events"
-                " WHERE kind = 'order_placed' AND source = 'derived'")
+                "SELECT COUNT(*) FROM customer_events ce JOIN orders o"
+                " ON o.id::text = substr(ce.source_event_id, 7)"
+                " WHERE o.external_order_id = 'E-A1'"
+                " AND ce.kind = 'order_placed' AND ce.source = 'derived'")
             assert int(nev) == 1  # replay wrote no second derived event
     finally:
         await pool.close()

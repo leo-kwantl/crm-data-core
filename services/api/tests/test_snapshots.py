@@ -165,7 +165,13 @@ async def test_kpi_daily_upsert_idempotent(database_url: str):
                         except Exception as exc:
                             if "already exists" not in str(exc).lower():
                                 raise
-            as_of = date(2026, 10, 8)
+            # A date no tick writes: the row this test creates has to be its
+            # own, or a second run finds `r1` NULL (the conflict answers
+            # nothing) and the no-second-row claim is never measured.
+            as_of = date(1999, 12, 31)
+            await conn.execute(
+                "DELETE FROM kpi_daily_snapshots WHERE snapshot_date = $1::date"
+                " AND brand_id IS NULL AND group_id IS NULL", as_of)
             r1 = await conn.fetchrow(KPI_DAILY_UPSERT_SQL, as_of, None, None)
             r2 = await conn.fetchrow(KPI_DAILY_UPSERT_SQL, as_of, None, None)
             assert r1 is not None
@@ -174,6 +180,9 @@ async def test_kpi_daily_upsert_idempotent(database_url: str):
                 "SELECT COUNT(*) FROM kpi_daily_snapshots"
                 " WHERE snapshot_date = $1::date", as_of)
             assert int(n) == 1
+            await conn.execute(
+                "DELETE FROM kpi_daily_snapshots WHERE snapshot_date = $1::date"
+                " AND brand_id IS NULL AND group_id IS NULL", as_of)
     finally:
         await pool.close()
 

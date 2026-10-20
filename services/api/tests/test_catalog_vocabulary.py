@@ -9,6 +9,12 @@ from 5 to 6 wide, `pipelines/contracts.md` § 015).
 
 Two guards, both cheap and both aimed at the same failure: a category that is
 not part of the seeded catalogue entering the vocabulary unnoticed.
+
+Resolved 2026-10-20, in favour of the guard: the sixth category measured live
+was `test`, carried by `APPLY-SKU` -- a row `test_apply.py::_seed` inserted,
+not demo data. That fixture seeds `frames` now and purges its own namespace on
+teardown, so the expected set here stays: a rehearsal is not a reason to widen
+a vocabulary every later segment fit reads.
 """
 
 from __future__ import annotations
