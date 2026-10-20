@@ -282,7 +282,7 @@ so one k is enough and a miss is answered with guidance built
 from `available_k`. Extending to a ladder (e.g. {5,6}) is a manifest
 edit if a second k ever gets a consumer, not a code change. Do NOT
 "serve the latest available k" instead -- that relabels k=6 clusters
-as the k the caller asked for.
+as the k the caller asked for. Pairing runs across days: key a per-segment series on `(as_of, k)` and read `k > count(DISTINCT label)` as an EMPTY segment, never as a missing row -- measured on the live cluster, every brand scope is `k=5` on every day the seed pins, the global scope still carries a `2026-10-16` `k=6` run beside its `k=5` days, and `2026-10-20` `behavior` has `k=5` with 4 labels (`overall` on `2026-10-16`: `k=6`, 5 labels).
 
 k is a CALLER PARAMETER with a configured value, never a model choice:
 no engine selects k (no elbow/silhouette anywhere in ml -- the fit
@@ -914,8 +914,8 @@ there is **wrong by design**. Only the **both-stamped** artifact→artifact edge
   `db/queries/analytics_comparisons.sql` at module level, so copying `routers/stats.py` + `repos/stats.py` without both
   left the API unable to start (`FileNotFoundError` in every client fixture — 40 errors, none about stats). Same shape
   where `services/api/analytics/snapshots_serve.py:48-54` imports `ml_engine` at module level: keep any spec-file read
-  **opt-in via an explicit argument, never a module-level constant** (ml's default is no read —
-  `ml_engine/features.py:286-287`, `DEFAULT_ENABLED` when `path is None`).
+  **opt-in via an explicit argument, never a module-level constant** (no spec file is read at import:
+  ml deleted its feature registry in `3d67607`, so the category vocabulary now comes from the product rows the caller passes — `ml_engine/segmentation.py:404-409`).
 - **A moved writer's layer is not a fork:** `note_sync_result` (data's logic in data's copy of the app-owned
   `services/api/repos/connectors.py`) now lives in the data-owned `pipelines/ingest/connector_sync.py`.
 - **Compare blobs, not worktrees** (`core.autocrlf=true` both sides): after the 2026-10-17 sync the shared paths showed
