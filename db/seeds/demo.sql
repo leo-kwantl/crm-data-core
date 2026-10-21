@@ -125,6 +125,37 @@ WHERE member_id = 'M-000102' AND external_member_id IS NULL;
 
 -- Orders (15 across ~6 months) + items
 -- Stable keys: a re-seed hits the partial unique index and is a no-op.
+-- Backfill first, for a cluster seeded with the file BEFORE the stable keys:
+-- those 15 orders carry source/external_order_id NULL, the partial index's
+-- predicate is `source IS NOT NULL`, so nothing would conflict and the
+-- insert below would ADD 15 more demo orders (the demo set doubles).
+-- Matched on customer + amount, which is unique inside the demo set, and
+-- only on rows that carry no source at all: the re-seed keeps the demo
+-- orders it finds instead of replacing them.
+UPDATE orders o
+SET source = 'demo', external_order_id = d.external_order_id
+FROM (VALUES
+    ('c0000000-0000-0000-0000-000000000001', 22800, 'DEMO-O-001'),
+    ('c0000000-0000-0000-0000-000000000001', 15900, 'DEMO-O-002'),
+    ('c0000000-0000-0000-0000-000000000001',  3900, 'DEMO-O-003'),
+    ('c0000000-0000-0000-0000-000000000002', 14900, 'DEMO-O-004'),
+    ('c0000000-0000-0000-0000-000000000002', 13900, 'DEMO-O-005'),
+    ('c0000000-0000-0000-0000-000000000003', 24900, 'DEMO-O-006'),
+    ('c0000000-0000-0000-0000-000000000004', 15900, 'DEMO-O-007'),
+    ('c0000000-0000-0000-0000-000000000004',  1200, 'DEMO-O-008'),
+    ('c0000000-0000-0000-0000-000000000005', 34800, 'DEMO-O-009'),
+    ('c0000000-0000-0000-0000-000000000005',  7900, 'DEMO-O-010'),
+    ('c0000000-0000-0000-0000-000000000005',  1800, 'DEMO-O-011'),
+    ('c0000000-0000-0000-0000-000000000006', 12900, 'DEMO-O-012'),
+    ('c0000000-0000-0000-0000-000000000007', 19900, 'DEMO-O-013'),
+    ('c0000000-0000-0000-0000-000000000007',  1500, 'DEMO-O-014'),
+    ('c0000000-0000-0000-0000-000000000008', 13900, 'DEMO-O-015')
+  ) AS d (customer_id, total_cents, external_order_id)
+WHERE o.source IS NULL
+  AND o.customer_id = d.customer_id::uuid
+  AND o.total_cents = d.total_cents
+  AND o.status = 'completed';
+
 INSERT INTO orders (customer_id, store_id, ordered_at, total_cents,
                     status, source, external_order_id) VALUES
   ('c0000000-0000-0000-0000-000000000001', '11111111-1111-1111-1111-111111111111', now() - interval '175 days', 22800, 'completed', 'demo', 'DEMO-O-001'),
