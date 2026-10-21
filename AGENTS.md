@@ -35,7 +35,7 @@ python -c "import pipelines.ingest.orders, pipelines.ingest.events, pipelines.in
 - Never compare an instant column to a bare date — the date is promoted at the session zone, so `> today` lands at the *start* of the day and the day's own rows read as future. Third repo to hit this after ml's `forecast._as_of_bound` and app's `test_observed_anchor.py`.
 - Cast `$1::date` explicitly (a bare `$1` is an unknown parsed at the session zone).
 - Owns future `01x_ingest_*` migrations.
-- For any file present in **both** trees, the owner's tree is the base (the rule's canonical home: the manager's `../AGENTS.md` § Ownership) — data mirrors app's `services/api/**` + `db/queries/**` byte-for-byte, never forked; never delete a data-only harness file.
+- For any file present in **both** trees, the owner's tree is the base (the rule's canonical home: the manager's `../AGENTS.md` § Ownership) — data mirrors app's `services/api/**` byte for byte, and app mirrors the shared SQL (`db/migrations/**`, `db/queries/**`, `db/seeds/**`) from data's HEAD, never forked; never delete a data-only harness file.
 - A mirrored module must be mirrored with the files it reads at import (`db/queries/*.sql`), or the tree imports and cannot boot.
 - `services/api/tests/**` is data's own harness and is **not** in a sync's scope.
 - `pipelines/**` is data's (app vendors `pipelines/ingest/connectors.py` for serving).
