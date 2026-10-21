@@ -49,6 +49,9 @@ async def _purge_own_rows(database_url: str) -> AsyncIterator[None]:
                     _MEMBER_RE)]
                 if ids:
                     await conn.execute(
+                        "DELETE FROM customer_contacts"
+                        " WHERE customer_id = ANY($1::uuid[])", ids)
+                    await conn.execute(
                         "DELETE FROM order_items WHERE order_id IN"
                         " (SELECT id FROM orders WHERE customer_id = ANY($1::uuid[]))",
                         ids)

@@ -36,10 +36,15 @@ WHERE i.order_id = $1
 ORDER BY i.id;
 
 -- name: list_orders_global
--- params: cursor_at timestamptz|None, cursor_id uuid|None, limit int
+-- params: cursor_at timestamptz|None, cursor_id uuid|None, limit int, brand_id uuid|None
 -- Global order list, newest-first on (ordered_at DESC, id DESC) with store
 -- + customer display fields and per-order item count. Keyset page: fetch
 -- limit+1 upstream. Line items stay on GET /orders/:id (detail endpoint).
+-- SCOPE: brand_id pins the list to one brand -- the session's own brand
+-- (see deps.session_brand). None (a group-wide or HQ session) reads every
+-- brand, which is the only way this list is global. The predicate is the
+-- joined source row's (an order belongs to a store, a store belongs to a
+-- brand), so it is the population form: `($4 IS NULL OR s.brand_id = $4)`.
 SELECT o.id, o.customer_id, c.member_id AS customer_member_id,
        c.full_name AS customer_name,
        o.store_id, s.code AS store_code, s.name AS store_name,
@@ -49,5 +54,6 @@ FROM orders o
 JOIN customers c ON c.id = o.customer_id AND c.deleted_at IS NULL
 JOIN stores s ON s.id = o.store_id
 WHERE ($1::timestamptz IS NULL OR (o.ordered_at, o.id) < ($1::timestamptz, $2::uuid))
+  AND ($4::uuid IS NULL OR s.brand_id = $4::uuid)
 ORDER BY o.ordered_at DESC, o.id DESC
 LIMIT $3;

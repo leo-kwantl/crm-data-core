@@ -88,7 +88,13 @@ async def _purge(dsn: str, since: datetime) -> list[str]:
             await conn.execute(
                 "DELETE FROM rec_batches WHERE algos = $1", BATCH_ALGOS)
             # customers cascade to customer_events (the derived order_placed
-            # row) and customer_contacts.
+            # row), but customer_contacts does NOT: its FK has no
+            # ON DELETE CASCADE, so the contacts go first (a delete that
+            # assumes a cascade dies on the constraint).
+            await conn.execute(
+                "DELETE FROM customer_contacts WHERE customer_id IN"
+                " (SELECT id FROM customers WHERE member_id LIKE $1)",
+                CUSTOMER_KEYS)
             await conn.execute(
                 "DELETE FROM customers WHERE member_id LIKE $1", CUSTOMER_KEYS)
             await conn.execute(

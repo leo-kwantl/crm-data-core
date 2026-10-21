@@ -143,6 +143,7 @@ WHERE ($3::text IS NULL OR s.code = $3)
   AND ($8::text IS NULL OR (o.id::text ILIKE $8 || '%'
     OR c.member_id ILIKE '%' || $8 || '%' OR c.full_name ILIKE '%' || $8 || '%'))
   AND ($1::timestamptz IS NULL OR (o.ordered_at, o.id) < ($1::timestamptz, $2::uuid))
+  AND ($9::uuid IS NULL OR s.brand_id = $9::uuid)
 ORDER BY o.ordered_at DESC, o.id DESC
 LIMIT $6
 """
@@ -158,9 +159,17 @@ async def list_orders_global(
     date_to: datetime | None = None,
     status: str | None = None,
     q: str | None = None,
+    brand_id: uuid.UUID | None = None,
 ) -> tuple[list[dict], str | None]:
-    """Newest-first page across all customers, with store + customer display
-    fields and per-order item count. Returns (rows, next_cursor)."""
+    """Newest-first page across the session's scope, with store + customer
+    display fields and per-order item count. Returns (rows, next_cursor).
+
+    SCOPE: `brand_id` pins the page to one brand -- the session's own brand
+    (see deps.session_brand). None (a group-wide or HQ session) reads every
+    brand, which is the only way this list is global. The predicate is the
+    joined source row's (an order belongs to a store, a store belongs to a
+    brand), so it is the population form: `($9 IS NULL OR s.brand_id = $9)`.
+    """
     cursor_at: datetime | None = None
     cursor_id: uuid.UUID | None = None
     if cursor:
@@ -168,7 +177,7 @@ async def list_orders_global(
     store, dfrom, dto, st, term = normalize_order_filters(store_code, date_from, date_to, status, q)
     rows = await conn.fetch(
         LIST_ORDERS_GLOBAL_SQL, cursor_at, cursor_id, store, dfrom, dto, limit + 1,
-        st, term,
+        st, term, brand_id,
     )
     result = [dict(r) for r in rows]
     next_cursor = None
@@ -214,6 +223,7 @@ WHERE ($1::text IS NULL OR s.code = $1)
   AND ($4::text IS NULL OR o.status = $4)
   AND ($5::text IS NULL OR (o.id::text ILIKE $5 || '%'
     OR c.member_id ILIKE '%' || $5 || '%' OR c.full_name ILIKE '%' || $5 || '%'))
+  AND ($6::uuid IS NULL OR s.brand_id = $6::uuid)
 """
 
 OFFSET_ORDERS_GLOBAL_SQL = """
@@ -231,6 +241,7 @@ WHERE ($3::text IS NULL OR s.code = $3)
   AND ($6::text IS NULL OR o.status = $6)
   AND ($7::text IS NULL OR (o.id::text ILIKE $7 || '%'
     OR c.member_id ILIKE '%' || $7 || '%' OR c.full_name ILIKE '%' || $7 || '%'))
+  AND ($8::uuid IS NULL OR s.brand_id = $8::uuid)
 ORDER BY o.ordered_at DESC, o.id DESC
 LIMIT $1 OFFSET $2
 """
@@ -270,17 +281,24 @@ async def list_orders_global_offset(
     date_to: datetime | None = None,
     status: str | None = None,
     q: str | None = None,
+    brand_id: uuid.UUID | None = None,
 ) -> dict:
-    """Numbered page (1-based) across all customers."""
+    """Numbered page (1-based) across the session's scope.
+
+    SCOPE: the same brand pinning as the keyset page above -- `brand_id` is
+    the session's own brand, None reads every brand (group-wide/HQ).
+    """
     from .paging import offset_payload
 
     store, dfrom, dto, st, term = normalize_order_filters(
         store_code, date_from, date_to, status, q
     )
-    total = await conn.fetchval(COUNT_ORDERS_GLOBAL_SQL, store, dfrom, dto, st, term)
+    total = await conn.fetchval(
+        COUNT_ORDERS_GLOBAL_SQL, store, dfrom, dto, st, term, brand_id
+    )
     rows = await conn.fetch(
         OFFSET_ORDERS_GLOBAL_SQL, page_size, (page - 1) * page_size,
-        store, dfrom, dto, st, term,
+        store, dfrom, dto, st, term, brand_id,
     )
     return offset_payload(
         [dict(r) for r in rows], int(total or 0), page, page_size

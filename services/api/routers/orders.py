@@ -23,6 +23,7 @@ from ..deps import (
     get_current_user,
     get_pool,
     require_customer_in_scope,
+    session_brand,
 )
 from ..repos import orders as repo
 from ..repos.paging import clamp_page_size
@@ -52,6 +53,13 @@ async def list_orders_global(
     (YYYY-MM-DD, inclusive), ?status= (exact). Cursor + offset modes honour
     all.
 
+    SCOPE: the list is global only for a group-wide or HQ session. A
+    brand-scoped session reads ITS brand's orders (the session's own brand,
+    deps.session_brand) -- the same rule the customers list follows, and the
+    same rule `db/queries/orders.sql` carries for the mirror. A brand
+    session filtering by another brand's store code gets an empty page, not
+    that brand's orders.
+
     A keyword search (?q= order UUID prefix / member_id / customer NAME) is
     NOT accepted here: it would put a customer name in the URL. Use
     POST /orders/search (body-only) instead.
@@ -68,13 +76,13 @@ async def list_orders_global(
             return await repo.list_orders_global_offset(
                 conn, page=page, page_size=size,
                 store_code=store_code, date_from=date_from, date_to=date_to,
-                status=status, q=None,
+                status=status, q=None, brand_id=session_brand(user),
             )
         try:
             rows, next_cursor = await repo.list_orders_global(
                 conn, limit=limit, cursor=cursor,
                 store_code=store_code, date_from=date_from, date_to=date_to,
-                status=status, q=None,
+                status=status, q=None, brand_id=session_brand(user),
             )
         except ValueError:
             raise HTTPException(status_code=400, detail={"code": "invalid_cursor"})
