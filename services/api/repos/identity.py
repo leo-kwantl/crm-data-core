@@ -54,6 +54,24 @@ def _staff_row(r) -> dict:  # type: ignore[no-untyped-def]
     return d
 
 
+# The users read: the account row plus the LAST SIGN-IN - the newest session
+# the account holds, expired or not, because recency is what a reader asks
+# ("is this account in use?"). A NULL value means the account holds no
+# session row at all; it is never read as "never signed in" (a password reset
+# DELETES the other sessions - see `auth_repo.revoke_other_sessions`), so the
+# portal says "no sign-in on record" rather than guessing.
+_USER_SELECT = (
+    "SELECT u.id, u.username, u.display_name, u.role, u.is_disabled,"
+    " u.staff_id, s.staff_code, u.created_at, u.updated_at,"
+    " ls.last_sign_in_at"
+    " FROM users u LEFT JOIN staff s ON s.id = u.staff_id"
+    " LEFT JOIN LATERAL ("
+    "   SELECT max(ss.created_at) AS last_sign_in_at FROM sessions ss"
+    "   WHERE ss.user_id = u.id"
+    " ) ls ON TRUE"
+)
+
+
 def _user_row(r) -> dict:  # type: ignore[no-untyped-def]
     d = dict(r)
     d["id"] = str(d["id"])
@@ -297,9 +315,7 @@ async def create_user(
                     raise DuplicateCodeError(str(exc))
                 raise
             full = await conn.fetchrow(
-                "SELECT u.id, u.username, u.display_name, u.role, u.is_disabled,"
-                " u.staff_id, s.staff_code, u.created_at, u.updated_at"
-                " FROM users u LEFT JOIN staff s ON s.id = u.staff_id WHERE u.id = $1",
+                _USER_SELECT + " WHERE u.id = $1",
                 row["id"],
             )
             return _user_row(full)
@@ -308,9 +324,7 @@ async def create_user(
 async def get_user(pool: asyncpg.Pool, user_id: UUID) -> dict | None:
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
-            "SELECT u.id, u.username, u.display_name, u.role, u.is_disabled,"
-            " u.staff_id, s.staff_code, u.created_at, u.updated_at"
-            " FROM users u LEFT JOIN staff s ON s.id = u.staff_id WHERE u.id = $1",
+            _USER_SELECT + " WHERE u.id = $1",
             user_id,
         )
         return _user_row(row) if row else None
@@ -328,9 +342,7 @@ async def list_users_page(
     term = q.strip() if q and q.strip() else None
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            "SELECT u.id, u.username, u.display_name, u.role, u.is_disabled,"
-            " u.staff_id, s.staff_code, u.created_at, u.updated_at"
-            " FROM users u LEFT JOIN staff s ON s.id = u.staff_id"
+            _USER_SELECT +
             " WHERE ($1::timestamptz IS NULL OR (u.created_at, u.id) < ($1::timestamptz, $2::uuid))"
             "   AND ($4::text IS NULL OR (u.username ILIKE '%' || $4 || '%'"
             "     OR u.display_name ILIKE '%' || $4 || '%'))"
@@ -405,9 +417,7 @@ async def update_user(
                     staff_id,
                 )
             row = await conn.fetchrow(
-                "SELECT u.id, u.username, u.display_name, u.role, u.is_disabled,"
-                " u.staff_id, s.staff_code, u.created_at, u.updated_at"
-                " FROM users u LEFT JOIN staff s ON s.id = u.staff_id WHERE u.id = $1",
+                _USER_SELECT + " WHERE u.id = $1",
                 user_id,
             )
             return _user_row(row) if row else None
@@ -478,9 +488,7 @@ async def list_users_offset(
             term,
         )
         rows = await conn.fetch(
-            "SELECT u.id, u.username, u.display_name, u.role, u.is_disabled,"
-            " u.staff_id, s.staff_code, u.created_at, u.updated_at"
-            " FROM users u LEFT JOIN staff s ON s.id = u.staff_id"
+            _USER_SELECT +
             " WHERE ($3::text IS NULL OR (u.username ILIKE '%' || $3 || '%'"
             "   OR u.display_name ILIKE '%' || $3 || '%'))"
             " ORDER BY u.created_at DESC, u.id DESC LIMIT $1 OFFSET $2",
