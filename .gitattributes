@@ -1,0 +1,4 @@
+# Byte budgets are measured on the working copy, so the line endings must be
+# stable across clones: a CRLF checkout would add a byte per line and move
+# a file across its budget without a word changing.
+* text=auto eol=lf
