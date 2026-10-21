@@ -132,9 +132,14 @@ WHERE member_id = 'M-000102' AND external_member_id IS NULL;
 -- Matched on customer + amount, which is unique inside the demo set, and
 -- only on rows that carry no source at all: the re-seed keeps the demo
 -- orders it finds instead of replacing them.
-UPDATE orders o
-SET source = 'demo', external_order_id = d.external_order_id
-FROM (VALUES
+-- Only the EARLIEST row per key is keyed: a cluster whose legacy seed ran
+-- twice holds 30 demo orders (the legacy seed was not re-seed safe), and
+-- keying all of them would violate orders_source_ext_ux — the seed would
+-- fail on exactly the cluster it is meant to repair. The later copies keep
+-- no key, so the insert below conflicts with the keyed row and adds
+-- nothing; they are the pre-existing duplicates, and a purge is a separate
+-- explicit operation.
+WITH demo_keys (customer_id, total_cents, external_order_id) AS (VALUES
     ('c0000000-0000-0000-0000-000000000001', 22800, 'DEMO-O-001'),
     ('c0000000-0000-0000-0000-000000000001', 15900, 'DEMO-O-002'),
     ('c0000000-0000-0000-0000-000000000001',  3900, 'DEMO-O-003'),
@@ -150,11 +155,24 @@ FROM (VALUES
     ('c0000000-0000-0000-0000-000000000007', 19900, 'DEMO-O-013'),
     ('c0000000-0000-0000-0000-000000000007',  1500, 'DEMO-O-014'),
     ('c0000000-0000-0000-0000-000000000008', 13900, 'DEMO-O-015')
-  ) AS d (customer_id, total_cents, external_order_id)
-WHERE o.source IS NULL
-  AND o.customer_id = d.customer_id::uuid
-  AND o.total_cents = d.total_cents
-  AND o.status = 'completed';
+  ),
+candidates AS (
+    SELECT o.id AS order_id, k.external_order_id,
+           row_number() OVER (
+               PARTITION BY k.customer_id, k.total_cents
+               ORDER BY o.ordered_at, o.id) AS rn
+    FROM orders o
+    JOIN demo_keys k
+      ON o.customer_id = k.customer_id::uuid
+     AND o.total_cents = k.total_cents
+    WHERE o.source IS NULL
+      AND o.status = 'completed'
+  )
+UPDATE orders o
+SET source = 'demo', external_order_id = c.external_order_id
+FROM candidates c
+WHERE o.id = c.order_id
+  AND c.rn = 1;
 
 INSERT INTO orders (customer_id, store_id, ordered_at, total_cents,
                     status, source, external_order_id) VALUES
