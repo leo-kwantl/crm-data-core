@@ -31,6 +31,8 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
+from pipelines.scope_shape import (  # noqa: E402
+    UnselectableScopeRefused, require_selectable_scope)
 from pipelines.snapshot import KPI_DAILY_UPSERT_SQL, business_today  # noqa: E402
 from services.api.db import get_database_url  # noqa: E402
 
@@ -66,6 +68,11 @@ def main() -> None:
     ap.add_argument("--brand-id", default=None)
     ap.add_argument("--group-id", default=None)
     args = ap.parse_args()
+    try:
+        require_selectable_scope(args.brand_id, args.group_id)
+    except UnselectableScopeRefused as exc:
+        print(str(exc), file=sys.stderr)
+        raise SystemExit(2)
     as_of = (date.fromisoformat(args.as_of) if args.as_of
              else business_today())
     out = asyncio.run(run(as_of, _uuid_or_none(args.brand_id),

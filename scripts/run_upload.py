@@ -28,6 +28,8 @@ sys.path.insert(0, str(REPO))
 
 from pipelines import apply as ap  # noqa: E402
 from pipelines import upload as up  # noqa: E402
+from pipelines.scope_shape import (  # noqa: E402
+    UnselectableScopeRefused, require_selectable_scope)
 from services.api.db import get_database_url  # noqa: E402
 
 
@@ -133,11 +135,15 @@ def main() -> None:
                          "(idempotent; default validates only)")
     args = ap.parse_args()
     try:
+        require_selectable_scope(args.brand_id, args.group_id)
         out = asyncio.run(run(args.file, args.kind, args.source,
                               args.created_by,
                               _uuid_or_none(args.brand_id),
                               _uuid_or_none(args.group_id),
                               apply=args.apply))
+    except UnselectableScopeRefused as exc:
+        print(str(exc), file=sys.stderr)
+        raise SystemExit(2)
     except ValueError as exc:
         print(f"failed: {exc}")
         raise SystemExit(2)

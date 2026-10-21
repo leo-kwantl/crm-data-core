@@ -33,6 +33,8 @@ sys.path.insert(0, str(REPO))
 
 from pipelines import retention  # noqa: E402
 from pipelines import schedule as sched  # noqa: E402
+from pipelines.scope_shape import (  # noqa: E402
+    UnselectableScopeRefused, require_selectable_scope)
 from pipelines.snapshot import (  # noqa: E402
     BUSINESS_TZ_OFFSET_HOURS, business_now, business_today)
 
@@ -370,6 +372,11 @@ def main() -> None:
         ap.error("--pipeline is required (or --watch / --once for the loop)")
     if args.watch and args.interval < 1:
         ap.error("--interval must be >= 1 second")
+    try:
+        require_selectable_scope(args.brand_id, args.group_id)
+    except UnselectableScopeRefused as exc:
+        print(str(exc), file=sys.stderr)
+        raise SystemExit(2)
     if args.watch or args.once:          # --once is one pass of this loop
         only = ([p.strip() for p in args.only.split(",") if p.strip()]
                 if args.only else None)

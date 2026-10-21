@@ -143,7 +143,7 @@ churn/clv fit against `datetime.now(timezone.utc)` and segments-overall fits the
 
 **Name collision — `resolve_window` is two different functions.**
 
-data `pipelines/schedule.py:171 resolve_window(mode, n, unit, ...)` = cohort/period window.
+data `pipelines/schedule.py:173 resolve_window(mode, n, unit, ...)` = cohort/period window.
 ml `ml_engine/rfm.py:96 resolve_window(mode, as_of, date_from, date_to, *, max_span_days=731)` = RFM snapshot window (tz-aware `+08`; `max_span_days=None` is the caller asserting a deliberate full-history span, not a clamp).
 Check the repo before reading either as the other's contract.
 
@@ -201,19 +201,19 @@ So an `ml_engine/` change is live for `ml_jobs/` immediately but **live in the A
 
 **`created_by` provenance.**
 
-`--created-by` is passed through (`scripts/run_pipeline.py:298` default `scheduler`), so via the runner a NULL is **unreachable**.
+`--created-by` is passed through (`scripts/run_pipeline.py:340` default `scheduler`), so via the runner a NULL is **unreachable**.
 Of the 12 `ml_jobs/run_*.py` entry points, 10 declare `add_argument("--created-by"` and 9 reference a `created_by` column.
 The 2 that declare nothing (`run_alive_path.py`, `run_matrix_batch.py`) reference none.
 `run_churn_predict.py:50-52` is **inert** — it accepts the flag and never passes it (`:26` calls `store_churn.predict_one`, `:54` prints JSON) — and no tick can reach it.
 `churn_predict` is not an `ENGINE_BUILDERS` key (`pipelines/schedule.py:619`, ten engines), and `run_pipeline`'s dispatch (`pipelines/schedule.py:890`, `:898`) refuses an engine with no `ENGINE_BUILDERS` entry instead of skipping it.
 app settled the other half: `churn_customer_scores` **is** read by app (`db/queries/analytics_customer.sql:26-33`, `analytics_snapshots.sql:31`), but those rows come from `store_churn.create_snapshot` (`:478`; `SNAPSHOT_INSERT_SQL` `:538`, `SCORES_INSERT_SQL` via `executemany` `:548`) driven by the churn snapshot writer `ml_jobs/run_churn_snapshot.py:23`, while `predict_one` (`:411`) writes nothing (`return out` at `:428`/`:475`) — so removing the dead flag is app-safe as well as scheduler-safe.
-A NULL in the column therefore dates the row to a **direct ml-CLI hand-run** of one of the 9 writers, or to a tick handed an explicitly falsy stamp: `--created-by ""` is dropped by the truthiness guard at `pipelines/schedule.py:414-415` (again at `:441-442`) before `scripts/run_pipeline.py:132`'s non-empty default applies.
+A NULL in the column therefore dates the row to a **direct ml-CLI hand-run** of one of the 9 writers, or to a tick handed an explicitly falsy stamp: `--created-by ""` is dropped by the truthiness guard at `pipelines/schedule.py:416-417` (again at `:451-452`) before `scripts/run_pipeline.py:340`'s non-empty default applies.
 `JobCtx` is constructed only at `scripts/run_pipeline.py:124`.
 
 **Pass a staff code wherever a job writes.**
 
 - The hole is **structural, not incidental**: all 12 `created_by` columns in this repo's DDL are `text NULL` with no `DEFAULT` (`db/migrations/007_customer_events.sql:14`, `010_analytics_rfm.sql:15`, `011_recommendations.sql:14`, `013_analytics_history.sql:24,57,115`, `014_upload_staging.sql:39`, `015_segments_pipelines.sql:37`, `018_assoc_rules.sql:25`, `019_connectors.sql:27`, `021_explain.sql:27`, `022_forecast.sql:30`), so an unstamped hand-run **cannot fail anywhere**.
-- Data's own CLI follows the convention (`scripts/run_upload.py:124` `default=None`; the API stamps the session, `services/api/routers/customer_events.py:73`).
+- Data's own CLI follows the convention (`scripts/run_upload.py:130` `default=None`; the API stamps the session, `services/api/routers/customer_events.py:73`).
 - Making `--created-by` **required** in the 10 ml CLIs was considered and **declined**: a 10-file argv change (`[BREAKING @both]`) that forces every dev/one-off invocation to pass a value, so the rule above closes the hole operationally.
 
 **The list query's window projection.**
@@ -264,11 +264,13 @@ Cap experiments belong on the live endpoints, which persist nothing.
 
 **Scope is a run-level dimension, and an unattended fire fans it out per brand.**
 
-`--brand-id`/`--group-id` (`scripts/run_pipeline.py:296-297` → `JobCtx`, `:125`) reach **every** job of a batch via `_scope_args(ctx)` (`pipelines/schedule.py:400`), so one invocation scopes the *whole* pipeline, not one job — which is why per-brand rows require **one runner invocation per brand**.
-Every job joins that argv through `_with_common` (`pipelines/schedule.py:430`), whose `with_scope` defaults true, so a manifest is what opts a job out.
-A fire with no pinned scope takes its batches from the live `brands` table (`tick_scopes`, `pipelines/schedule.py:97`; enumeration `TICK_BRANDS_SQL`): every brand, then the `(NULL, NULL)` hq roll-up last (`scripts/run_pipeline.py:253-255`) — and the manifest's `scopes:` block names the same, no group (`057_manifest_scopes_brands_hq.sql`).
+`--brand-id`/`--group-id` (`scripts/run_pipeline.py:338-339` → `JobCtx`, `pipelines/schedule.py:227`) reach **every** job of a batch via `_scope_args(ctx)` (`pipelines/schedule.py:410`), so one invocation scopes the *whole* pipeline, not one job — which is why per-brand rows require **one runner invocation per brand**.
+Every job joins that argv through `_with_common` (`pipelines/schedule.py:440`), whose `with_scope` defaults true, so a manifest is what opts a job out.
+A fire with no pinned scope takes its batches from the live `brands` table (`tick_scopes`, `pipelines/schedule.py:97`; enumeration `TICK_BRANDS_SQL`): every brand, then the `(NULL, NULL)` hq roll-up last (`scripts/run_pipeline.py:254-256`) — and the manifest's `scopes:` block names the same, no group (`057_manifest_scopes_brands_hq.sql`).
+A run may not stamp a group scope: `pipelines/scope_shape.py` `require_selectable_scope` refuses `(None, group_id)` and `(brand_id, group_id)` at the CLI boundary — before a flag is converted and before the connection — so `scripts/run_pipeline.py`, `scripts/run_daily_snapshot.py` and `scripts/run_upload.py` never reach the cluster with a scope no reader can select.
+The pair is the shape a group cut would need, and the guard is relaxed in the same change that gives the portal a session scope which can promise it — the rule's canonical home is the manager root (`../docs/conventions.md` § Scope shape, read at `e4a8e4f`).
 A hand-run that pins a scope stays exactly that one batch (`pinned`, `:251`).
-Data engines stamp the run context directly (`_run_data_engine` `pipelines/schedule.py:756`; `KPI_DAILY_UPSERT_SQL` `pipelines/snapshot.py:82`, `COHORT_SNAPSHOT_UPSERT_SQL` `pipelines/snapshot.py:166`), so the fan-out covers them with no argv change, while the ml writers receive their `--brand-id` from the same `_scope_args` (`pipelines/schedule.py:400`).
+Data engines stamp the run context directly (`_run_data_engine` `pipelines/schedule.py:766`; `KPI_DAILY_UPSERT_SQL` `pipelines/snapshot.py:82`, `COHORT_SNAPSHOT_UPSERT_SQL` `pipelines/snapshot.py:176`), so the fan-out covers them with no argv change, while the ml writers receive their `--brand-id` from the same `_scope_args` (`pipelines/schedule.py:410`).
 The stored crons are `nightly` (`0 1 * * *`: apply, rfm, churn, churn_all, clv, **segments_purchase, segments_overall, segments_behavior**) and `weekly` (`0 2 * * 1`: segments_purchase, segments_overall, recs, assoc, explain, forecast, cohort, matrix).
 The three segment modes moved to nightly in `041` because `segments_behavior` was in no manifest at all (a page fed by a job nobody ran) and the other two made an explain-vs-segment mismatch take up to seven days to heal.
 `weekly` keeps its own segments copy because `assoc`/`explain`/`matrix` declare `depends_on: segments_overall`, so folding them out would leave dangling names, and the duplicate run on the weekly night is a `skipped` row on the day grain.
