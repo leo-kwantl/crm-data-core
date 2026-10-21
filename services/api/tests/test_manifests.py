@@ -173,3 +173,63 @@ async def test_the_scopes_block_names_the_scopes_the_tick_dispatches(database_ur
     assert [dict(r) for r in before] == [dict(r) for r in after], (
         "re-applying 057 changed the manifests; the migration is not a no-op"
         " on its second run")
+
+
+async def test_the_future_rows_guard_waits_for_every_other_nightly_job(
+        database_url: str):
+    """049's contract, derived: the guard runs last, so it waits for all.
+
+    049's design -- "`future_rows_guard` runs last (it depends on every other
+    nightly job) ... so a new writer shows up as a red tick on the night it
+    lands". 051 added the `kpi` writer to the nightly manifest and did not
+    add it to the guard's list, so a future-dated `kpi_daily_snapshots` row
+    could land AFTER the guard had passed and the guard would stay green --
+    the one failure 049 was written to end. 058 re-states the list.
+
+    The contract is DERIVED, not hardcoded: a job added to the manifest
+    breaks this test instead of rotting it.
+    """
+    import asyncpg
+    import yaml
+
+    pool = await asyncpg.create_pool(database_url)
+    try:
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT pipeline, yaml FROM pipeline_manifests"
+                " WHERE pipeline = 'nightly'")
+    finally:
+        await pool.close()
+    assert rows, "no nightly manifest row to check"
+    nightly = yaml.safe_load(rows[0]["yaml"])["pipelines"]["nightly"]
+    jobs = nightly["jobs"]
+    assert set(jobs["future_rows"]["depends_on"]) == set(jobs) - {"future_rows"}, (
+        "the future_rows guard waits for "
+        f"{sorted(jobs['future_rows']['depends_on'])}; it must wait for every"
+        f" other nightly job ({sorted(set(jobs) - {'future_rows'})}) or a"
+        " writer it does not wait for can leave a future-dated row after the"
+        " guard has passed")
+
+    # A re-run of the migration must change nothing: it is gated on the
+    # guard's list still having the shape 055 left, and after the rewrite
+    # that shape is gone.
+    from services.api.tests.conftest import MIGRATIONS_DIR, UP_RE
+
+    text = (MIGRATIONS_DIR / "058_manifest_future_rows_waits_for_kpi.sql").read_text(
+        encoding="utf-8")
+    up = UP_RE.search(text).group(1).strip()
+    pool = await asyncpg.create_pool(database_url)
+    try:
+        async with pool.acquire() as conn:
+            before = await conn.fetch(
+                "SELECT pipeline, yaml, version FROM pipeline_manifests"
+                " ORDER BY pipeline")
+            await conn.execute(up)
+            after = await conn.fetch(
+                "SELECT pipeline, yaml, version FROM pipeline_manifests"
+                " ORDER BY pipeline")
+    finally:
+        await pool.close()
+    assert [dict(r) for r in before] == [dict(r) for r in after], (
+        "re-applying 058 changed the manifests; the migration is not a no-op"
+        " on its second run")

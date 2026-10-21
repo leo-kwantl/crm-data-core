@@ -382,6 +382,7 @@ Seeds: nightly + weekly content-verbatim from the agreed example YAML (split per
 - Re-runnable: succeeded skipped unless `--force`; upstream failure → downstream `skipped`.
 - Cron owns the tick; the runner fans a brand-scoped job out into one batch per brand (`--once`/`--watch` `tick_scopes`; a one-shot `--pipeline` run takes one `--brand-id`).
 - The nightly document's last job is `future_rows_guard` (`future_rows`), which fails the tick naming `table: count` for any `as_of`/`scored_at` dated after the tick's own day.
+- The guard waits for EVERY other nightly job (`depends_on` = the nightly job set minus the guard itself, `058`): a writer it does not wait for can leave a future-dated row AFTER the guard has passed, and the guard stays green. The list is derived from the job set, not written by hand, so a new job breaks the check instead of rotting it.
 - Prevention lives in the two writers (`guard_as_of` refuses `as_of > business_today()` unless `JobCtx.allow_future`, ml's CLI refuses before connecting), detection lives in the tick.
 - The detection is needed because a future-dated row outranks the live number on every `as_of DESC` reader and a `pipeline_runs` `succeeded` claim for a day that has not happened makes the real tick skip the job.
 
@@ -788,7 +789,7 @@ A `pipeline_runs` row exists only when the tick fired the job, so a reader that 
 That expectation is **not** a constant in `pipelines/schedule.py`: it is the manifest row, so a cadence edit needs no code change.
 Shape of `pipeline_manifests.yaml` (`{version, pipelines: {<name>: {schedule, scopes, jobs: {<job>: {engine, depends_on?, params?}}}}}` — `jobs` is a mapping, not a list).
 A job's cadence is the cron of the **most frequent** manifest that names it, because a job may appear in several: `forecast` is in both `nightly` (`0 1 * * *` — the default grain is `daily`, so "daily") and `weekly` (`0 2 * * 1`), and the frequent one is what a reader should claim.
-Nightly jobs: `apply`, `kpi`, `rfm`, `churn`, `clv`, `segments_purchase`, `segments_overall`, `segments_behavior`, `forecast`, `future_rows`.
+Nightly jobs: `apply`, `kpi`, `rfm`, `churn`, `clv`, `segments_purchase`, `segments_overall`, `segments_behavior`, `forecast`, `future_rows`. The guard's `depends_on` is that list minus the guard itself (see the scheduler section).
 Weekly only: `recs`, `assoc`, `explain`, `cohort`, `matrix`.
 `kpi` (engine `kpi_daily`) joined nightly in `051`: the writer and the engine already existed, but no manifest named it, so `kpi_daily_snapshots` held a single 2026-09-30 row and the table was dead on both ends (nobody scheduled it, nothing served it). The job runs right after `apply`, so KPI history accumulates from the tick rather than from the day a page appears. Its absence in a row-less cell is therefore a missed run like any other.
 App already serves this without a new data surface: `GET /api/v1/pipelines/manifests` (`services/api/routers/pipelines.py`, pipeline + `yaml` + pipeline-level cron) and `GET /api/v1/pipelines/manifests/{pipeline}` (parsed jobs + dependency edges).
