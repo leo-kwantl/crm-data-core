@@ -538,11 +538,12 @@ ARPU is `retained_cents` / `retained`; the column is `NOT NULL DEFAULT 0`, so a 
 
 ### The reader's contract (app, committed)
 
-App owns the read: `GET /analytics/cohort` in `../crm-cdp-app/services/api/routers/analytics_cohort.py`, over app's own `../crm-cdp-app/db/queries/analytics_cohort.sql`; these are the same facts, read at app master `523e792`.
+App owns the read: `GET /analytics/cohort` in `../crm-cdp-app/services/api/routers/analytics_cohort.py`, over app's own `../crm-cdp-app/db/queries/analytics_cohort.sql`; these are the same facts, read at app master `af4a179`.
 A scoped session reads `cohort_cells` / `cohort_periods` / `cohort_granularities` - `brand_id IS NOT DISTINCT FROM`, `group_id IS NOT DISTINCT FROM`, `period_offset <= max_offset`.
 An HQ session (no brand, no group) reads `cohort_cells_global` / `cohort_granularities_global` - the global rows only, never every brand's grid merged into one.
-`as_of` is `max(created_at)` over the cells the read took: one vintage per grid, or the read names the newer run while serving the older run's cells.
-The denominator is the SUM of the per-cohort MAX of `cohort_size` (the size is repeated on the cohort's offset rows).
+The reader pins the latest row per grain in SQL (`DISTINCT ON (cohort_period, period_offset)` + `created_at DESC`), so it never renders an older vintage's cell; the vintage it NAMES is the business day (+08) of the newest write time it read, and a grid whose cells carry more than one write time is reported as mixed.
+The denominator is the SUM of the per-cohort MAX of `cohort_size` (the size is repeated on the cohort's offset rows); a cohort whose rows disagree about their size is reported, not averaged away.
+The row carries the population it describes (`population_rule`, data 056); when the rows disagree about the rule, the reader reports no rule at all.
 `retained_arpu_cents` is `retained_cents` / `retained` in integer cents, and NULL when `retained_cents = 0` (0 cents means "not measured", not "no money").
 No rows in scope is 404 `{"code": "no_snapshot"}`.
 
