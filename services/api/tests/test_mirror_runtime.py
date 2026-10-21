@@ -2,17 +2,17 @@
 
 Data's rule (AGENTS.md § Repo rules): for any file present in **both**
 trees, app's checkout is the base — sync it byte-for-byte, never fork it.
-That rule had no check, so the twenty shared runtime files under
-`services/api/` drifted: the manager measured 20 of the 68 shared `.py`
-files differing on 2026-10-22, including the session rule itself. A
-mirrored file with no mirror test is a copy, and a copy drifts — that is a
-measured fact now, not a caution.
+That rule had no check, so a shared runtime file under `services/api/`
+could drift with nothing to say so.
 
 The comparison is on the normalised text (CRLF -> LF) against app's HEAD
 blob: both trees are checked out with `core.autocrlf=true`, so a worktree
 BYTE comparison is a false alarm ("compare blobs, not worktrees"), and a
 sibling's dirty working tree is not a shipped state, so a suite that
 depended on it would be red in one direction for a change nobody shipped.
+(The "20 of the 68 shared `.py` files drifting" figure that travelled with
+this rule was a worktree diff — CRLF vs LF — not a committed difference:
+the committed trees were 57 of 57 identical.)
 
 `services/api/tests/**` is data's own harness and is excluded by rule.
 App's own mirror guard (`services/api/tests/test_mirror_modules.py`) is the
