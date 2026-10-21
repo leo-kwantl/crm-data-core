@@ -143,15 +143,25 @@ async def create_staff(
         return _staff_row(row)
 
 
-async def get_staff(pool: asyncpg.Pool, staff_id: UUID) -> dict | None:
+async def get_staff(
+    pool: asyncpg.Pool, staff_id: UUID, brand_id: UUID | None = None
+) -> dict | None:
+    """The staff row, or None when it belongs to another brand.
+
+    SCOPE: `brand_id` is the session's own brand (deps.session_brand). A
+    staff row carries its own brand, so the predicate is the row's own
+    (population form): another brand's staff member is not found at all.
+    """
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             "SELECT s.id, s.staff_code, s.full_name, s.store_id, st.code AS store_code,"
             " s.role, s.brand_id, b.code AS brand_code,"
             " s.joined_at, s.left_at, s.created_at, s.updated_at"
             " FROM staff s LEFT JOIN stores st ON st.id = s.store_id"
-            " LEFT JOIN brands b ON b.id = s.brand_id WHERE s.id = $1",
+            " LEFT JOIN brands b ON b.id = s.brand_id WHERE s.id = $1"
+            " AND ($2::uuid IS NULL OR s.brand_id = $2::uuid)",
             staff_id,
+            brand_id,
         )
         return _staff_row(row) if row else None
 
@@ -162,8 +172,12 @@ async def list_staff_page(
     limit: int,
     cursor: str | None,
     q: str | None = None,
+    brand_id: UUID | None = None,
 ) -> tuple[list[dict], str | None]:
-    """Newest-first page (q matches staff_code / full_name, ILIKE)."""
+    """Newest-first page (q matches staff_code / full_name, ILIKE).
+
+    SCOPE: `brand_id` is the session's own brand (deps.session_brand).
+    """
     cursor_at, cursor_id = (decode_cursor(cursor) if cursor else (None, None))
     term = q.strip() if q and q.strip() else None
     async with pool.acquire() as conn:
@@ -176,11 +190,13 @@ async def list_staff_page(
             " WHERE ($1::timestamptz IS NULL OR (s.created_at, s.id) < ($1::timestamptz, $2::uuid))"
             "   AND ($4::text IS NULL OR (s.staff_code ILIKE '%' || $4 || '%'"
             "     OR s.full_name ILIKE '%' || $4 || '%'))"
+            "   AND ($5::uuid IS NULL OR s.brand_id = $5::uuid)"
             " ORDER BY s.created_at DESC, s.id DESC LIMIT $3",
             cursor_at,
             cursor_id,
             limit + 1,
             term,
+            brand_id,
         )
         page = [_staff_row(r) for r in rows]
     next_cursor = None
@@ -321,11 +337,20 @@ async def create_user(
             return _user_row(full)
 
 
-async def get_user(pool: asyncpg.Pool, user_id: UUID) -> dict | None:
+async def get_user(
+    pool: asyncpg.Pool, user_id: UUID, brand_id: UUID | None = None
+) -> dict | None:
+    """The login account, or None when its staff member is another brand's.
+
+    SCOPE: a login account inherits its staff member's brand, so the
+    predicate rides the staff join (`brand_id` is the session's own brand).
+    """
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
-            _USER_SELECT + " WHERE u.id = $1",
+            _USER_SELECT + " WHERE u.id = $1"
+            " AND ($2::uuid IS NULL OR s.brand_id = $2::uuid)",
             user_id,
+            brand_id,
         )
         return _user_row(row) if row else None
 
@@ -336,8 +361,13 @@ async def list_users_page(
     limit: int,
     cursor: str | None,
     q: str | None = None,
+    brand_id: UUID | None = None,
 ) -> tuple[list[dict], str | None]:
-    """Newest-first page (q matches username / display_name, ILIKE)."""
+    """Newest-first page (q matches username / display_name, ILIKE).
+
+    SCOPE: `brand_id` is the session's own brand (deps.session_brand); a
+    login account belongs to the brand of the staff member it is linked to.
+    """
     cursor_at, cursor_id = (decode_cursor(cursor) if cursor else (None, None))
     term = q.strip() if q and q.strip() else None
     async with pool.acquire() as conn:
@@ -346,11 +376,13 @@ async def list_users_page(
             " WHERE ($1::timestamptz IS NULL OR (u.created_at, u.id) < ($1::timestamptz, $2::uuid))"
             "   AND ($4::text IS NULL OR (u.username ILIKE '%' || $4 || '%'"
             "     OR u.display_name ILIKE '%' || $4 || '%'))"
+            "   AND ($5::uuid IS NULL OR s.brand_id = $5::uuid)"
             " ORDER BY u.created_at DESC, u.id DESC LIMIT $3",
             cursor_at,
             cursor_id,
             limit + 1,
             term,
+            brand_id,
         )
         page = [_user_row(r) for r in rows]
     next_cursor = None
@@ -423,13 +455,20 @@ async def update_user(
             return _user_row(row) if row else None
 
 
-async def list_unlinked_staff(pool: asyncpg.Pool) -> list[dict]:
-    """Staff rows with no linked login account (user-form picker source)."""
+async def list_unlinked_staff(
+    pool: asyncpg.Pool, brand_id: UUID | None = None
+) -> list[dict]:
+    """Staff rows with no linked login account (user-form picker source).
+
+    SCOPE: `brand_id` is the session's own brand (deps.session_brand).
+    """
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             "SELECT id, staff_code, full_name FROM staff"
             " WHERE id NOT IN (SELECT staff_id FROM users WHERE staff_id IS NOT NULL)"
-            " ORDER BY staff_code ASC"
+            " AND ($1::uuid IS NULL OR brand_id = $1::uuid)"
+            " ORDER BY staff_code ASC",
+            brand_id,
         )
         out = []
         for r in rows:
@@ -442,9 +481,17 @@ async def list_unlinked_staff(pool: asyncpg.Pool) -> list[dict]:
 # --- Numbered (offset) pages: same newest-first order, additive ---
 
 async def list_staff_offset(
-    pool: asyncpg.Pool, *, page: int, page_size: int, q: str | None = None
+    pool: asyncpg.Pool,
+    *,
+    page: int,
+    page_size: int,
+    q: str | None = None,
+    brand_id: UUID | None = None,
 ) -> dict:
-    """Numbered page (1-based) of the staff roster (q matches code / name)."""
+    """Numbered page (1-based) of the staff roster (q matches code / name).
+
+    SCOPE: `brand_id` is the session's own brand (deps.session_brand).
+    """
     from .paging import offset_payload
 
     term = q.strip() if q and q.strip() else None
@@ -452,8 +499,10 @@ async def list_staff_offset(
         total = await conn.fetchval(
             "SELECT COUNT(*) FROM staff s"
             " WHERE ($1::text IS NULL OR (s.staff_code ILIKE '%' || $1 || '%'"
-            "   OR s.full_name ILIKE '%' || $1 || '%'))",
+            "   OR s.full_name ILIKE '%' || $1 || '%'))"
+            " AND ($2::uuid IS NULL OR s.brand_id = $2::uuid)",
             term,
+            brand_id,
         )
         rows = await conn.fetch(
             "SELECT s.id, s.staff_code, s.full_name, s.store_id, st.code AS store_code,"
@@ -463,38 +512,54 @@ async def list_staff_offset(
             " LEFT JOIN brands b ON b.id = s.brand_id"
             " WHERE ($3::text IS NULL OR (s.staff_code ILIKE '%' || $3 || '%'"
             "   OR s.full_name ILIKE '%' || $3 || '%'))"
+            " AND ($4::uuid IS NULL OR s.brand_id = $4::uuid)"
             " ORDER BY s.created_at DESC, s.id DESC LIMIT $1 OFFSET $2",
             page_size,
             (page - 1) * page_size,
             term,
+            brand_id,
         )
         items = [_staff_row(r) for r in rows]
     return offset_payload(items, int(total or 0), page, page_size)
 
 
 async def list_users_offset(
-    pool: asyncpg.Pool, *, page: int, page_size: int, q: str | None = None
+    pool: asyncpg.Pool,
+    *,
+    page: int,
+    page_size: int,
+    q: str | None = None,
+    brand_id: UUID | None = None,
 ) -> dict:
     """Numbered page (1-based) of login-account records (q matches username /
-    display_name)."""
+    display_name).
+
+    SCOPE: `brand_id` is the session's own brand (deps.session_brand); a
+    login account belongs to the brand of the staff member it is linked to.
+    """
     from .paging import offset_payload
 
     term = q.strip() if q and q.strip() else None
     async with pool.acquire() as conn:
         total = await conn.fetchval(
             "SELECT COUNT(*) FROM users u"
+            " LEFT JOIN staff s ON s.id = u.staff_id"
             " WHERE ($1::text IS NULL OR (u.username ILIKE '%' || $1 || '%'"
-            "   OR u.display_name ILIKE '%' || $1 || '%'))",
+            "   OR u.display_name ILIKE '%' || $1 || '%'))"
+            " AND ($2::uuid IS NULL OR s.brand_id = $2::uuid)",
             term,
+            brand_id,
         )
         rows = await conn.fetch(
             _USER_SELECT +
             " WHERE ($3::text IS NULL OR (u.username ILIKE '%' || $3 || '%'"
             "   OR u.display_name ILIKE '%' || $3 || '%'))"
+            " AND ($4::uuid IS NULL OR s.brand_id = $4::uuid)"
             " ORDER BY u.created_at DESC, u.id DESC LIMIT $1 OFFSET $2",
             page_size,
             (page - 1) * page_size,
             term,
+            brand_id,
         )
         items = [_user_row(r) for r in rows]
     return offset_payload(items, int(total or 0), page, page_size)

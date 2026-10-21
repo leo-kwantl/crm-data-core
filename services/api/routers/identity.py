@@ -32,6 +32,7 @@ from ..deps import (
     get_pool,
     get_session_token,
     require_admin,
+    session_brand,
 )
 from ..repos import auth as auth_repo
 from ..repos import identity as repo
@@ -86,10 +87,13 @@ async def list_staff(
         return {"data": [_public_staff(r) for r in items], "next_cursor": None}
     if page is not None:
         return await repo.list_staff_offset(
-            pool, page=page, page_size=clamp_page_size(page_size), q=q
+            pool, page=page, page_size=clamp_page_size(page_size), q=q,
+            brand_id=session_brand(user),
         )
     try:
-        items, next_cursor = await repo.list_staff_page(pool, limit=limit, cursor=cursor, q=q)
+        items, next_cursor = await repo.list_staff_page(
+            pool, limit=limit, cursor=cursor, q=q, brand_id=session_brand(user)
+        )
     except ValueError:
         raise HTTPException(status_code=400, detail={"code": "invalid_cursor"})
     return {"data": items, "next_cursor": next_cursor}
@@ -102,7 +106,7 @@ async def read_staff(
     pool: Annotated[asyncpg.Pool, Depends(get_pool)],
 ) -> dict:
     _ = user
-    data = await repo.get_staff(pool, row_id)
+    data = await repo.get_staff(pool, row_id, session_brand(user))
     if data is None:
         raise HTTPException(status_code=404, detail={"code": "staff_not_found"})
     return data
@@ -189,10 +193,13 @@ async def list_users(
     _ = user
     if page is not None:
         return await repo.list_users_offset(
-            pool, page=page, page_size=clamp_page_size(page_size), q=q
+            pool, page=page, page_size=clamp_page_size(page_size), q=q,
+            brand_id=session_brand(user),
         )
     try:
-        items, next_cursor = await repo.list_users_page(pool, limit=limit, cursor=cursor, q=q)
+        items, next_cursor = await repo.list_users_page(
+            pool, limit=limit, cursor=cursor, q=q, brand_id=session_brand(user)
+        )
     except ValueError:
         raise HTTPException(status_code=400, detail={"code": "invalid_cursor"})
     return {"data": items, "next_cursor": next_cursor}
@@ -205,7 +212,7 @@ async def unlinked_staff(
 ) -> dict:
     """Picker source for the user form: staff with no linked account yet."""
     _ = user
-    return {"data": await repo.list_unlinked_staff(pool)}
+    return {"data": await repo.list_unlinked_staff(pool, session_brand(user))}
 
 
 @router.get("/users/{row_id}")
@@ -215,7 +222,7 @@ async def read_user(
     pool: Annotated[asyncpg.Pool, Depends(get_pool)],
 ) -> dict:
     _ = user
-    data = await repo.get_user(pool, row_id)
+    data = await repo.get_user(pool, row_id, session_brand(user))
     if data is None:
         raise HTTPException(status_code=404, detail={"code": "user_not_found"})
     return data

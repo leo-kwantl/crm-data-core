@@ -104,6 +104,7 @@ async def list_orders(
 ) -> dict:
     _ = user  # session identity: required for the audit trail
     await require_customer_in_scope(pool, customer_id, user)
+    brand_id = session_brand(user)
     size = clamp_page_size(page_size)
     try:
         async with pool.acquire() as conn:
@@ -113,11 +114,13 @@ async def list_orders(
                 return await repo.list_customer_orders_offset(
                     conn, customer_id, page=page, page_size=size,
                     store_code=store_code, date_from=date_from, date_to=date_to,
+                    brand_id=brand_id,
                 )
             try:
                 rows, next_cursor = await repo.list_customer_orders(
                     conn, customer_id, limit=limit, cursor=cursor,
                     store_code=store_code, date_from=date_from, date_to=date_to,
+                    brand_id=brand_id,
                 )
             except ValueError:
                 raise HTTPException(status_code=400, detail={"code": "invalid_cursor"})
@@ -134,7 +137,7 @@ async def get_order(
 ) -> dict:
     _ = user
     async with pool.acquire() as conn:
-        detail = await repo.get_order_with_items(conn, order_id)
+        detail = await repo.get_order_with_items(conn, order_id, session_brand(user))
     if detail is None:
         raise HTTPException(status_code=404, detail={"code": "not_found"})
     return detail

@@ -10,6 +10,13 @@ Enrichment (migration 008): description / specs (free-form JSONB, e.g.
 lens_width, bridge, temple, color, material) / image_url / is_active, plus
 the inventory table (one qty row per product x store). Product GETs embed
 stock_by_store (store_code order) + total_stock.
+
+The stock statements below are the brand-scoped variant of
+db/queries/products.sql (`list_inventory_for_product`): the shared file
+stays GLOBAL because data's pipeline reads every brand's stock, while a
+stock row lives in a STORE and a store belongs to a brand, so the app's
+serving reader carries the session's brand. The catalogue row itself is
+global master data and stays shared.
 """
 
 from __future__ import annotations
@@ -66,6 +73,7 @@ SELECT i.id, i.product_id, i.store_id, s.code AS store_code, s.name AS store_nam
 FROM inventory i
 JOIN stores s ON s.id = i.store_id
 WHERE i.product_id = ANY($1::uuid[])
+  AND ($2::uuid IS NULL OR s.brand_id = $2::uuid)
 ORDER BY s.code ASC
 """
 
@@ -102,13 +110,19 @@ def _product_row(r) -> dict:  # type: ignore[no-untyped-def]
 
 
 async def _attach_stock(
-    conn: asyncpg.Connection, items: list[dict]
+    conn: asyncpg.Connection, items: list[dict], brand_id: uuid.UUID | None = None
 ) -> list[dict]:
-    """Embed stock_by_store (store_code order) + total_stock into each item."""
+    """Embed stock_by_store (store_code order) + total_stock into each item.
+
+    A stock row lives in a store and a store belongs to a brand, so the
+    embedded stock is the session's brand's stock (deps.session_brand); None
+    = a group-wide session, which sees every brand's shelves. The catalogue
+    row itself is global master data and stays shared.
+    """
     if not items:
         return items
     ids = [i["id"] for i in items]
-    rows = await conn.fetch(STOCK_FOR_PRODUCTS_SQL, ids)
+    rows = await conn.fetch(STOCK_FOR_PRODUCTS_SQL, ids, brand_id)
     by_product: dict[str, list[dict]] = {}
     for r in rows:
         d = dict(r)
@@ -131,6 +145,7 @@ async def list_products(
     cursor: str | None,
     category: str | None = None,
     is_active: bool | None = None,
+    brand_id: uuid.UUID | None = None,
 ) -> tuple[list[dict], str | None]:
     cursor_at: datetime | None = None
     cursor_id: uuid.UUID | None = None
@@ -147,14 +162,18 @@ async def list_products(
         result.pop()  # overflow row, only proves a next page exists
         last = result[-1]
         next_cursor = encode_cursor(last["created_at"], last["id"])
-    return await _attach_stock(conn, result), next_cursor
+    return await _attach_stock(conn, result, brand_id), next_cursor
 
 
-async def get_product(conn: asyncpg.Connection, product_id: uuid.UUID) -> dict | None:
+async def get_product(
+    conn: asyncpg.Connection,
+    product_id: uuid.UUID,
+    brand_id: uuid.UUID | None = None,
+) -> dict | None:
     row = await conn.fetchrow(GET_PRODUCT_SQL, product_id)
     if row is None:
         return None
-    (item,) = await _attach_stock(conn, [_product_row(row)])
+    (item,) = await _attach_stock(conn, [_product_row(row)], brand_id)
     return item
 
 
@@ -269,6 +288,7 @@ async def list_products_offset(
     page_size: int,
     category: str | None = None,
     is_active: bool | None = None,
+    brand_id: uuid.UUID | None = None,
 ) -> dict:
     """Numbered page (1-based) of the catalogue, honouring q + filters."""
     from .paging import offset_payload
@@ -279,5 +299,5 @@ async def list_products_offset(
     rows = await conn.fetch(
         OFFSET_PRODUCTS_SQL, term, page_size, (page - 1) * page_size, cat, active
     )
-    items = await _attach_stock(conn, [_product_row(r) for r in rows])
+    items = await _attach_stock(conn, [_product_row(r) for r in rows], brand_id)
     return offset_payload(items, int(total or 0), page, page_size)

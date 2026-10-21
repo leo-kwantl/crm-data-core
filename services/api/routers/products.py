@@ -23,7 +23,7 @@ from typing import Annotated
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 
-from ..deps import CurrentUser, get_current_user, get_pool
+from ..deps import CurrentUser, get_current_user, get_pool, session_brand
 from ..repos import products as repo
 from ..repos.paging import clamp_page_size
 from ..schemas.product import ProductCreate, ProductUpdate
@@ -46,16 +46,19 @@ async def list_products(
     """Catalogue list, newest-first. Optional additive filters: ?category=
     (exact match) + ?is_active=true|false. Cursor + offset modes honour both."""
     size = clamp_page_size(page_size)
+    brand = session_brand(user)
     async with pool.acquire() as conn:
         if page is not None:
             return await repo.list_products_offset(
                 conn, q=q, page=page, page_size=size,
                 category=category, is_active=is_active,
+                brand_id=brand,
             )
         try:
             rows, next_cursor = await repo.list_products(
                 conn, q=q, limit=limit, cursor=cursor,
                 category=category, is_active=is_active,
+                brand_id=brand,
             )
         except ValueError:
             raise HTTPException(status_code=400, detail={"code": "invalid_cursor"})
@@ -69,7 +72,7 @@ async def get_product(
     user: Annotated[CurrentUser, Depends(get_current_user)],
 ) -> dict:
     async with pool.acquire() as conn:
-        product = await repo.get_product(conn, product_id)
+        product = await repo.get_product(conn, product_id, session_brand(user))
     if product is None:
         raise HTTPException(status_code=404, detail={"code": "not_found"})
     return product

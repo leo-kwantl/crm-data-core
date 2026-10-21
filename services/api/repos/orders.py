@@ -41,6 +41,7 @@ WHERE o.customer_id = $1
   AND ($6::date IS NULL OR o.ordered_at >= $6::date::timestamptz)
   AND ($7::date IS NULL OR o.ordered_at < (($7::date + 1)::timestamptz))
   AND ($2::timestamptz IS NULL OR (o.ordered_at, o.id) < ($2::timestamptz, $3::uuid))
+  AND ($8::uuid IS NULL OR s.brand_id = $8::uuid)
 ORDER BY o.ordered_at DESC, o.id DESC
 LIMIT $4
 """
@@ -51,6 +52,7 @@ SELECT o.id, o.customer_id, o.store_id, o.ordered_at, o.total_cents, o.status,
 FROM orders o
 JOIN stores s ON s.id = o.store_id
 WHERE o.id = $1
+  AND ($2::uuid IS NULL OR s.brand_id = $2::uuid)
 """
 
 ORDER_ITEMS_SQL = """
@@ -92,8 +94,15 @@ async def list_customer_orders(
     store_code: str | None = None,
     date_from: datetime | None = None,
     date_to: datetime | None = None,
+    brand_id: uuid.UUID | None = None,
 ) -> tuple[list[dict], str | None]:
-    """Newest-first page. Returns (rows, next_cursor); caller fetches limit+1."""
+    """Newest-first page. Returns (rows, next_cursor); caller fetches limit+1.
+
+    SCOPE: `brand_id` is the session's own brand (deps.session_brand). A
+    customer who bought in two brands still sees only their own brand's
+    orders: the order belongs to a store, the store belongs to a brand, so
+    the predicate is the joined source row's (population form).
+    """
     cursor_at: datetime | None = None
     cursor_id: uuid.UUID | None = None
     if cursor:
@@ -101,7 +110,7 @@ async def list_customer_orders(
     store, dfrom, dto, _, _ = normalize_order_filters(store_code, date_from, date_to)
     rows = await conn.fetch(
         LIST_ORDERS_SQL, customer_id, cursor_at, cursor_id, limit + 1,
-        store, dfrom, dto,
+        store, dfrom, dto, brand_id,
     )
     result = [dict(r) for r in rows]
     next_cursor = None
@@ -114,9 +123,18 @@ async def list_customer_orders(
 
 
 async def get_order_with_items(
-    conn: asyncpg.Connection, order_id: uuid.UUID
+    conn: asyncpg.Connection,
+    order_id: uuid.UUID,
+    brand_id: uuid.UUID | None = None,
 ) -> dict | None:
-    header = await conn.fetchrow(ORDER_HEADER_SQL, order_id)
+    """The order header and its items, or None when it is not the session's.
+
+    SCOPE: `brand_id` is the session's own brand (deps.session_brand). An
+    order belongs to a store, the store belongs to a brand, so another
+    brand's order is not found at all -- the read answers 404, not 403,
+    because a 403 would say the order exists.
+    """
+    header = await conn.fetchrow(ORDER_HEADER_SQL, order_id, brand_id)
     if header is None:
         return None
     items = await conn.fetch(ORDER_ITEMS_SQL, order_id)
@@ -125,7 +143,10 @@ async def get_order_with_items(
     return detail
 
 
-# --- Global order list (mirrors db/queries/orders.sql: list_orders_global) ---
+# --- Global order list (the brand-scoped variant of db/queries/orders.sql:
+# --- list_orders_global). The shared file stays GLOBAL because data's
+# --- pipeline reads every brand's orders; the app's serving reader carries
+# --- the session's brand, so the two are not the same statement. ---
 
 LIST_ORDERS_GLOBAL_SQL = """
 SELECT o.id, o.customer_id, c.member_id AS customer_member_id,
@@ -196,6 +217,7 @@ WHERE o.customer_id = $1
   AND ($2::text IS NULL OR s.code = $2)
   AND ($3::date IS NULL OR o.ordered_at >= $3::date::timestamptz)
   AND ($4::date IS NULL OR o.ordered_at < (($4::date + 1)::timestamptz))
+  AND ($5::uuid IS NULL OR s.brand_id = $5::uuid)
 """
 
 OFFSET_CUSTOMER_ORDERS_SQL = """
@@ -208,6 +230,7 @@ WHERE o.customer_id = $1
   AND ($4::text IS NULL OR s.code = $4)
   AND ($5::date IS NULL OR o.ordered_at >= $5::date::timestamptz)
   AND ($6::date IS NULL OR o.ordered_at < (($6::date + 1)::timestamptz))
+  AND ($7::uuid IS NULL OR s.brand_id = $7::uuid)
 ORDER BY o.ordered_at DESC, o.id DESC
 LIMIT $2 OFFSET $3
 """
@@ -256,15 +279,19 @@ async def list_customer_orders_offset(
     store_code: str | None = None,
     date_from: datetime | None = None,
     date_to: datetime | None = None,
+    brand_id: uuid.UUID | None = None,
 ) -> dict:
-    """Numbered page (1-based) of one customer's orders."""
+    """Numbered page (1-based) of one customer's orders (brand-scoped, see
+    list_customer_orders)."""
     from .paging import offset_payload
 
     store, dfrom, dto, _, _ = normalize_order_filters(store_code, date_from, date_to)
-    total = await conn.fetchval(COUNT_CUSTOMER_ORDERS_SQL, customer_id, store, dfrom, dto)
+    total = await conn.fetchval(
+        COUNT_CUSTOMER_ORDERS_SQL, customer_id, store, dfrom, dto, brand_id
+    )
     rows = await conn.fetch(
         OFFSET_CUSTOMER_ORDERS_SQL, customer_id, page_size, (page - 1) * page_size,
-        store, dfrom, dto,
+        store, dfrom, dto, brand_id,
     )
     return offset_payload(
         [dict(r) for r in rows], int(total or 0), page, page_size

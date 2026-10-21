@@ -19,7 +19,7 @@ from typing import Annotated
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from ..deps import CurrentUser, get_current_user, get_pool
+from ..deps import CurrentUser, check_brand, get_current_user, get_pool, session_brand
 from ..repos import inventory as repo
 from ..schemas.inventory import InventoryUpsert
 
@@ -33,7 +33,7 @@ async def list_inventory(
     user: Annotated[CurrentUser, Depends(get_current_user)],
 ) -> dict:
     async with pool.acquire() as conn:
-        rows = await repo.list_inventory(conn, product_id)
+        rows = await repo.list_inventory(conn, product_id, session_brand(user))
     if rows is None:
         raise HTTPException(status_code=404, detail={"code": "product_not_found"})
     return {"data": rows}
@@ -46,6 +46,10 @@ async def upsert_inventory(
     user: Annotated[CurrentUser, Depends(get_current_user)],
 ) -> dict:
     async with pool.acquire() as conn:
+        # A stock row lands in a STORE, and a store belongs to a brand: a
+        # brand-scoped session may not write another brand's shelf.
+        store_brand = await repo.store_brand_id(conn, payload.store_id)
+        check_brand(user, store_brand)
         result = await repo.upsert_inventory(
             conn,
             product_id=payload.product_id,
