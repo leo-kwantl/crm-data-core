@@ -23,8 +23,8 @@ from ..deps import (
     get_current_user,
     get_pool,
     is_group_wide,
+    require_customer_in_scope,
 )
-from ..repos import customers as customers_repo
 from ..repos import groups as groups_repo
 from ..repos import tiers as repo
 from ..schemas.tier import TierAssign, TierCreate, TierUpdate
@@ -91,7 +91,7 @@ async def set_customer_tier(
     user: Annotated[CurrentUser, Depends(get_current_user)],
     pool: Annotated[asyncpg.Pool, Depends(get_pool)],
 ) -> dict:
-    await _guard_customer_group(pool, user, customer_id)
+    await require_customer_in_scope(pool, customer_id, user)
     result = await repo.assign_tier(pool, customer_id, payload.tier_code)
     if result is None:
         raise HTTPException(status_code=404, detail={"code": "customer_not_found"})
@@ -106,25 +106,12 @@ async def read_loyalty(
     user: Annotated[CurrentUser, Depends(get_current_user)],
     pool: Annotated[asyncpg.Pool, Depends(get_pool)],
 ) -> dict:
-    await _guard_customer_group(pool, user, customer_id)
+    await require_customer_in_scope(pool, customer_id, user)
     data = await repo.get_loyalty(pool, customer_id)
     if data is None:
         raise HTTPException(status_code=404, detail={"code": "customer_not_found"})
     return data
 
-
-async def _guard_customer_group(
-    pool: asyncpg.Pool, user: CurrentUser, customer_id: UUID
-) -> None:
-    """404 when the customer lives outside the session group (never leak
-    cross-group existence). Brand-less group-wide sessions skip the check."""
-    if user.group_id is None:
-        return
-    group = await customers_repo.group_of_customer(pool, customer_id)
-    if group is None:
-        raise HTTPException(status_code=404, detail={"code": "customer_not_found"})
-    if group != str(user.group_id):
-        raise HTTPException(status_code=404, detail={"code": "customer_not_found"})
 
 
 async def _resolve_tier_brand(

@@ -2,8 +2,11 @@
 
 Admin-provisioned accounts only — no self-signup, no SSO. Login accepts a
 username OR a linked staff_code as the identifier, but failures are a uniform
-401 (code invalid_credentials) so accounts cannot be enumerated. Passwords
-never appear in logs; only SHA-256 hex of tokens is stored (repos/auth.py).
+401 (code invalid_credentials) so accounts cannot be enumerated, and every
+failure path pays the same bcrypt cost (deps.LOGIN_DUMMY_HASH) so the answer
+time cannot enumerate them either. Repeated failures from one ip+identifier
+are a generic 429. Passwords never appear in logs; only SHA-256 hex of tokens
+is stored (repos/auth.py).
 """
 
 from __future__ import annotations
@@ -12,9 +15,18 @@ from typing import Annotated
 from uuid import UUID
 
 import asyncpg
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 
-from ..deps import CurrentUser, get_current_user, get_pool, get_session_token
+from ..deps import (
+    LOGIN_DUMMY_HASH,
+    CurrentUser,
+    check_login_rate_limit,
+    client_ip,
+    get_current_user,
+    get_pool,
+    get_session_token,
+    note_login_failure,
+)
 from ..repos import auth as repo
 from ..schemas.auth import LoginIn, LoginOut, MeOut, PasswordChangeIn
 
@@ -30,14 +42,26 @@ def _bad_credentials() -> HTTPException:
 @router.post("/auth/login", response_model=LoginOut)
 async def login(
     payload: LoginIn,
+    request: Request,
     pool: Annotated[asyncpg.Pool, Depends(get_pool)],
 ) -> dict:
+    ip = client_ip(request)
+    check_login_rate_limit(payload.identifier, ip)
     identity = await repo.find_login_identity(pool, payload.identifier)
-    if identity is None or identity.get("is_disabled"):
+    if (
+        identity is None
+        or identity.get("is_disabled")
+        or not identity.get("password_hash")
+    ):
+        # One comparison against a fixed hash on EVERY failure path: an unknown
+        # identifier, a disabled account and an account with no password set
+        # must cost the same wall-clock time as a wrong password. The result is
+        # discarded — nothing here authenticates (review 7.2-5).
+        repo.check_password(payload.password, LOGIN_DUMMY_HASH)
+        note_login_failure(payload.identifier, ip)
         raise _bad_credentials()
-    if not identity.get("password_hash"):
-        raise _bad_credentials()  # admin has not set a password yet
     if not repo.check_password(payload.password, identity["password_hash"]):
+        note_login_failure(payload.identifier, ip)
         raise _bad_credentials()
     staff_code = repo.session_staff_code(identity)
     token, _ = await repo.create_session(

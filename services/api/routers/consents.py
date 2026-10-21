@@ -11,9 +11,8 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from ..deps import CurrentUser, get_current_user, get_pool
+from ..deps import CurrentUser, get_current_user, get_pool, require_customer_in_scope
 from ..repos import consents as repo
-from ..repos import customers as customers_repo
 from ..repos import groups as groups_repo
 from ..repos import reference as refrepo
 from ..schemas.consent import (
@@ -37,7 +36,7 @@ async def read_consents(
     pool=Depends(get_pool),
     user: CurrentUser = Depends(get_current_user),
 ) -> dict:
-    await _guard_customer_group(pool, user, customer_id)
+    await require_customer_in_scope(pool, customer_id, user)
     async with pool.acquire() as conn:
         if not await repo.customer_exists(conn, customer_id):
             raise _not_found(customer_id)
@@ -80,7 +79,7 @@ async def replace_consents(
                             "value": exc.value,
                         },
                     )
-    await _guard_customer_group(pool, user, customer_id)
+    await require_customer_in_scope(pool, customer_id, user)
     brand_id = await groups_repo.resolve_write_brand(
         pool, explicit=None, session_brand_id=user.brand_id
     )
@@ -109,7 +108,7 @@ async def read_consent_history(
     pool=Depends(get_pool),
     user: CurrentUser = Depends(get_current_user),
 ) -> dict:
-    await _guard_customer_group(pool, user, customer_id)
+    await require_customer_in_scope(pool, customer_id, user)
     async with pool.acquire() as conn:
         if not await repo.customer_exists(conn, customer_id):
             raise _not_found(customer_id)
@@ -117,11 +116,3 @@ async def read_consent_history(
     return {"customer_id": customer_id, "events": events}
 
 
-async def _guard_customer_group(pool, user: CurrentUser, customer_id: UUID) -> None:  # type: ignore[no-untyped-def]
-    """404 when the customer lives outside the session group (never leak
-    cross-group existence). Brand-less group-wide sessions skip the check."""
-    if user.group_id is None:
-        return
-    group = await customers_repo.group_of_customer(pool, customer_id)
-    if group is None or group != str(user.group_id):
-        raise HTTPException(status_code=404, detail={"code": "customer_not_found"})

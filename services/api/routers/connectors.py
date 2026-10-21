@@ -113,20 +113,20 @@ async def trigger_sync(connector_id: UUID, body: ConnectorSyncTrigger,
             "connector_id": run["connector_id"], "entity": run["entity"]}
 
 
-@router.post("/connectors/{connector_id}/test")
-async def test_connector(_admin: Admin, pool: Pool,
-                         connector_id: UUID,
-                         body: ConnectorTestRequest | None = None) -> dict:
-    stored = await _guard(
-        lambda: repo.get_connector(pool, connector_id))
-    req = body or ConnectorTestRequest()
-    source_type = req.source_type or stored["source_type"]
-    config = dict(req.config) if req.config is not None else stored["config"]
-    secret_ref = (req.secret_ref if req.secret_ref is not None
-                  else stored["secret_ref"])
+def _check_stored_connector(stored: dict, req: object) -> dict:
+    """What `/test` can actually establish about a connector.
+
+    Static: config shape per source_type, and whether the referenced env
+    secret is present. It contacts no upstream - nothing in this codebase
+    does - so callers must not present a True `config_valid` as "verified".
+    """
+    source_type = getattr(req, "source_type", None) or stored["source_type"]
+    req_config = getattr(req, "config", None)
+    config = dict(req_config) if req_config is not None else stored["config"]
+    req_secret = getattr(req, "secret_ref", None)
+    secret_ref = req_secret if req_secret is not None else stored["secret_ref"]
     try:
-        C.validate_connector(source_type, stored["name"], config,
-                             secret_ref)
+        C.validate_connector(source_type, stored["name"], config, secret_ref)
         config_valid: bool = True
         config_error: str | None = None
     except ValueError as exc:
@@ -140,6 +140,15 @@ async def test_connector(_admin: Admin, pool: Pool,
             "secret_ref": secret_ref,
             "secret_present": present,
             "has_secret": present}
+
+
+@router.post("/connectors/{connector_id}/test")
+async def test_connector(_admin: Admin, pool: Pool,
+                         connector_id: UUID,
+                         body: ConnectorTestRequest | None = None) -> dict:
+    stored = await _guard(
+        lambda: repo.get_connector(pool, connector_id))
+    return _check_stored_connector(stored, body or ConnectorTestRequest())
 
 
 @router.put("/connectors/{connector_id}/schedule")
@@ -167,11 +176,36 @@ async def update_schedule(connector_id: UUID, body: ConnectorScheduleUpdate,
 @router.put("/connectors/{connector_id}/secret")
 async def rotate_secret(connector_id: UUID, body: ConnectorSecretRotate,
                         _admin: Admin, pool: Pool) -> dict:
+    """Store a secret, then say what actually verified it.
+
+    This endpoint used to return 200 with the implied word "rotated" having
+    contacted nothing at all: it wrote `secret_ref`/`has_secret` and stopped
+    (review §7.2-6). Nothing in this codebase probes an upstream connector, so
+    the honest answer is `verified: false` with `verification: "not_run"` and
+    what was checked instead - never a bare success. `verified_against` names
+    the upstream that answered and stays null while no probe exists; a client
+    that renders `verified` as success will therefore render "saved, not
+    verified".
+    """
     upd = await _guard(lambda: repo.rotate_secret(
         pool, connector_id, body.value))
+    stored = await _guard(
+        lambda: repo.get_connector(pool, connector_id))
+    check = _check_stored_connector(stored, ConnectorTestRequest())
     return {"id": upd["id"], "secret_ref": upd["secret_ref"],
             "has_secret": upd["has_secret"],
-            "updated_at": upd["updated_at"]}
+            "updated_at": upd["updated_at"],
+            # The secret is written; a store is all that happened.
+            "saved": True,
+            "verified": False,
+            "verified_against": None,
+            "verification": "not_run",
+            "verification_detail": (
+                "no upstream probe for this connector type; the secret was"
+                " stored and the config validated only"),
+            "config_valid": check["config_valid"],
+            "config_error": check["config_error"],
+            "secret_present": check["secret_present"]}
 
 
 # ---- reads (app-mirrored verbatim; app owns the text) ----

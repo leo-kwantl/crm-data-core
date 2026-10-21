@@ -5,8 +5,10 @@
 - PUT /inventory {product_id, store_id, qty} — upsert the pair row (200).
   Unknown product/store -> 404; negative qty -> 422 (schema + CHECK).
 
-Non-PII resource like the catalogue: reads are public; the PUT upsert
-requires a staff session.
+Non-PII resource like the catalogue, but not a public one: both reads and
+the PUT upsert require a staff session. Stock levels per store are
+operational data (what is where, and how much), and review §7.2-3 found
+`GET /inventory` answering anonymously.
 """
 
 from __future__ import annotations
@@ -28,6 +30,7 @@ router = APIRouter(tags=["inventory"])
 async def list_inventory(
     pool: Annotated[asyncpg.Pool, Depends(get_pool)],
     product_id: Annotated[uuid.UUID, Query()],
+    user: Annotated[CurrentUser, Depends(get_current_user)],
 ) -> dict:
     async with pool.acquire() as conn:
         rows = await repo.list_inventory(conn, product_id)

@@ -2,7 +2,9 @@
 
 - GET /customers/{id}/orders — cursor-paginated, newest-first.
 - GET /orders/{id} — header + line items.
+- POST /orders/search (routers/orders_search.py) — keyword search, body-only.
 - Any write (POST/PUT/PATCH/DELETE) on /orders* -> 405 (orders immutable via API).
+  The {order_id} guard is UUID-scoped so it cannot shadow POST /orders/search.
 
 PII route: requires a session (x-session-token header); no-store set by middleware.
 """
@@ -14,7 +16,7 @@ import uuid
 from typing import Annotated
 
 import asyncpg
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 
 from ..deps import (
     CurrentUser,
@@ -32,6 +34,7 @@ _WRITE_METHODS = ("POST", "PUT", "PATCH", "DELETE")
 
 @router.get("/orders")
 async def list_orders_global(
+    request: Request,
     user: Annotated[CurrentUser, Depends(get_current_user)],
     pool: Annotated[asyncpg.Pool, Depends(get_pool)],
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
@@ -42,15 +45,22 @@ async def list_orders_global(
     date_from: Annotated[_dt.date | None, Query()] = None,
     date_to: Annotated[_dt.date | None, Query()] = None,
     status: Annotated[str | None, Query()] = None,
-    q: Annotated[str | None, Query(max_length=200)] = None,
 ) -> dict:
     """Global order list, newest-first with store + customer display fields.
 
     Optional filters (additive): ?store_code=, ?date_from=/?date_to=
-    (YYYY-MM-DD, inclusive), ?status= (exact), ?q= (order UUID prefix or
-    customer member_id / name, non-PII). Cursor + offset modes honour all.
+    (YYYY-MM-DD, inclusive), ?status= (exact). Cursor + offset modes honour
+    all.
+
+    A keyword search (?q= order UUID prefix / member_id / customer NAME) is
+    NOT accepted here: it would put a customer name in the URL. Use
+    POST /orders/search (body-only) instead.
 
     Line items stay on GET /orders/{order_id} (detail endpoint)."""
+    # Reject PII in URL: a keyword must never reach the database through
+    # the query string (browser history, access log, Referer).
+    if "q" in request.query_params:
+        raise HTTPException(status_code=422, detail={"code": "pii_in_url"})
     _ = user  # session identity: required for the audit trail
     size = clamp_page_size(page_size)
     async with pool.acquire() as conn:
@@ -58,13 +68,13 @@ async def list_orders_global(
             return await repo.list_orders_global_offset(
                 conn, page=page, page_size=size,
                 store_code=store_code, date_from=date_from, date_to=date_to,
-                status=status, q=q,
+                status=status, q=None,
             )
         try:
             rows, next_cursor = await repo.list_orders_global(
                 conn, limit=limit, cursor=cursor,
                 store_code=store_code, date_from=date_from, date_to=date_to,
-                status=status, q=q,
+                status=status, q=None,
             )
         except ValueError:
             raise HTTPException(status_code=400, detail={"code": "invalid_cursor"})
@@ -126,7 +136,7 @@ async def _method_not_allowed() -> Response:
     return Response(status_code=405)
 
 
-for _path in ("/orders", "/orders/{order_id}", "/customers/{customer_id}/orders"):
+for _path in ("/orders", "/orders/{order_id:uuid}", "/customers/{customer_id}/orders"):
     for _method in _WRITE_METHODS:
         router.add_api_route(
             _path,

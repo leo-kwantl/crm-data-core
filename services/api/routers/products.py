@@ -1,12 +1,18 @@
 """Product catalogue endpoints (auto-mounted by app.py discovery).
 
 - GET /products?q=&limit=&cursor= — name/sku search (non-PII, LIKE allowed).
+  Needs a staff session (see the note below on why non-PII is not public).
 - GET /products/{id} — single product.
 - POST /products — create a catalogue row (201; 409 duplicate_sku).
 - PATCH /products/{id} — edit name/category/price_cents plus enrichment
   fields (description, specs, image_url http(s), is_active); sku immutable.
   Explicit null clears description/image_url, resets specs to {}.
 - PUT + DELETE -> 405 (no full-replace, no product delete).
+
+The reads require a session too (review §7.2-3). The catalogue is not PII,
+but an unauthenticated `/products` still enumerates the store's commercial
+surface (names, skus, prices) for anyone who can reach the API, and the
+session dependency is the only thing that makes a route auditable at all.
 """
 
 from __future__ import annotations
@@ -28,6 +34,7 @@ router = APIRouter(tags=["products"])
 @router.get("/products")
 async def list_products(
     pool: Annotated[asyncpg.Pool, Depends(get_pool)],
+    user: Annotated[CurrentUser, Depends(get_current_user)],
     q: Annotated[str | None, Query(max_length=200)] = None,
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
     cursor: Annotated[str | None, Query()] = None,
@@ -59,6 +66,7 @@ async def list_products(
 async def get_product(
     product_id: uuid.UUID,
     pool: Annotated[asyncpg.Pool, Depends(get_pool)],
+    user: Annotated[CurrentUser, Depends(get_current_user)],
 ) -> dict:
     async with pool.acquire() as conn:
         product = await repo.get_product(conn, product_id)

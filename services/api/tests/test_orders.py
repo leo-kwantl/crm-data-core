@@ -223,17 +223,18 @@ async def test_order_detail_404(client):
 @pytest.mark.asyncio
 async def test_product_search_and_detail(client, db_pool):
     seed = await seed_customer_with_orders(db_pool, 0)
-    r = await client.get("/api/v1/products", params={"q": "frame"})
+    r = await client.get("/api/v1/products", params={"q": "frame"},
+                         headers=STAFF)
     assert r.status_code == 200, r.text
     names = {p["name"] for p in r.json()["data"]}
     assert "Titanium Frame" in names and "Frame Case" in names
     assert "Lens Cloth" not in names
 
-    r2 = await client.get(f"/api/v1/products/{seed['p_case']}")
+    r2 = await client.get(f"/api/v1/products/{seed['p_case']}", headers=STAFF)
     assert r2.status_code == 200, r2.text
     assert r2.json()["sku"].startswith("CSE-")
 
-    r3 = await client.get(f"/api/v1/products/{uuid.uuid4()}")
+    r3 = await client.get(f"/api/v1/products/{uuid.uuid4()}", headers=STAFF)
     assert r3.status_code == 404
 
 

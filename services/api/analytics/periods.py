@@ -394,6 +394,15 @@ def _store_row(r: asyncpg.Record, mom_cov: str, yoy_cov: str) -> dict[str, Any]:
         "brand_code": r["brand_code"],
         "group_code": r["group_code"],
         "revenue_current": current,
+        # The comparison baseline, top-level, on EVERY comparison row. The
+        # brand and group rollups below carry `revenue_mom` / `revenue_yoy`
+        # this way, and the client maps all three row kinds through one
+        # helper (`cmpGroupRow` in apps/web/lib/api.ts) that reads
+        # `revenue_mom`. Without it the helper read undefined and printed
+        # 0, so every store chip on /overview claimed the store's revenue
+        # "came from $0" while the real baseline sat inside `mom.baseline`.
+        "revenue_mom": int(r["revenue_mom"]),
+        "revenue_yoy": int(r["revenue_yoy"]),
         "orders_current": int(r["orders_current"]),
         "orders_mom": int(r["orders_mom"]),
         "orders_yoy": int(r["orders_yoy"]),

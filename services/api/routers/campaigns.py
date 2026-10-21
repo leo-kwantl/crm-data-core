@@ -19,9 +19,9 @@ from ..deps import (
     get_current_user,
     get_pool,
     is_group_wide,
+    require_customer_in_scope,
 )
 from ..repos import campaigns as repo
-from ..repos import customers as customers_repo
 from ..repos import groups as groups_repo
 from ..repos.reference import UnknownCodeError
 from ..repos.paging import clamp_page_size
@@ -184,7 +184,7 @@ async def add_member(
     if campaign is None:
         raise HTTPException(status_code=404, detail={"code": "campaign_not_found"})
     _guard_row(user, campaign.get("brand_id"), campaign.get("group_id"), "campaign_not_found")
-    await _guard_customer_group(pool, user, payload.customer_id)
+    await require_customer_in_scope(pool, payload.customer_id, user)
     result = await repo.add_member(
         pool, campaign_id, payload.customer_id, assigned_by=user.staff_code
     )
@@ -247,17 +247,6 @@ def _guard_row(
     ):
         raise HTTPException(status_code=404, detail={"code": not_found_code})
 
-
-async def _guard_customer_group(
-    pool: asyncpg.Pool, user: CurrentUser, customer_id: UUID
-) -> None:
-    """Member writes only admit customers from the session group (404
-    otherwise). Brand-less group-wide sessions skip the check."""
-    if user.group_id is None:
-        return
-    group = await customers_repo.group_of_customer(pool, customer_id)
-    if group is None or group != str(user.group_id):
-        raise HTTPException(status_code=404, detail={"code": "customer_not_found"})
 
 
 async def _resolve_brand(

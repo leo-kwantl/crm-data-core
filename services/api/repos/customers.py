@@ -321,6 +321,29 @@ async def soft_delete_customer(pool: asyncpg.Pool, customer_id: UUID) -> bool:
 
 
 # --- Global masked list (mirrors db/queries/customers.sql: list_customers + page_*) ---
+#
+# BRAND SCOPE (7.2-2): the three statements below carry an extra $7/$4/$6 brand
+# predicate that db/queries/customers.sql — token-equal with crm-cdp-data, see
+# tests/test_mirror_sql.py — does not. This file is the app's serving copy and
+# the app must not serve a group-wide customer list to a brand-scoped session;
+# the shared file keeps the unscoped canonical form because it is data's
+# ETL-side statement. Folding the predicate into the shared copy is a row-
+# visibility change (BREAKING for data), announced to crm-data 2026-10-19; until
+# they land their half, editing either side here means editing the predicate in
+# this literal too. The rule for a BRAND-SCOPED session is "belongs to this
+# brand, or belongs to nobody yet": a completed order in the brand, OR no
+# completed order anywhere (fresh lead / pre-brand row).
+#
+# A NULL brand ($7 IS NULL) is NOT that rule narrowed to the unattributed
+# rows -- `$7 IS NULL OR ...` makes the disjunction TRUE, so the brand filter
+# disappears entirely. That is deliberate and matches deps.user_brand_id
+# (None for group-wide roles) and require_customer_in_scope, which returns
+# early for the same session: list, search and read agree on "unpinned".
+# Narrowing only the list here would make read and list disagree, and the
+# group filter is disabled the same way when $6 IS NULL.
+# tests/test_brand_isolation.py::test_brand_less_session_sees_all_customers
+# pins it, and PATCH /staff/{id} is require_admin (routers/identity.py), so a
+# non-admin cannot reach the brand-less state to begin with.
 
 LIST_CUSTOMERS_SQL = """
 SELECT id, member_id, external_member_id, full_name, tier_code, created_at,
@@ -333,6 +356,12 @@ WHERE deleted_at IS NULL
      AND s.channel = 'sms' AND s.status = $5))
   AND ($1::timestamptz IS NULL OR (created_at, id) < ($1::timestamptz, $2::uuid))
   AND ($6::uuid IS NULL OR group_id = $6::uuid OR group_id IS NULL)
+  AND ($7::uuid IS NULL OR EXISTS
+    (SELECT 1 FROM orders o JOIN stores s ON s.id = o.store_id
+     WHERE o.customer_id = customers.id AND o.status = 'completed'
+     AND s.brand_id = $7::uuid)
+    OR NOT EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = customers.id
+     AND o.status = 'completed'))
 ORDER BY created_at DESC, id DESC
 LIMIT $3
 """
@@ -365,6 +394,12 @@ WHERE deleted_at IS NULL
     (SELECT 1 FROM consents s WHERE s.customer_id = customers.id
      AND s.channel = 'sms' AND s.status = $2))
   AND ($3::uuid IS NULL OR group_id = $3::uuid OR group_id IS NULL)
+  AND ($4::uuid IS NULL OR EXISTS
+    (SELECT 1 FROM orders o JOIN stores s ON s.id = o.store_id
+     WHERE o.customer_id = customers.id AND o.status = 'completed'
+     AND s.brand_id = $4::uuid)
+    OR NOT EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = customers.id
+     AND o.status = 'completed'))
 """
 
 OFFSET_CUSTOMERS_SQL = """
@@ -377,6 +412,12 @@ WHERE deleted_at IS NULL
     (SELECT 1 FROM consents s WHERE s.customer_id = customers.id
      AND s.channel = 'sms' AND s.status = $4))
   AND ($5::uuid IS NULL OR group_id = $5::uuid OR group_id IS NULL)
+  AND ($6::uuid IS NULL OR EXISTS
+    (SELECT 1 FROM orders o JOIN stores s ON s.id = o.store_id
+     WHERE o.customer_id = customers.id AND o.status = 'completed'
+     AND s.brand_id = $6::uuid)
+    OR NOT EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = customers.id
+     AND o.status = 'completed'))
 ORDER BY created_at DESC, id DESC
 LIMIT $1 OFFSET $2
 """
@@ -415,6 +456,7 @@ async def list_customers_page(
     tier_code: str | None = None,
     sms_status: str | None = None,
     group_id: UUID | None = None,
+    brand_id: UUID | None = None,
 ) -> tuple[list[dict], str | None]:
     """Newest-first page of customer summaries with FULL contacts (staff override
     2026-10-08: staff MUST see full values; mask helpers retained but unused).
@@ -429,7 +471,8 @@ async def list_customers_page(
         cursor_at, cursor_id = decode_customer_cursor(cursor)
     tier, sms = normalize_filters(tier_code, sms_status)
     rows = await conn.fetch(
-        LIST_CUSTOMERS_SQL, cursor_at, cursor_id, limit + 1, tier, sms, group_id
+        LIST_CUSTOMERS_SQL, cursor_at, cursor_id, limit + 1, tier, sms, group_id,
+        brand_id,
     )
     page = [dict(r) for r in rows]
     next_cursor = None
@@ -501,6 +544,7 @@ async def list_customers_offset(
     tier_code: str | None = None,
     sms_status: str | None = None,
     group_id: UUID | None = None,
+    brand_id: UUID | None = None,
 ) -> dict:
     """Numbered page (1-based) of enriched customer summaries.
 
@@ -510,9 +554,10 @@ async def list_customers_offset(
     from .paging import offset_payload
 
     tier, sms = normalize_filters(tier_code, sms_status)
-    total = await conn.fetchval(COUNT_CUSTOMERS_SQL, tier, sms, group_id)
+    total = await conn.fetchval(COUNT_CUSTOMERS_SQL, tier, sms, group_id, brand_id)
     rows = await conn.fetch(
-        OFFSET_CUSTOMERS_SQL, page_size, (page - 1) * page_size, tier, sms, group_id
+        OFFSET_CUSTOMERS_SQL, page_size, (page - 1) * page_size, tier, sms,
+        group_id, brand_id,
     )
     items = (
         await enrich_customer_page(conn, [dict(r) for r in rows]) if rows else []

@@ -16,7 +16,13 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
-from ..deps import CurrentUser, check_search_rate_limit, get_current_user, get_pool
+from ..deps import (
+    CurrentUser,
+    check_search_rate_limit,
+    get_current_user,
+    get_pool,
+    session_brand,
+)
 from ..repos import customers as customers_repo
 from ..repos import search as repo
 from ..repos.paging import clamp_page_size
@@ -53,7 +59,7 @@ async def post_search(
             items, criteria_type = await repo.search(
                 conn, phone=body.phone, email=body.email,
                 name=body.name, member_id=body.member_id,
-                group_id=user.group_id,
+                group_id=user.group_id, brand_id=session_brand(user),
             )
         except ValueError as exc:
             raise _bad_phone_email(exc)
@@ -99,7 +105,7 @@ async def get_by_member_id(
                 payload = await customers_repo.list_customers_offset(
                     conn, page=page, page_size=size,
                     tier_code=tier, sms_status=sms,
-                    group_id=user.group_id,
+                    group_id=user.group_id, brand_id=session_brand(user),
                 )
                 await repo.write_audit(
                     conn, staff_id=user.staff_code, customer_id=None,
@@ -111,7 +117,7 @@ async def get_by_member_id(
                 items, next_cursor = await customers_repo.list_customers_page(
                     conn, limit=limit, cursor=cursor,
                     tier_code=tier, sms_status=sms,
-                    group_id=user.group_id,
+                    group_id=user.group_id, brand_id=session_brand(user),
                 )
             except ValueError:
                 raise HTTPException(status_code=400, detail={"code": "invalid_cursor"})
@@ -129,7 +135,9 @@ async def get_by_member_id(
     async with pool.acquire() as conn:
         items, _ = await repo.search(conn, phone=None, email=None, name=None,
                                      member_id=member_id.strip(),
-                                     group_id=user.group_id, member_partial=False)
+                                     group_id=user.group_id,
+                                     brand_id=session_brand(user),
+                                     member_partial=False)
         first_id = UUID(items[0]["id"]) if items else None
         await repo.write_audit(
             conn, staff_id=user.staff_code, customer_id=first_id,

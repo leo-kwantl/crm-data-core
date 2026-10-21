@@ -20,6 +20,7 @@ from ..deps import (
     CurrentUser,
     get_current_user,
     get_pool,
+    producer_of,
     require_customer_in_scope,
 )
 from ..repos import customer_events as repo
@@ -70,7 +71,11 @@ async def append_event(
             source=body.source,
             summary=body.summary,
             payload=body.payload,
-            created_by=body.created_by or user.staff_code,
+            # The producer is the acting session, never the caller: a
+            # client-supplied name would let one session write a row that
+            # names another, and a session without a staff row would write
+            # a row that names nobody.
+            created_by=producer_of(user),
         )
     return dict(row)
 

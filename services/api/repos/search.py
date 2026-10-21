@@ -21,7 +21,12 @@ import re
 from pathlib import Path
 from uuid import UUID
 
-QUERIES_PATH = Path(__file__).resolve().parents[3] / "db" / "queries" / "customers_search.sql"
+QUERIES_DIR = Path(__file__).resolve().parents[3] / "db" / "queries"
+# Shared with data, byte-mirrored (test_mirror_sql.py): scope-less callers.
+QUERIES_PATH = QUERIES_DIR / "customers_search.sql"
+# APP-ONLY scoped variants of the four capped statements (finding #75):
+# `LIMIT` must see the scoped set, and the shared file cannot carry app policy.
+SCOPED_QUERIES_PATH = QUERIES_DIR / "customers_search_scoped.sql"
 
 _NAME_RE = re.compile(r"^--\s*name:\s*(\w+)\s*$", re.M)
 NAME_LIMIT = 20
@@ -63,14 +68,24 @@ def name_tokens(needle: str) -> list[str]:
 
 
 def load_queries() -> dict[str, str]:
-    text = QUERIES_PATH.read_text(encoding="utf-8")
-    parts = _NAME_RE.split(text)
+    """`-- name:` blocks from the shared file plus the app-only scoped variants.
+
+    Two files on purpose: `customers_search.sql` is byte-mirrored against data,
+    so the brand/group predicates that app serving needs (finding #75) live in
+    `customers_search_scoped.sql`, which data does not have and must not police.
+    """
     out: dict[str, str] = {}
-    for i in range(1, len(parts) - 1, 2):
-        name, sql = parts[i], parts[i + 1]
-        lines = [ln for ln in sql.splitlines() if not ln.strip().startswith("-- name:")]
-        out[name] = "\n".join(lines).strip().rstrip(";")
+    for path in (QUERIES_PATH, SCOPED_QUERIES_PATH):
+        if not path.exists():
+            continue
+        parts = _NAME_RE.split(path.read_text(encoding="utf-8"))
+        for i in range(1, len(parts) - 1, 2):
+            name, sql = parts[i], parts[i + 1]
+            lines = [ln for ln in sql.splitlines()
+                     if not ln.strip().startswith("-- name:")]
+            out[name] = "\n".join(lines).strip().rstrip(";")
     return out
+
 
 
 def mask_phone(value: str) -> str:
@@ -142,7 +157,8 @@ async def _ids_for(conn, query: str, *args) -> set[str]:
 
 async def search(conn, *, phone: str | None, email: str | None,
                  name: str | None, member_id: str | None,
-                 group_id=None, member_partial: bool = True) -> tuple[list[dict], str]:
+                 group_id=None, brand_id=None,
+                 member_partial: bool = True) -> tuple[list[dict], str]:
     """AND-intersect per-criterion matches. Returns (items, criteria_type).
 
     Name matching is multi-keyword AND: every whitespace-separated token must
@@ -157,7 +173,16 @@ async def search(conn, *, phone: str | None, email: str | None,
     member_partial=False, which keeps the GET direct-fetch path exact-only.
 
     group_id (a UUID, or None for group-wide sessions) silos results to one
-    group; legacy ungrouped (NULL) rows stay visible to every session."""
+    group; legacy ungrouped (NULL) rows stay visible to every session.
+
+    brand_id (a UUID, or None for group-wide sessions) additionally requires
+    the customer to belong to that brand, or to none yet: a completed order in
+    the brand, OR no completed order anywhere (a fresh lead the store just
+    created must still be findable). Identical to deps.require_customer_in_scope
+    and to the list predicates in repos/customers.py, so a search hit and a
+    by-id read agree. Fail closed: routers pass the session brand, never a
+    request value.
+    """
     from ..schemas.customer import normalize_email, normalize_phone
 
     q = load_queries()
@@ -177,7 +202,8 @@ async def search(conn, *, phone: str | None, email: str | None,
         if exact:
             sets.append(exact)
         elif len(digits) >= PHONE_PARTIAL_MIN_DIGITS:
-            partial = await conn.fetch(q["customers_by_phone_partial"], digits, PHONE_PARTIAL_LIMIT)
+            partial = await conn.fetch(q["customers_by_phone_partial_scoped"], digits,
+                                        PHONE_PARTIAL_LIMIT, brand_id, group_id)
             sets.append({str(r["id"]) for r in partial})
         else:
             sets.append(set())
@@ -193,8 +219,8 @@ async def search(conn, *, phone: str | None, email: str | None,
             sets.append(exact)
         elif len(needle) >= EMAIL_PARTIAL_MIN_CHARS:
             partial = await conn.fetch(
-                q["customers_by_email_partial"],
-                escape_like(needle), EMAIL_PARTIAL_LIMIT,
+                q["customers_by_email_partial_scoped"],
+                escape_like(needle), EMAIL_PARTIAL_LIMIT, brand_id, group_id,
             )
             sets.append({str(r["id"]) for r in partial})
         else:
@@ -207,66 +233,85 @@ async def search(conn, *, phone: str | None, email: str | None,
             sets.append(exact)
         else:
             partial = await conn.fetch(
-                q["customers_by_member_id_partial"],
-                escape_like(needle), MEMBER_PARTIAL_LIMIT,
+                q["customers_by_member_id_partial_scoped"],
+                escape_like(needle), MEMBER_PARTIAL_LIMIT, brand_id, group_id,
             )
             sets.append({str(r["id"]) for r in partial})
         kinds.append("member_id")
     if name is not None:
         tokens = name_tokens(name)
-        rows = await conn.fetch(q["customers_by_name_tokens"], tokens, NAME_LIMIT)
+        rows = await conn.fetch(q["customers_by_name_tokens_scoped"], tokens, NAME_LIMIT,
+                                brand_id, group_id)
         sets.append({str(r["id"]) for r in rows})
         kinds.append("name")
     matched = set.intersection(*sets) if sets else set()
     criteria_type = kinds[0] if len(kinds) == 1 else "mixed"
-    if group_id is not None and matched:
+    if (group_id is not None or brand_id is not None) and matched:
+        preds: list[str] = []
+        args: list = [list(matched)]
+        if group_id is not None:
+            args.append(group_id)
+            preds.append(f"(group_id = ${len(args)}::uuid OR group_id IS NULL)")
+        if brand_id is not None:
+            args.append(brand_id)
+            preds.append(
+                f"(EXISTS (SELECT 1 FROM orders o JOIN stores s ON s.id = o.store_id"
+                f" WHERE o.customer_id = customers.id AND o.status = 'completed'"
+                f" AND s.brand_id = ${len(args)}::uuid)"
+                f" OR NOT EXISTS (SELECT 1 FROM orders o"
+                f" WHERE o.customer_id = customers.id"
+                f" AND o.status = 'completed'))"
+            )
         scoped = await conn.fetch(
-            "SELECT id FROM customers WHERE id = ANY($1::uuid[])"
-            " AND (group_id = $2::uuid OR group_id IS NULL)",
-            list(matched),
-            group_id,
+            "SELECT id FROM customers WHERE id = ANY($1::uuid[]) AND "
+            + " AND ".join(preds),
+            *args,
         )
         matched = {str(r["id"]) for r in scoped}
     if not matched:
         return [], criteria_type
     # Re-fetch full rows for matched ids (single query path per kind keeps SQL simple).
     if kinds == ["phone"]:
-        rows = await _phone_rows(conn, q, norm_phone, phone_digits(phone))
+        rows = await _phone_rows(conn, q, norm_phone, phone_digits(phone),
+                                 brand_id, group_id)
     elif kinds == ["email"]:
-        rows = await _email_rows(conn, q, norm_email, (email or "").strip().lower())
+        rows = await _email_rows(conn, q, norm_email, (email or "").strip().lower(),
+                                 brand_id, group_id)
     elif kinds == ["member_id"]:
         needle = (member_id or "").strip()
         rows = await conn.fetch(q["customers_by_member_id"], needle)
         if not rows and member_partial:
             rows = await conn.fetch(
-                q["customers_by_member_id_partial"],
-                escape_like(needle), MEMBER_PARTIAL_LIMIT,
+                q["customers_by_member_id_partial_scoped"],
+                escape_like(needle), MEMBER_PARTIAL_LIMIT, brand_id, group_id,
             )
     elif kinds == ["name"]:
         rows = await conn.fetch(
-            q["customers_by_name_tokens"], name_tokens(name or ""), NAME_LIMIT
+            q["customers_by_name_tokens_scoped"], name_tokens(name or ""), NAME_LIMIT,
+            brand_id, group_id,
         )
     else:  # mixed: fetch by member/uuid-safe fallback via name-limited scan
         rows = await conn.fetch(
-            q["customers_by_name_tokens"],
+            q["customers_by_name_tokens_scoped"],
             name_tokens(name or "") if name else [],
-            NAME_LIMIT,
+            NAME_LIMIT, brand_id, group_id,
         )
         rows = [r for r in rows if str(r["id"]) in matched]
         if not rows and matched:
             # mixed without name: pull each single-criterion set's rows cheaply
             rows = []
             if phone is not None:
-                rows += [r for r in await _phone_rows(conn, q, norm_phone, phone_digits(phone)) if str(r["id"]) in matched]
+                rows += [r for r in await _phone_rows(conn, q, norm_phone, phone_digits(phone), brand_id, group_id) if str(r["id"]) in matched]
             if email is not None:
-                rows += [r for r in await _email_rows(conn, q, norm_email, (email or "").strip().lower()) if str(r["id"]) in matched]
+                rows += [r for r in await _email_rows(conn, q, norm_email, (email or "").strip().lower(), brand_id, group_id) if str(r["id"]) in matched]
             if member_id is not None:
                 needle = member_id.strip()
                 mrows = await conn.fetch(q["customers_by_member_id"], needle)
                 if not mrows and member_partial:
                     mrows = await conn.fetch(
-                        q["customers_by_member_id_partial"],
+                        q["customers_by_member_id_partial_scoped"],
                         escape_like(needle), MEMBER_PARTIAL_LIMIT,
+                        brand_id, group_id,
                     )
                 rows += [r for r in mrows if str(r["id"]) in matched]
     rows = [r for r in rows if str(r["id"]) in matched]
@@ -276,26 +321,32 @@ async def search(conn, *, phone: str | None, email: str | None,
 
 
 async def _email_rows(conn, q: dict[str, str], norm_email: str | None,
-                    needle: str) -> list:
+                    needle: str, brand_id=None, group_id=None) -> list:
     """Exact normalized email rows first, case-insensitive substring
     fallback when the exact lookup is empty or the input never normalized.
-    The needle is lowercased + LIKE-escaped by the caller."""
+    The needle is lowercased + LIKE-escaped by the caller.
+
+    brand_id/group_id go into the capped fallback so its LIMIT applies after
+    scoping (finding #75); the exact lookup has no cap and needs none.
+    """
     rows = await conn.fetch(q["customers_by_email"], norm_email) if norm_email else []
     if not rows and len(needle) >= EMAIL_PARTIAL_MIN_CHARS:
         rows = await conn.fetch(
-            q["customers_by_email_partial"],
-            escape_like(needle), EMAIL_PARTIAL_LIMIT,
+            q["customers_by_email_partial_scoped"],
+            escape_like(needle), EMAIL_PARTIAL_LIMIT, brand_id, group_id,
         )
     return rows
 
 
 async def _phone_rows(conn, q: dict[str, str], norm_phone: str | None,
-                    digits: str) -> list:
+                    digits: str, brand_id=None, group_id=None) -> list:
     """Exact normalized phone rows first, digit-substring fallback when the
-exact lookup is empty or the input never normalized."""
+exact lookup is empty or the input never normalized. Scope args go into the
+capped fallback (finding #75)."""
     rows = await conn.fetch(q["customers_by_phone"], norm_phone) if norm_phone else []
     if not rows and len(digits) >= PHONE_PARTIAL_MIN_DIGITS:
-        rows = await conn.fetch(q["customers_by_phone_partial"], digits, PHONE_PARTIAL_LIMIT)
+        rows = await conn.fetch(q["customers_by_phone_partial_scoped"], digits,
+                                PHONE_PARTIAL_LIMIT, brand_id, group_id)
     return rows
 
 

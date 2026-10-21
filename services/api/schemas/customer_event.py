@@ -24,7 +24,9 @@ class CustomerEventCreate(BaseModel):
     source: str = Field(default="manual", min_length=1, max_length=64)
     summary: str = Field(min_length=1, max_length=2000)
     payload: dict[str, Any] = Field(default_factory=dict)
-    created_by: str | None = Field(default=None, description="Defaults to the session staff_code")
+    # No created_by on the way in: the producer is the acting session
+    # (see deps.producer_of), so a client cannot write a row that names
+    # somebody else. The response still carries created_by.
 
     @field_validator("kind")
     @classmethod

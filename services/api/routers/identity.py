@@ -1,11 +1,18 @@
 """Identity endpoints: staff roster + login-account records + password admin.
 
 Auth is session-based (routers/auth.py issues tokens; deps.get_current_user
-guards). Only GET /staff (the roster list) stays public; every other route
-here needs a session. Role gates (deps.require_admin, 403 otherwise):
-user create/update/password-reset and staff create/delete are admin-only —
-manager/sa get all data but no account administration. Backend 403 is the
-real guard; frontend role-hiding is best-effort only.
+guards). Only GET /staff (the roster list) stays readable without a session,
+and only in a reduced projection (review §7.2-4): a session sends
+`x-session-token` and gets the full row. Role gates (deps.require_admin, 403
+otherwise): user create/update/password-reset and staff create/update/delete
+are admin-only — manager/sa get all data but no account administration.
+Backend 403 is the real guard; frontend role-hiding is best-effort only.
+
+PATCH /staff/{id} is admin-only because the body can move a staff row's
+brand_id (and its store/role), and a session's brand/group is re-derived from
+that row on every request (repos/auth.py get_session_user). A non-admin who
+could patch their own row could clear brand_id and turn a brand-scoped session
+into a group-wide one, which makes deps.py's scope checks pass (finding 7.2-1).
 """
 
 from __future__ import annotations
@@ -14,9 +21,18 @@ from typing import Annotated
 from uuid import UUID
 
 import asyncpg
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 
-from ..deps import CurrentUser, get_current_user, get_pool, get_session_token, require_admin
+from ..deps import (
+    CurrentUser,
+    check_ip_rate_limit,
+    client_ip,
+    get_current_user,
+    get_current_user_optional,
+    get_pool,
+    get_session_token,
+    require_admin,
+)
 from ..repos import auth as auth_repo
 from ..repos import identity as repo
 from ..repos.paging import clamp_page_size
@@ -33,16 +49,41 @@ def _dup(exc: Exception, code: str) -> HTTPException:
 
 # --- staff ---
 
+# The pre-login roster (login page staff picker) may name who works here and
+# nothing else. `staff_code` + `full_name` are what the picker renders; `role`
+# is org structure and `store_code`/`brand_code` locate a person, so neither is
+# needed to pick them and both are enumeration surface. An allowlist, not a
+# denylist, so a new staff column cannot leak by default (review §7.2-4).
+_CACHE_RATE_LIMIT = 120
+_PUBLIC_STAFF_FIELDS = frozenset({"staff_code", "full_name"})
+
+
+def _public_staff(row: dict) -> dict:  # type: ignore[type-arg]
+    return {k: v for k, v in row.items() if k in _PUBLIC_STAFF_FIELDS}
+
+
 @router.get("/staff")
 async def list_staff(
+    request: Request,
     pool: Annotated[asyncpg.Pool, Depends(get_pool)],
+    user: Annotated[CurrentUser | None, Depends(get_current_user_optional)],
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
     cursor: Annotated[str | None, Query()] = None,
     page: Annotated[int | None, Query(ge=1)] = None,
     page_size: Annotated[int, Query()] = 20,
     q: Annotated[str | None, Query(max_length=200)] = None,
 ) -> dict:
-    # Public: the roster stays readable pre-login (as before the auth cutover).
+    """Roster list. Anonymous callers get one page, two fields, and no
+    `next_cursor`: the cursor is base64 JSON carrying the row id, so handing
+    it to an unauthenticated caller would leak exactly what the projection
+    withholds. The login picker only needs the first page; the staff admin
+    page is authenticated and pages normally."""
+    if user is None:
+        # No session to key on, so the address is the rate-limit identity.
+        check_ip_rate_limit(client_ip(request), route="staff-directory",
+                            limit=_CACHE_RATE_LIMIT)
+        items, _ = await repo.list_staff_page(pool, limit=limit, cursor=None, q=q)
+        return {"data": [_public_staff(r) for r in items], "next_cursor": None}
     if page is not None:
         return await repo.list_staff_offset(
             pool, page=page, page_size=clamp_page_size(page_size), q=q
@@ -93,10 +134,10 @@ async def create_staff(
 async def patch_staff(
     row_id: UUID,
     payload: StaffUpdate,
-    user: Annotated[CurrentUser, Depends(get_current_user)],
+    admin: Annotated[CurrentUser, Depends(require_admin)],
     pool: Annotated[asyncpg.Pool, Depends(get_pool)],
 ) -> dict:
-    _ = user
+    _ = admin
     try:
         data = await repo.update_staff(
             pool,
