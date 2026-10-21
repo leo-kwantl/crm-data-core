@@ -104,3 +104,72 @@ async def test_nightly_writes_every_brand_scoped_surface(database_url: str):
     assert (nightly["jobs"]["forecast"]["params"]
             == docs["weekly"]["jobs"]["forecast"]["params"]), (
         "the nightly and weekly forecast jobs disagree on params")
+
+
+async def test_the_scopes_block_names_the_scopes_the_tick_dispatches(database_url: str):
+    """057: the manifest's `scopes:` block names what the tick really does.
+
+    The block promised a group leg -- `groups: ['*']` -- that the tick never
+    offered any engine: `tick_scopes` returns one `(brand_id, NULL)` scope
+    per brand and then the `(NULL, NULL)` hq roll-up, so a group scope was a
+    scope no writer had ever been asked for. The block is now the truth about
+    the dispatch, which is only worth anything if it agrees with the
+    dispatcher -- so the test reads both.
+    """
+    import asyncpg
+    import yaml
+
+    from pipelines import schedule as sched
+
+    pool = await asyncpg.create_pool(database_url)
+    try:
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT pipeline, yaml FROM pipeline_manifests"
+                " WHERE pipeline IN ('nightly', 'weekly')")
+            dispatched = await sched.tick_scopes(conn)
+            n_brands = await conn.fetchval("SELECT count(*) FROM brands")
+    finally:
+        await pool.close()
+
+    docs = {r["pipeline"]: yaml.safe_load(r["yaml"])["pipelines"][r["pipeline"]]
+            for r in rows}
+    assert docs, "no manifest row to check"
+    for name, doc in docs.items():
+        assert doc["scopes"] == {"brands": ["*"], "hq": ["*"]}, (
+            f"{name} declares scopes {doc['scopes']}; the block must name the"
+            f" scopes the tick dispatches -- every brand and the hq roll-up --"
+            f" and no group")
+    # The block and the dispatcher must agree, or the manifest is a promise
+    # about something the tick does not do.
+    brand_legs = [b for b, g in dispatched if b is not None]
+    assert all(g is None for _, g in dispatched), (
+        f"the tick dispatches a group leg: {dispatched}; a group scope is the"
+        f" pair (brand_id, group_id), and no writer produces one")
+    assert len(brand_legs) == n_brands, (
+        f"the tick dispatches {len(brand_legs)} brand legs for {n_brands}"
+        f" brands; `brands: ['*']` promises every brand")
+    assert dispatched[-1] == (None, None), "the hq roll-up must be last"
+
+    # A re-run of the migration must change nothing: it is gated on the old
+    # block's presence, and after the rewrite that block is gone.
+    from services.api.tests.conftest import MIGRATIONS_DIR, UP_RE
+
+    text = (MIGRATIONS_DIR / "057_manifest_scopes_brands_hq.sql").read_text(
+        encoding="utf-8")
+    up = UP_RE.search(text).group(1).strip()
+    pool = await asyncpg.create_pool(database_url)
+    try:
+        async with pool.acquire() as conn:
+            before = await conn.fetch(
+                "SELECT pipeline, yaml, version FROM pipeline_manifests"
+                " ORDER BY pipeline")
+            await conn.execute(up)
+            after = await conn.fetch(
+                "SELECT pipeline, yaml, version FROM pipeline_manifests"
+                " ORDER BY pipeline")
+    finally:
+        await pool.close()
+    assert [dict(r) for r in before] == [dict(r) for r in after], (
+        "re-applying 057 changed the manifests; the migration is not a no-op"
+        " on its second run")
