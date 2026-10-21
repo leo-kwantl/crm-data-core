@@ -1,6 +1,7 @@
 -- Demo seed (never mixed with real rows). Idempotent via fixed UUIDs.
 -- 8 customers (one optical w/ attributes.eye), contacts, consents (one all-opted-out),
 -- 2 stores, 12 products, 15 orders w/ items spanning ~6 months.
+-- Recovery by hand (no DELETE here): the demo orders that are not the earliest for their (customer, amount) demo key, on the synthetic demo customers only.
 
 -- Stores (brand_id explicit: migration 011 made it NOT NULL, and the DEMO
 -- brand row is inserted by the migration before any seed runs).

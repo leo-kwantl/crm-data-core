@@ -29,7 +29,7 @@ After editing this file, run `python scripts/audit_doc_cites.py`.
 - § 031: time-aware RFM storage (LD8, [ADDITIVE] analytics, joint with ml) — `window_key`, v2 rows, movement pairs, unscoped aggregates.
 - § 037: backtest outcomes (M2, [ADDITIVE] analytics, joint with ml) — one row per customer/model/window, append-only.
 - § The stamped set: which relations carry a scope stamp (app+data+ml, 2026-10-17) — carriers, inheritors, negatives, unscoped outputs.
-- § Tree ownership & the mirror boundary (app ruling 2026-10-17) — app's checkout is the base; copy the import closure.
+- § Tree ownership & the mirror boundary (manager ruling 2026-10-22) — a file in both trees is edited in its owner's tree; the other tree's copy is refreshed from the owner's HEAD.
 - § `pipeline_runs`: what a reader may rely on (2026-10-20) — three stored statuses, terminal rows, stale `running`.
 - § The expectation floor: what "no row" means per job (2026-10-20) — cadence comes from the manifest row.
 - § The customer list's value and risk: one snapshot, one row per customer (2026-10-21) — newest snapshot in scope, NULL = not scored.

@@ -1,9 +1,11 @@
 """The shared runtime files must byte-equal app's checkout (A114, part 3).
 
-Data's rule (AGENTS.md § Repo rules): for any file present in **both**
-trees, app's checkout is the base — sync it byte-for-byte, never fork it.
-That rule had no check, so a shared runtime file under `services/api/`
-could drift with nothing to say so.
+Data's rule (canonical home: the manager's `../AGENTS.md` § Ownership): a
+file present in **both** trees is edited in its **owner's** tree, and the
+other tree's copy is refreshed from the owner's HEAD. For the shared
+runtime files this guard compares, the owner is app, so app's HEAD blob is
+the base. That rule had no check, so a shared runtime file under
+`services/api/` could drift with nothing to say so.
 
 The comparison is on the normalised text (CRLF -> LF) against app's HEAD
 blob: both trees are checked out with `core.autocrlf=true`, so a worktree
