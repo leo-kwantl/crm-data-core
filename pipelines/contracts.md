@@ -260,7 +260,7 @@ A non-default cap is rejected by name — `422 {"code": "non_default_m_cap_pct",
 Cap experiments belong on the live endpoints, which persist nothing.
 - Edge 1: the cap is consulted **only on the quintile path** — `score_rfm` validates and applies it in the `else` branch alone (`:292-295`, reported `:317`), so a population below `QUINTILE_MIN_POPULATION` (`QUINTILE_MIN_POPULATION`) takes `_fallback_scores` (`:289`) and is stamped `method="threshold_fallback"` (`:290`): the cap is never read, and that path's `m` boundaries are median-relative with no `m_cap_pct` key.
 - Edge 1 scope caveat: the cap statement above is therefore honest only on the quintile path — irrelevant at the live population, but it bounds the app refusals too, which guard a parameter the engine may not consult.
-- Edge 2: `DEFAULT_M_CAP_PCT` (`:26`) is covered by **no version string** — `RULES_VERSION = "v1"` (`:24`) and `RULES_V2 = "v2"` (`store_ld8.py:36`) version the segmentation ruleset, not the cap — so changing that constant is a **contract event (@both)**, not a refactor: every stored row's M cuts would lose their stated derivation and no column records it.
+- Edge 2: `DEFAULT_M_CAP_PCT` (`:26`) is covered by **no version string** — `RULES_VERSION = "v1"` (`:24`) and `RULES_V2 = "v2"` (`store_ld8.py:36`) **label the two stored series, not the rules and not the cap** (both series run the same maths — see the same-maths note above) — so changing that constant is a **contract event (@both)**, not a refactor: every stored row's M cuts would lose their stated derivation and no column records it.
 
 **Scope is a run-level dimension, and an unattended fire fans it out per brand.**
 
