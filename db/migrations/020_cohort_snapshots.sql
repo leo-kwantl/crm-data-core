@@ -12,7 +12,9 @@
 -- (cohort_period + k·granularity); retention_rate = retained/cohort_size
 -- (NULL when cohort_size = 0). Offset 0 is 1.0 by construction.
 -- Writer: COHORT_SNAPSHOT_UPSERT_SQL in pipelines/snapshot.py
--- (re-run = no-op via the grain UNIQUE).
+-- (a re-run RE-MEASURES its cells - ON CONFLICT ... DO UPDATE on this
+-- index's expressions - and deletes the cells the population no longer
+-- produces; see 056 and pipelines/contracts.md "020").
 
 CREATE TABLE cohort_snapshots (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),

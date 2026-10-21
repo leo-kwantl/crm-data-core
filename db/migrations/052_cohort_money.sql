@@ -10,10 +10,11 @@
 --
 -- Money is integer cents, never a float. NOT NULL DEFAULT 0: a row
 -- written before this migration reads 0 cents, which means "not
--- measured" - a reader must say "no money yet", never "$0.00". A grain
--- the writer has already frozen keeps the value it was written with
--- (the grain UNIQUE makes a re-run a no-op), so historical rows need a
--- backfill before they can carry money.
+-- measured" - a reader must say "no money yet", never "$0.00". Since the
+-- writer re-measures its cells (a re-run is no longer a no-op - see
+-- 020_cohort_snapshots.sql and pipelines/contracts.md "020"), the next
+-- run fills the money in the historical rows and no separate backfill is
+-- needed.
 
 ALTER TABLE cohort_snapshots
   ADD COLUMN retained_cents bigint NOT NULL DEFAULT 0

@@ -1,7 +1,8 @@
 """Cohort-retention snapshot tests (data D2, 020).
 
 Pure unit: retention_rate edges + SQL shape. DB: month-grain upsert over
-seeded orders produces the agreed grain rows; re-run is a no-op.
+seeded orders produces the agreed grain rows; a re-run keeps one row per
+cell (the grain) and re-measures the values.
 """
 from __future__ import annotations
 
@@ -32,7 +33,20 @@ def test_retention_rate_edges():
 def test_cohort_sql_shape():
     assert set(COHORT_GRANULARITIES) == {"week", "month", "year"}
     assert "cohort_snapshots" in COHORT_SNAPSHOT_UPSERT_SQL
-    assert "ON CONFLICT DO NOTHING" in COHORT_SNAPSHOT_UPSERT_SQL
+    # The conflict target must be the grain index's EXPRESSIONS (a bare
+    # column list cannot infer an expression index, and a wrong target
+    # fails at runtime, not at review).
+    assert "ON CONFLICT (granularity, cohort_period, period_offset," \
+        in COHORT_SNAPSHOT_UPSERT_SQL
+    assert "COALESCE(brand_id, '00000000-0000-0000-0000-000000000000'::uuid)" \
+        in COHORT_SNAPSHOT_UPSERT_SQL
+    assert "COALESCE(group_id, '00000000-0000-0000-0000-000000000000'::uuid)" \
+        in COHORT_SNAPSHOT_UPSERT_SQL
+    # A re-run RE-MEASURES its cells (DO UPDATE) and deletes the cells
+    # the population no longer produces.
+    assert "DO UPDATE SET" in COHORT_SNAPSHOT_UPSERT_SQL
+    assert "DO NOTHING" not in COHORT_SNAPSHOT_UPSERT_SQL
+    assert "DELETE FROM cohort_snapshots" in COHORT_SNAPSHOT_UPSERT_SQL
     assert "cohort_snapshots" in COHORT_TREND_SQL
     # Business-day rule (contracts.md): every trunc that decides a bucket
     # carries the +08 offset, and the zone NAME is carried with it so the
@@ -51,7 +65,11 @@ COHORT_MEMBERS = ("M-000021", "M-000022", "M-000023")
 
 @pytest.mark.asyncio
 async def test_cohort_month_upsert_and_rerun_noop(database_url: str):
-    """Jan cohort {c1, c2}, Feb cohort {c3}; c1 re-orders in Feb."""
+    """Jan cohort {c1, c2}, Feb cohort {c3}; c1 re-orders in Feb.
+
+    The re-run adds NO ROWS (the grain is unchanged) and re-measures the
+    values - see services/api/tests/test_cohort_writer.py.
+    """
     import asyncpg
 
     pool = await asyncpg.create_pool(database_url)

@@ -4,6 +4,24 @@ Dated entries of what landed. A log is not a doc: it carries no rule, and an ent
 becomes a practice moves into `pipelines/contracts.md` or the repo's `AGENTS.md` without
 its date. The live gap list is in `pipelines/README.md` § Status.
 
+## Status — SHIPPED 2026-10-22: the cohort writer re-measures its cells
+
+- **`pipelines/snapshot.py`:** `COHORT_SNAPSHOT_UPSERT_SQL` now UPDATES the
+  cells it measures (`ON CONFLICT ... DO UPDATE` on the grain index's
+  expressions) instead of `DO NOTHING`, deletes the cells the population no
+  longer produces (this granularity and scope only), and stamps every row it
+  writes with the run's write time - so one grid carries ONE vintage.
+  `POPULATION_RULE` names the population a row describes;
+  `assert_cohorts_disjoint` + `COHORT_GRID_SIZE_SQL` fail the run when the
+  grid's per-cohort sizes do not add up to the scope's distinct customers.
+- **`db/migrations/056_cohort_population_rule.sql`:** additive
+  `cohort_snapshots.population_rule` (its default is the writer's constant,
+  byte for byte).
+- **Checks:** `services/api/tests/test_cohort_writer.py` (six checks, each
+  failing if the writer's change is reverted) and
+  `scripts/mutation_check_cohort_writer.py` (the receipt).
+- The contract and the reader's side: `pipelines/contracts.md` "020".
+
 ## Status — SHIPPED 2026-10-09: daily snapshot history
 
 - **`013_analytics_history.sql`:** `clv/churn_snapshots` (+ per-customer

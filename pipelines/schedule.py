@@ -59,7 +59,9 @@ from pipelines import retention  # noqa: E402
 from pipelines import upload as up  # noqa: E402
 from pipelines.snapshot import (  # noqa: E402
     COHORT_GRANULARITIES,
+    COHORT_GRID_SIZE_SQL,
     COHORT_SNAPSHOT_UPSERT_SQL,
+    assert_cohorts_disjoint,
     KPI_DAILY_UPSERT_SQL,
     business_today,
 )
@@ -806,8 +808,18 @@ async def _run_data_engine(engine: str, params: dict,
                 raise ManifestError(
                     f"cohort_snapshot max_offset {max_off!r} for "
                     f"{gran!r} must be >= 0")
-            await conn.execute(COHORT_SNAPSHOT_UPSERT_SQL, gran, max_off,
-                               ctx.brand_id, ctx.group_id)
+            # The writer re-measures its cells and deletes the ones this
+            # population no longer produces, so the grid carries ONE
+            # vintage. It also returns the scope's distinct customers,
+            # which the grid's own per-cohort sizes must add up to - the
+            # cohorts must be DISJOINT, or the reader's headline (the sum
+            # of the per-cohort sizes) overcounts with no signal.
+            row = await conn.fetchrow(COHORT_SNAPSHOT_UPSERT_SQL, gran,
+                                      max_off, ctx.brand_id, ctx.group_id)
+            grid_size_sum = await conn.fetchval(
+                COHORT_GRID_SIZE_SQL, gran, ctx.brand_id, ctx.group_id)
+            assert_cohorts_disjoint(int(grid_size_sum), int(row["population"]),
+                                    gran, ctx.brand_id, ctx.group_id)
         return None
     raise UnknownEngineError(f"unknown data engine {engine!r}")
 

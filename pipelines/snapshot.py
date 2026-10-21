@@ -147,13 +147,23 @@ ORDER BY snapshot_date
 # construction. Week periods start Monday (date_trunc('week')).
 # Params: $1 granularity ('week'|'month'|'year'), $2 max_offset (>= 0),
 # $3 brand_id scope (NULL = all), $4 group_id scope (NULL = all).
-# Re-run = no-op via the grain UNIQUE in 020_cohort_snapshots.sql.
+# A re-run RE-MEASURES its cells (ON CONFLICT ... DO UPDATE on the grain
+# index's expressions) and DELETES the cells this run's population no
+# longer produces, so the grid carries one vintage and one population.
 #
 # Business-day boundary: the product's calendar day is Asia/Hong_Kong
 # (+08, no DST) — see contracts.md "Day boundary is business time".
 # The zone NAME is carried here even though the SQL must use the offset
 # form: this pgembed install ships no tzdata, so
 COHORT_GRANULARITIES = ("week", "month", "year")
+
+# The population a cohort row is about, in words the reader can print
+# without reading our DDL: the cohort period is derivable from the row,
+# the RULE that places a customer in a cohort is not. The column's DDL
+# default (056) is the same string - a test asserts they are equal.
+POPULATION_RULE = (
+    "customers whose first completed order (business calendar, UTC+08)"
+    " falls in the cohort period, within the scope of this row")
 
 
 def retention_rate(cohort_size: int, retained: int) -> float | None:
@@ -206,21 +216,83 @@ retained AS (
   JOIN scoped_orders so ON so.customer_id = co.customer_id
     AND date_trunc($1::text, so.ordered_at {BUSINESS_TZ_SQL})::date = p.period_start
   GROUP BY p.cohort, p.k
+),
+produced AS (
+  SELECT p.cohort AS cohort_period, p.k AS period_offset,
+         cs.n AS cohort_size,
+         COALESCE(r.n, 0) AS retained,
+         CASE WHEN cs.n = 0 THEN NULL
+              ELSE COALESCE(r.n, 0)::float / cs.n END AS retention_rate,
+         COALESCE(r.cents, 0) AS retained_cents
+  FROM periods p
+  JOIN cohort_size cs ON cs.cohort = p.cohort
+  LEFT JOIN retained r ON r.cohort = p.cohort AND r.k = p.k
+),
+upserted AS (
+  INSERT INTO cohort_snapshots
+    (granularity, cohort_period, period_offset, cohort_size, retained,
+     retention_rate, retained_cents, brand_id, group_id, population_rule)
+  SELECT $1::text, cohort_period, period_offset, cohort_size, retained,
+         retention_rate, retained_cents, $3::uuid, $4::uuid,
+         '{POPULATION_RULE}'
+  FROM produced
+  ON CONFLICT (granularity, cohort_period, period_offset,
+               COALESCE(brand_id, '00000000-0000-0000-0000-000000000000'::uuid),
+               COALESCE(group_id, '00000000-0000-0000-0000-000000000000'::uuid))
+  DO UPDATE SET cohort_size = EXCLUDED.cohort_size,
+                retained = EXCLUDED.retained,
+                retention_rate = EXCLUDED.retention_rate,
+                retained_cents = EXCLUDED.retained_cents,
+                population_rule = EXCLUDED.population_rule,
+                created_at = now()
+),
+deleted AS (
+  DELETE FROM cohort_snapshots cs
+  WHERE cs.granularity = $1::text
+    AND cs.brand_id IS NOT DISTINCT FROM $3::uuid
+    AND cs.group_id IS NOT DISTINCT FROM $4::uuid
+    AND NOT EXISTS (
+      SELECT 1 FROM produced p
+      WHERE p.cohort_period = cs.cohort_period
+        AND p.period_offset = cs.period_offset)
 )
-INSERT INTO cohort_snapshots
-  (granularity, cohort_period, period_offset, cohort_size, retained,
-   retention_rate, retained_cents, brand_id, group_id)
-SELECT $1::text, p.cohort, p.k, cs.n,
-       COALESCE(r.n, 0),
-       CASE WHEN cs.n = 0 THEN NULL
-            ELSE COALESCE(r.n, 0)::float / cs.n END,
-       COALESCE(r.cents, 0),
-       $3::uuid, $4::uuid
-FROM periods p
-JOIN cohort_size cs ON cs.cohort = p.cohort
-LEFT JOIN retained r ON r.cohort = p.cohort AND r.k = p.k
-ON CONFLICT DO NOTHING
+SELECT (SELECT COUNT(DISTINCT customer_id) FROM cohort_of)::bigint
+       AS population
 """
+
+# The grid's own size, counted the way the READER counts it: one size per
+# cohort (the row repeats the cohort's size on every offset row), summed
+# over the cohorts. App's cohort router reads this table and reports the
+# sum as the number of customers the analysis covers.
+COHORT_GRID_SIZE_SQL = """
+SELECT COALESCE(SUM(n), 0)::bigint AS grid_size_sum
+FROM (
+  SELECT cohort_period, MAX(cohort_size) AS n
+  FROM cohort_snapshots
+  WHERE granularity = $1::text
+    AND brand_id IS NOT DISTINCT FROM $2::uuid
+    AND group_id IS NOT DISTINCT FROM $3::uuid
+  GROUP BY cohort_period
+) g
+"""
+
+
+def assert_cohorts_disjoint(grid_size_sum: int, population: int,
+                            granularity: str, brand_id, group_id) -> None:
+    """Fail when the grid's cohorts OVERLAP (app's headline overcounts).
+
+    The reader's headline is the SUM of the per-cohort sizes, and it is
+    the number of distinct customers the analysis covers only if a
+    customer sits in exactly ONE cohort per grain. The query cannot check
+    that, so the writer does: the grid's per-cohort sizes must add up to
+    the scope's distinct customers.
+    """
+    if int(grid_size_sum) != int(population):
+        raise RuntimeError(
+            f"cohort grid {granularity} (brand={brand_id}, group={group_id}):"
+            f" the per-cohort sizes sum to {grid_size_sum} but the scope"
+            f" holds {population} distinct customers - the cohorts"
+            f" overlap, so the headline overcounts")
 
 COHORT_TREND_SQL = """
 SELECT cohort_period, period_offset, cohort_size, retained, retention_rate,

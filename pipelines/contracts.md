@@ -521,13 +521,30 @@ Math: cohort of a customer = `date_trunc(granularity,` first completed order).
 `retained(k)` = cohort members with ≥1 completed order in period (`cohort_period` + k·granularity).
 `retention_rate` = `retained`/`cohort_size` (NULL when empty; offset 0 is 1.0 by construction).
 Week periods start Monday.
-Writer re-run = no-op via the grain UNIQUE.
+Writer re-run RE-MEASURES its cells: `ON CONFLICT (granularity, cohort_period, period_offset, COALESCE(brand_id, '00000000-0000-0000-0000-000000000000'::uuid), COALESCE(group_id, '00000000-0000-0000-0000-000000000000'::uuid)) DO UPDATE`, so a cell whose window closed after the first write stops reading 0.
+The conflict target must carry the grain index's EXPRESSIONS (`cohort_snapshots_grain_ux`): bare columns cannot infer an expression index, and a wrong target fails at runtime, not at review.
+The re-run re-measures the WHOLE cell - `cohort_size` included: a cohort's size DOES move (a customer whose first completed order lands in an earlier period joins that cohort), and the reader's denominator is the sum of the per-cohort sizes, which must equal the scope's distinct customers (the disjointness assertion below); a frozen size with a live numerator would push `retention_rate` above 1.
+It re-measures `retained`, `retention_rate` and `retained_cents` with it.
+A re-run also DELETES the cells the population no longer produces - this granularity and this scope only - so the grid is exactly the run's output.
+Every row the run writes takes the run's write time, so one grid carries ONE vintage.
+The cohorts are DISJOINT (a customer sits in exactly one cohort per grain), so the per-cohort sizes add up to the scope's distinct customers; the writer asserts it (`assert_cohorts_disjoint`), because the reader's headline IS that sum and an overlapping cohort would overcount it with no signal.
+`056_cohort_population_rule.sql` adds `population_rule` to the same table: the rule that places a customer in a cohort, in words the reader can print; the writer's `POPULATION_RULE` is the column's DDL default, byte for byte.
 No ML needed (cohort is a data-owned agg).
 Weekly cadence rides the scheduler (`cohort_snapshot` engine, same job family as the forecast snapshot).
 Scheduler also carries argv builders for `assoc_batch` / `explain_batch` / `forecast_snapshot` / `matrix_batch` (ml CLI contracts verbatim).
 `explain_batch` and `matrix_batch` manifests store `segment_run_id` (concrete UUID, `latest`, a missing key, or the all-zero UUID — every form resolved at dispatch to the newest segment run for `segment_mode` +/- `segment_k` + scope, so manifests never hold a stale fixed id).
 `052_cohort_money.sql` adds `retained_cents` to the same table - the money cohort members brought back in each period, summed from that period's completed orders.
 ARPU is `retained_cents` / `retained`; the column is `NOT NULL DEFAULT 0`, so a row written before the migration reads 0 cents, which is "not measured" and not "no money".
+
+### The reader's contract (app, committed)
+
+App owns the read: `GET /analytics/cohort` in `../crm-cdp-app/services/api/routers/analytics_cohort.py`, over app's own `../crm-cdp-app/db/queries/analytics_cohort.sql`; these are the same facts, read at app master `523e792`.
+A scoped session reads `cohort_cells` / `cohort_periods` / `cohort_granularities` - `brand_id IS NOT DISTINCT FROM`, `group_id IS NOT DISTINCT FROM`, `period_offset <= max_offset`.
+An HQ session (no brand, no group) reads `cohort_cells_global` / `cohort_granularities_global` - the global rows only, never every brand's grid merged into one.
+`as_of` is `max(created_at)` over the cells the read took: one vintage per grid, or the read names the newer run while serving the older run's cells.
+The denominator is the SUM of the per-cohort MAX of `cohort_size` (the size is repeated on the cohort's offset rows).
+`retained_arpu_cents` is `retained_cents` / `retained` in integer cents, and NULL when `retained_cents = 0` (0 cents means "not measured", not "no money").
+No rows in scope is 404 `{"code": "no_snapshot"}`.
 
 ## 053: recommendation attribution (D3, [BREAKING ingest])
 
