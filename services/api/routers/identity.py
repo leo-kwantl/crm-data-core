@@ -50,13 +50,15 @@ def _dup(exc: Exception, code: str) -> HTTPException:
 
 # --- staff ---
 
-# The pre-login roster (login page staff picker) may name who works here and
-# nothing else. `staff_code` + `full_name` are what the picker renders; `role`
-# is org structure and `store_code`/`brand_code` locate a person, so neither is
-# needed to pick them and both are enumeration surface. An allowlist, not a
-# denylist, so a new staff column cannot leak by default (review §7.2-4).
+# The pre-login roster (login page staff picker) may name who works here
+# and nothing else. `full_name` is what the picker renders; `staff_code`
+# is a login identifier and does not name a person to a reader, so it
+# stays behind authentication with `role` (org structure) and
+# `store_code`/`brand_code` (which locate a person). An allowlist, not a
+# denylist, so a new staff column cannot leak by default (review §7.2-4;
+# manager wave item 3).
 _CACHE_RATE_LIMIT = 120
-_PUBLIC_STAFF_FIELDS = frozenset({"staff_code", "full_name"})
+_PUBLIC_STAFF_FIELDS = frozenset({"full_name"})
 
 
 def _public_staff(row: dict) -> dict:  # type: ignore[type-arg]
@@ -74,11 +76,11 @@ async def list_staff(
     page_size: Annotated[int, Query()] = 20,
     q: Annotated[str | None, Query(max_length=200)] = None,
 ) -> dict:
-    """Roster list. Anonymous callers get one page, two fields, and no
-    `next_cursor`: the cursor is base64 JSON carrying the row id, so handing
-    it to an unauthenticated caller would leak exactly what the projection
-    withholds. The login picker only needs the first page; the staff admin
-    page is authenticated and pages normally."""
+    """Roster list. Anonymous callers get one page, one field (the display
+    name), and no `next_cursor`: the cursor is base64 JSON carrying the row
+    id, so handing it to an unauthenticated caller would leak exactly what
+    the projection withholds. The login picker only needs the first page;
+    the staff admin page is authenticated and pages normally."""
     if user is None:
         # No session to key on, so the address is the rate-limit identity.
         check_ip_rate_limit(client_ip(request), route="staff-directory",

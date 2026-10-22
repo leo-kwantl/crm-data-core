@@ -47,6 +47,8 @@ from typing import Any
 import asyncpg
 from fastapi import HTTPException
 
+from . import kpi_rollup
+
 QUERIES_PATH = (Path(__file__).resolve().parents[3] / "db" / "queries"
                 / "analytics_comparisons.sql")
 
@@ -276,6 +278,15 @@ async def get_comparison(pool: asyncpg.Pool,
                                    *args[:6], group_id)
         series = await conn.fetch(Q["monthly_series"], DEFAULT_SERIES_MONTHS,
                                   anchor, brand_id, group_id)
+        # Item 1: the dashboard reads the rollup. The daily curve out of
+        # `kpi_daily_snapshots` (parsed from the shared file, never copied),
+        # scope-exact, ending on the same reference day as the windows.
+        # A scope with no snapshot rows reads an empty curve, not a 404.
+        # An orderless scope has no reference day (the bounds resolve
+        # NULL); the curve then ends today instead of failing the page.
+        rollup = await kpi_rollup.get_rollup(
+            conn, as_of=bounds["ref_date"] or date.today(),
+            brand_id=brand_id, group_id=group_id)
 
     data_min, data_max = bounds["data_min"], bounds["data_max"]
     cur_days = (bounds["cur_end"] - bounds["cur_start"]).days
@@ -373,6 +384,7 @@ async def get_comparison(pool: asyncpg.Pool,
             }
             for r in series
         ],
+        "rollup": rollup,
     }
 
 
