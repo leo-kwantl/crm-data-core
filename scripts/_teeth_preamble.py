@@ -16,8 +16,10 @@ sentence, not a zero-byte file.
 """
 from __future__ import annotations
 
+import os
 import pathlib
 import subprocess
+import time
 
 
 def _git(root: pathlib.Path, *args: str) -> str:
@@ -89,6 +91,72 @@ def write_mutation(path: pathlib.Path, text: str, original: bytes) -> None:
     """Write a mutated text in the file's OWN newline style."""
     body = text.replace("\n", "\r\n") if b"\r\n" in original else text
     path.write_bytes(body.encode("utf-8"))
+
+
+def pid_alive(pid: int) -> bool:
+    """True when that process is still running (Windows-safe).
+
+    `os.kill(pid, 0)` is not the question on Windows -- there it posts a
+    console control event to the process instead of probing it, which
+    would signal a live run. So the probe is the kernel's: open the
+    process and read its exit code.
+    """
+    if os.name == "nt":
+        import ctypes
+
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        STILL_ACTIVE = 259
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION,
+                                       False, pid)
+        if not handle:
+            return False
+        code = ctypes.c_ulong()
+        ok = kernel32.GetExitCodeProcess(handle, ctypes.byref(code))
+        kernel32.CloseHandle(handle)
+        return bool(ok) and code.value == STILL_ACTIVE
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def acquire_lock(lock: pathlib.Path, stale_seconds: int = 15 * 60) -> None:
+    """Take the run's lock, or refuse the run.
+
+    A lock whose OWNER IS DEAD is not a lock: the run that wrote it was
+    killed, and a killed run leaves its mutation in the tree (the
+    restore lives in a `finally`, which a kill never reaches). So the
+    pid in the lock is probed for liveness, and a dead owner is taken
+    over with a line saying so -- instead of blocking the next run for
+    the whole stale window, which is what a killed run used to do.
+    """
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    if lock.exists():
+        age = time.time() - lock.stat().st_mtime
+        owner: int | None
+        try:
+            owner = int(lock.read_text().strip() or "0")
+        except (ValueError, OSError):
+            owner = None
+        if owner and not pid_alive(owner):
+            print(f"[LOCK ] taking over a lock whose owner (pid {owner}) is "
+                  f"dead - that run was killed, and its mutation may still "
+                  f"be in the tree")
+            lock.unlink(missing_ok=True)
+        elif age < stale_seconds:
+            raise SystemExit(
+                f"[REFUSED] another run holds {lock.name} ({int(age)}s old, "
+                f"pid {owner}) - two runs would interleave their mutations")
+        else:
+            print(f"[LOCK ] taking over a stale lock ({int(age)}s old)")
+            lock.unlink(missing_ok=True)
+    fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    os.write(fd, str(os.getpid()).encode())
+    os.close(fd)
 
 
 def announce(what: str, root: pathlib.Path, pin: str,

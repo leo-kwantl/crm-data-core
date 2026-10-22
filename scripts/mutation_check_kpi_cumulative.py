@@ -33,10 +33,12 @@ import sys
 import time
 
 try:
-    from _teeth_preamble import (announce, bytes_differ_from_commit,
+    from _teeth_preamble import (acquire_lock, announce,
+                                 bytes_differ_from_commit,
                                  require_byte_baseline)
 except ImportError:  # pragma: no cover - run as `python -m scripts....`
-    from scripts._teeth_preamble import (announce, bytes_differ_from_commit,
+    from scripts._teeth_preamble import (acquire_lock, announce,
+                                 bytes_differ_from_commit,
                                          require_byte_baseline)
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -86,18 +88,7 @@ def differs_from_head(rel: str) -> bool:
 
 
 def take_lock() -> None:
-    LOCK.parent.mkdir(parents=True, exist_ok=True)
-    if LOCK.exists():
-        age = time.time() - LOCK.stat().st_mtime
-        if age < LOCK_STALE_SECONDS:
-            raise SystemExit(
-                f"[REFUSED] another run holds {LOCK.name} ({int(age)}s old) - "
-                "two runs would interleave their mutations")
-        print(f"[LOCK ] taking over a stale lock ({int(age)}s old)")
-        LOCK.unlink()
-    fd = os.open(LOCK, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-    os.write(fd, str(os.getpid()).encode())
-    os.close(fd)
+    acquire_lock(LOCK, LOCK_STALE_SECONDS)
 
 
 def release_lock() -> None:

@@ -31,9 +31,11 @@ import subprocess
 import sys
 
 try:
-    from _teeth_preamble import announce, require_byte_baseline
+    from _teeth_preamble import (acquire_lock, announce,
+                                 require_byte_baseline)
 except ImportError:  # pragma: no cover - run as `python -m scripts....`
-    from scripts._teeth_preamble import announce, require_byte_baseline
+    from scripts._teeth_preamble import (acquire_lock, announce,
+                                         require_byte_baseline)
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 TARGET = ROOT / "pipelines" / "snapshot.py"
@@ -41,6 +43,11 @@ TARGET = ROOT / "pipelines" / "snapshot.py"
 # it, so a mutation here is a mutation the pin must catch.
 SHARED = ROOT / "db" / "queries" / "kpi_daily.sql"
 TEST = "services/api/tests/test_scope_predicate_shape.py"
+# This run mutates `pipelines/snapshot.py`, which the KPI cumulative
+# teeth mutate too: two runs interleaving their mutations on one file
+# is a receipt of nothing, so the runs take a lock.
+LOCK = ROOT / ".pi" / "mutation_check_scope_predicate.lock"
+LOCK_STALE_SECONDS = 15 * 60
 
 EXTRA = '''
 
@@ -86,6 +93,14 @@ def main() -> int:
     if not require_byte_baseline(
             ROOT, ["pipelines/snapshot.py", "db/queries/kpi_daily.sql"]):
         return 2
+    acquire_lock(LOCK, LOCK_STALE_SECONDS)
+    try:
+        return _run()
+    finally:
+        LOCK.unlink(missing_ok=True)
+
+
+def _run() -> int:
     files = {"pipelines": TARGET, "shared": SHARED}
     originals = {key: path.read_bytes() for key, path in files.items()}
     bad = 0
