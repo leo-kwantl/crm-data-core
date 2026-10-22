@@ -14,9 +14,11 @@ import subprocess
 import sys
 
 try:
-    from _teeth_preamble import announce
+    from _teeth_preamble import (announce, read_target, require_byte_baseline,
+                                 write_mutation)
 except ImportError:  # pragma: no cover - run as `python -m scripts....`
-    from scripts._teeth_preamble import announce
+    from scripts._teeth_preamble import (announce, read_target,
+                                         require_byte_baseline, write_mutation)
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 TARGET = ROOT / "db" / "seeds" / "demo.sql"
@@ -63,7 +65,9 @@ def run() -> int:
 
 def main() -> int:
     announce("the demo seed's backfilled rows", ROOT, TEST)
-    original = TARGET.read_text(encoding="utf-8")
+    if not require_byte_baseline(ROOT, ["db/seeds/demo.sql"]):
+        return 2
+    original, original_bytes = read_target(TARGET)
     bad = 0
     try:
         for name, mutate in MUTATIONS:
@@ -77,15 +81,15 @@ def main() -> int:
                 print(f"[SKIP ] {name}: the mutation changed nothing")
                 bad += 1
                 continue
-            TARGET.write_text(text, encoding="utf-8")
+            write_mutation(TARGET, text, original_bytes)
             code = run()
             verdict = "FAILS (good)" if code != 0 else "PASSES (BAD)"
             print(f"[{verdict}] {name} (pytest exit {code})")
             if code == 0:
                 bad += 1
     finally:
-        TARGET.write_text(original, encoding="utf-8")
-    print("restored:", TARGET.read_text(encoding="utf-8") == original)
+        TARGET.write_bytes(original_bytes)
+    print("restored:", TARGET.read_bytes() == original_bytes)
     print("mutations that did not fail their check:", bad)
     return 1 if bad else 0
 

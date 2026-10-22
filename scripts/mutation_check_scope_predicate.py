@@ -21,9 +21,9 @@ import subprocess
 import sys
 
 try:
-    from _teeth_preamble import announce
+    from _teeth_preamble import announce, require_byte_baseline
 except ImportError:  # pragma: no cover - run as `python -m scripts....`
-    from scripts._teeth_preamble import announce
+    from scripts._teeth_preamble import announce, require_byte_baseline
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 TARGET = ROOT / "pipelines" / "snapshot.py"
@@ -61,7 +61,10 @@ def run() -> int:
 
 
 def main() -> int:
-    announce("the scope predicate's shape", ROOT, TEST)
+    announce("the scope predicate's shape", ROOT, TEST,
+             targets=["pipelines/snapshot.py"])
+    if not require_byte_baseline(ROOT, ["pipelines/snapshot.py"]):
+        return 2
     original = TARGET.read_bytes()
     bad = 0
     try:

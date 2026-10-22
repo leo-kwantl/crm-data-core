@@ -33,9 +33,11 @@ import sys
 import time
 
 try:
-    from _teeth_preamble import announce
+    from _teeth_preamble import (announce, bytes_differ_from_commit,
+                                 require_byte_baseline)
 except ImportError:  # pragma: no cover - run as `python -m scripts....`
-    from scripts._teeth_preamble import announce
+    from scripts._teeth_preamble import (announce, bytes_differ_from_commit,
+                                         require_byte_baseline)
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 TEST = "services/api/tests/test_snapshots.py"
@@ -73,8 +75,14 @@ def dirty_lines() -> list[str]:
 
 
 def differs_from_head(rel: str) -> bool:
-    proc = subprocess.run(["git", "diff", "--quiet", "HEAD", "--", rel], cwd=ROOT)
-    return proc.returncode != 0
+    """Do the file's BYTES differ from the commit's?
+
+    Not `git diff`: with `text=auto` git normalises the line endings
+    before comparing, so a CRLF working copy reads as UNCHANGED while
+    every byte differs from the blob. The baseline a mutation run needs
+    is the committed BYTES.
+    """
+    return bytes_differ_from_commit(ROOT, rel)
 
 
 def take_lock() -> None:
@@ -106,12 +114,7 @@ def run() -> int:
 def main() -> int:
     announce("the KPI snapshot's cumulative columns", ROOT, TEST,
              targets=[TARGET])
-    if differs_from_head(TARGET):
-        print("[REFUSED] the file the run mutates already differs from the "
-              "commit, so the baseline is unknown:")
-        print("        ", TARGET)
-        for line in dirty_lines():
-            print("         tree:", line)
+    if not require_byte_baseline(ROOT, [TARGET]):
         return 2
     take_lock()
     target = ROOT / TARGET

@@ -39,9 +39,11 @@ import sys
 import time
 
 try:
-    from _teeth_preamble import announce
+    from _teeth_preamble import (announce, bytes_differ_from_commit,
+                                 require_byte_baseline)
 except ImportError:  # pragma: no cover - run as `python -m scripts....`
-    from scripts._teeth_preamble import announce
+    from scripts._teeth_preamble import (announce, bytes_differ_from_commit,
+                                         require_byte_baseline)
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 TEST = "services/api/tests/test_shared_statement_serving_form.py"
@@ -151,8 +153,14 @@ def dirty_lines() -> list[str]:
 
 
 def differs_from_head(rel: str) -> bool:
-    proc = subprocess.run(["git", "diff", "--quiet", "HEAD", "--", rel], cwd=ROOT)
-    return proc.returncode != 0
+    """Do the file's BYTES differ from the commit's?
+
+    Not `git diff`: with `text=auto` git normalises the line endings
+    before comparing, so a CRLF working copy reads as UNCHANGED while
+    every byte differs from the blob. The baseline a mutation run needs
+    is the committed BYTES.
+    """
+    return bytes_differ_from_commit(ROOT, rel)
 
 def take_lock() -> None:
     LOCK.parent.mkdir(parents=True, exist_ok=True)
@@ -184,14 +192,7 @@ def main() -> int:
     announce("the shared statement's serving form", ROOT, TEST,
              targets=sorted({rel for rel, _, _, _ in MUTATIONS}))
     touched = sorted({rel for rel, _, _, _ in MUTATIONS})
-    stale = [rel for rel in touched if differs_from_head(rel)]
-    if stale:
-        print("[REFUSED] these files the run mutates already differ from the "
-              "commit, so the baseline is unknown:")
-        for rel in stale:
-            print("        ", rel)
-        for line in dirty_lines():
-            print("         tree:", line)
+    if not require_byte_baseline(ROOT, touched):
         return 2
     take_lock()
     originals = {rel: (ROOT / rel).read_bytes() for rel, _, _, _ in MUTATIONS}
