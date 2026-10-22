@@ -77,6 +77,36 @@ BUSINESS_TZ_SQL = (
     f"AT TIME ZONE interval '{BUSINESS_TZ_OFFSET_HOURS} hours'"
 )
 
+# --- the shared read text (one source: the file app mirrors) ---
+
+import pathlib
+
+
+def _shared_statement(file_name: str, name: str) -> str:
+    """The named statement of a shared query file, by its `-- name:` marker.
+
+    A shared file is the canonical text: app mirrors it byte for byte and
+    serves it by its markers, so a copy of one of its statements here is a
+    fork waiting to happen -- the class that leaked a brand. Reading the
+    file keeps this module and the file the same statement.
+    """
+    path = (pathlib.Path(__file__).resolve().parents[1]
+            / "db" / "queries" / file_name)
+    text = path.read_text(encoding="utf-8")
+    marker = f"-- name: {name}"
+    if marker not in text:
+        raise RuntimeError(f"{file_name} carries no statement named {name}")
+    body = text.split(marker, 1)[1]
+    for other in body.split("\n"):
+        if other.strip().startswith("-- name:"):
+            body = body.split(other, 1)[0]
+            break
+    return "\n".join(
+        line for line in body.splitlines()
+        if not line.strip().startswith("--")
+    ).strip()
+
+
 # --- KPI daily-grain SQL (one row per day x scope, idempotent re-run) ---
 
 # The scope CTEs of a KPI row: the row's own day bounds and the rows in
@@ -143,15 +173,10 @@ RETURNING id, snapshot_date, customers_total, orders_total,
   orders_day, revenue_day_cents, new_customers_day, active_30d
 """
 
-KPI_TREND_SQL = """
-SELECT snapshot_date, customers_total, orders_total, revenue_cents_total,
-       orders_day, revenue_day_cents, new_customers_day, active_30d
-FROM kpi_daily_snapshots
-WHERE snapshot_date >= $1::date AND snapshot_date <= $2::date
-  AND brand_id IS NOT DISTINCT FROM $3::uuid
-  AND group_id IS NOT DISTINCT FROM $4::uuid
-ORDER BY snapshot_date
-"""
+# The trend read is the shared file's statement (see `_shared_statement`):
+# `db/queries/kpi_daily.sql::kpi_trend` is the canonical text, so this
+# module cannot hold a second copy of it.
+KPI_TREND_SQL = _shared_statement("kpi_daily.sql", "kpi_trend")
 
 # --- Cohort retention snapshots (020, one table feeds line + heatmap) ---
 #

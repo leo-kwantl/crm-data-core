@@ -118,7 +118,9 @@ FAMILIES = {
     "pipelines/snapshot.py::COHORT_SNAPSHOT_UPSERT_SQL": "conjunctive",
     # A row's own scope column, compared scope-exactly. The global row
     # (a NULL scope) is selected by these and by nothing else.
-    "pipelines/snapshot.py::KPI_TREND_SQL": "scope-exact",
+    # (`pipelines/snapshot.py::KPI_TREND_SQL` is not here: it is no longer
+    # a literal -- the module reads the shared file's statement -- so the
+    # file's own entry below pins the one text.)
     "pipelines/snapshot.py::COHORT_GRID_SIZE_SQL": "scope-exact",
     "pipelines/snapshot.py::COHORT_TREND_SQL": "scope-exact",
     "pipelines/snapshot.py::LATEST_KPI_DATE_SQL": "scope-exact",
@@ -152,7 +154,7 @@ FAMILIES = {
     # stored per scope), so the global scope is selected too.
     "db/queries/customers.sql::page_clv_scores": "scope-exact",
     "db/queries/customers.sql::page_churn_scores": "scope-exact",
-    "db/queries/kpi_daily.sql::upsert_kpi_daily": "scope-exact",
+    "db/queries/kpi_daily.sql::kpi_trend": "scope-exact",
     "db/queries/kpi_daily.sql::kpi_pct_change": "scope-exact",
     "db/queries/kpi_daily.sql::clv_snapshots_list": "scope-exact",
     "db/queries/kpi_daily.sql::churn_snapshots_list": "scope-exact",
