@@ -10,9 +10,17 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 
-from ..deps import CurrentUser, get_current_user, get_pool, require_customer_in_scope
+from ..deps import (
+    CurrentUser,
+    check_search_rate_limit,
+    get_current_user,
+    get_pool,
+    require_customer_in_scope,
+)
 from ..repos import customers as repo
+from ..repos import search as search_repo
 from ..schemas.customer import CustomerCreate, CustomerProfile, CustomerUpdate
+from . import search as search_router
 
 router = APIRouter(tags=["customers"])
 
@@ -50,7 +58,27 @@ async def create_customer(payload: CustomerCreate,
 async def read_customer(customer_id: UUID,
                         user: CurrentUser = Depends(get_current_user),
                         pool=Depends(get_pool)):
+    # A UUID fetch is a PII lookup: the search router's contract says every
+    # one of its calls appends one `customer_access_logs` row (criteria type
+    # only) and is rate-limited per session. This route is the one that
+    # answers -- the search router's route for the same path is registered
+    # later (the routers are included in alphabetical module order) and never
+    # runs -- so the audit and the limit live here.
+    check_search_rate_limit(
+        user.staff_code,
+        limit=search_router.RATE_LIMIT,
+        window_s=search_router.RATE_WINDOW_S,
+        route="search:uuid",
+    )
     data = await repo.get_customer(pool, customer_id)
+    async with pool.acquire() as conn:
+        await search_repo.write_audit(
+            conn,
+            staff_id=user.staff_code,
+            customer_id=customer_id if data else None,
+            criteria_type="uuid",
+            result_count=1 if data else 0,
+        )
     if data is None:
         raise HTTPException(status_code=404, detail={"code": "customer_not_found"})
     await require_customer_in_scope(pool, customer_id, user)

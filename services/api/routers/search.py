@@ -3,7 +3,12 @@
 - POST /customers/search — phone/email/name/member_id in JSON body (never URL).
 - GET /customers?member_id= — direct fetch by low-sensitivity counter ID.
   phone/email as URL query params are rejected (422, code pii_in_url).
-- GET /customers/{customer_id} — direct fetch by opaque UUID.
+
+The UUID fetch (GET /customers/{customer_id}) is the customers router's
+route, not this one: two routes for one path means the first registered one
+answers and the second never runs, so the audit and the rate limit live
+where the answer does (routers/customers.py). The receipt is
+services/api/tests/test_customer_fetch_audit.py.
 
 Every call is rate-limited per staff identity and appends one audit row with
 criteria_type + result_count (never raw PII values). Cache-Control: no-store
@@ -145,29 +150,3 @@ async def get_by_member_id(
         )
     return {"data": items, "no_match": len(items) == 0}
 
-
-@router.get("/customers/{customer_id}")
-async def get_by_id(
-    customer_id: UUID,
-    request: Request,
-    pool=Depends(get_pool),
-    user: CurrentUser = Depends(get_current_user),
-) -> dict:
-    _limit(request, user.staff_code, "uuid")
-    async with pool.acquire() as conn:
-        item = await repo.fetch_by_id(conn, customer_id)
-        await repo.write_audit(
-            conn, staff_id=user.staff_code,
-            customer_id=customer_id if item else None,
-            criteria_type="uuid", result_count=1 if item else 0,
-        )
-    if item is None:
-        raise HTTPException(status_code=404, detail={"code": "customer_not_found"})
-    if (
-        user.group_id is not None
-        and item.get("group_id") is not None
-        and item["group_id"] != str(user.group_id)
-    ):
-        # Cross-group fetch: 404, never leak existence across the group silo.
-        raise HTTPException(status_code=404, detail={"code": "customer_not_found"})
-    return item
