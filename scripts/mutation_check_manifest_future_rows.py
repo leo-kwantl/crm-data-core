@@ -12,6 +12,11 @@ import pathlib
 import subprocess
 import sys
 
+try:
+    from _teeth_preamble import announce
+except ImportError:  # pragma: no cover - run as `python -m scripts....`
+    from scripts._teeth_preamble import announce
+
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 TARGET = ROOT / "db" / "migrations" / "058_manifest_future_rows_waits_for_kpi.sql"
 TEST = ("services/api/tests/test_manifests.py::"
@@ -38,6 +43,7 @@ def run() -> int:
 
 
 def main() -> int:
+    announce("the manifest's future-row waits", ROOT, TEST)
     original = TARGET.read_text(encoding="utf-8")
     bad = 0
     try:

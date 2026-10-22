@@ -38,6 +38,11 @@ import subprocess
 import sys
 import time
 
+try:
+    from _teeth_preamble import announce
+except ImportError:  # pragma: no cover - run as `python -m scripts....`
+    from scripts._teeth_preamble import announce
+
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 TEST = "services/api/tests/test_shared_statement_serving_form.py"
 LOCK = ROOT / ".pi" / "mutation_check_shared_statement.lock"
@@ -176,6 +181,8 @@ def run() -> int:
 
 
 def main() -> int:
+    announce("the shared statement's serving form", ROOT, TEST,
+             targets=sorted({rel for rel, _, _, _ in MUTATIONS}))
     touched = sorted({rel for rel, _, _, _ in MUTATIONS})
     stale = [rel for rel in touched if differs_from_head(rel)]
     if stale:

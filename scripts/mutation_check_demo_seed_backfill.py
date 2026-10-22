@@ -13,6 +13,11 @@ import re
 import subprocess
 import sys
 
+try:
+    from _teeth_preamble import announce
+except ImportError:  # pragma: no cover - run as `python -m scripts....`
+    from scripts._teeth_preamble import announce
+
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 TARGET = ROOT / "db" / "seeds" / "demo.sql"
 TEST = "services/api/tests/test_demo_seed.py"
@@ -57,6 +62,7 @@ def run() -> int:
 
 
 def main() -> int:
+    announce("the demo seed's backfilled rows", ROOT, TEST)
     original = TARGET.read_text(encoding="utf-8")
     bad = 0
     try:

@@ -15,6 +15,11 @@ import pathlib
 import subprocess
 import sys
 
+try:
+    from _teeth_preamble import announce
+except ImportError:  # pragma: no cover - run as `python -m scripts....`
+    from scripts._teeth_preamble import announce
+
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 TARGET = ROOT / "services" / "api" / "repos" / "orders.py"
 TEST = "services/api/tests/test_orders_brand_scope.py"
@@ -34,6 +39,7 @@ def run() -> int:
 
 
 def main() -> int:
+    announce("the order read's brand scope", ROOT, TEST)
     original = TARGET.read_text(encoding="utf-8")
     bad = 0
     try:

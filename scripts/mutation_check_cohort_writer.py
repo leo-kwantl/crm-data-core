@@ -12,6 +12,11 @@ import pathlib
 import subprocess
 import sys
 
+try:
+    from _teeth_preamble import announce
+except ImportError:  # pragma: no cover - run as `python -m scripts....`
+    from scripts._teeth_preamble import announce
+
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 TARGET = ROOT / "pipelines" / "snapshot.py"
 
@@ -52,6 +57,7 @@ def run(test: str) -> int:
 
 
 def main() -> int:
+    announce("the cohort writer's cells", ROOT, "per-mutation (MUTATIONS)")
     original = TARGET.read_text(encoding="utf-8")
     bad = 0
     try:
