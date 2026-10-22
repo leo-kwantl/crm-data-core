@@ -44,21 +44,24 @@ LOCK = ROOT / ".pi" / "mutation_check_kpi_cumulative.lock"
 LOCK_STALE_SECONDS = 15 * 60
 
 # (name, pattern, replacement) -- the pattern must match exactly once.
+# The newline is captured and put back: the working copy is CRLF and the
+# commit is LF, so a pattern that hard-codes "\n" matches nothing and a
+# replacement that writes "\n" rewrites the line ending.
 MUTATIONS = [
     (
         "the customer total drops the row's own date bound",
-        r"\(SELECT COUNT\(\*\) FROM scoped_customers, day_bounds\n    WHERE created_at < d_to\)",
-        "(SELECT COUNT(*) FROM scoped_customers, day_bounds\n    WHERE created_at IS NOT NULL)",
+        r"\(SELECT COUNT\(\*\) FROM scoped_customers, day_bounds(\r?\n)    WHERE created_at < d_to\)",
+        r"(SELECT COUNT(*) FROM scoped_customers, day_bounds\1    WHERE created_at IS NOT NULL)",
     ),
     (
         "the order total drops the row's own date bound",
-        r"\(SELECT COUNT\(\*\) FROM scoped_orders, day_bounds\n    WHERE ordered_at < d_to\)",
-        "(SELECT COUNT(*) FROM scoped_orders, day_bounds\n    WHERE ordered_at IS NOT NULL)",
+        r"\(SELECT COUNT\(\*\) FROM scoped_orders, day_bounds(\r?\n)    WHERE ordered_at < d_to\)",
+        r"(SELECT COUNT(*) FROM scoped_orders, day_bounds\1    WHERE ordered_at IS NOT NULL)",
     ),
     (
         "the revenue total drops the row's own date bound",
-        r"\(SELECT COALESCE\(SUM\(total_cents\), 0\) FROM scoped_orders, day_bounds\n    WHERE ordered_at < d_to\)",
-        "(SELECT COALESCE(SUM(total_cents), 0) FROM scoped_orders, day_bounds\n    WHERE ordered_at IS NOT NULL)",
+        r"\(SELECT COALESCE\(SUM\(total_cents\), 0\) FROM scoped_orders, day_bounds(\r?\n)    WHERE ordered_at < d_to\)",
+        r"(SELECT COALESCE(SUM(total_cents), 0) FROM scoped_orders, day_bounds\1    WHERE ordered_at IS NOT NULL)",
     ),
 ]
 

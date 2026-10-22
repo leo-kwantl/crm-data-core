@@ -130,6 +130,7 @@ Scope columns (`brand_id`, `group_id`, NULL = not group-scoped) match 012.
 
 - `customers_total`, `orders_total` and `revenue_cents_total` are bounded by the row's own `d_to` (the next business day's midnight), so an order dated after it is not yet part of that day's world.
 - Unbounded, a row carried the present table's counts under a past date's label: the manager measured it on the live cluster — the row labelled `2026-10-04` carried `orders_total=8689` while the present was `8686`.
+- After the reseed on that cluster the three global rows read 8383 / 8458 / 8523 for 2026-09-30 / 2026-10-04 / 2026-10-08 — a curve that rises, each row the count of the orders before its own day.
 - The rule has one home: `pipelines/snapshot.py` `KPI_DAILY_UPSERT_SQL` (its scope CTEs are `KPI_DAILY_CTES`, which the reseed reuses).
 - The reseed order: the fix ships first (a reseed against the old writer recomputes the old numbers), then `scripts/reseed_kpi_cumulative.py` walks the rows in ascending `snapshot_date` and rewrites each through the writer's own statement, then `ANALYZE kpi_daily_snapshots`.
 - The order decides only which rows are corrected if the run is interrupted: each row is bounded by its own day, so its value does not depend on the order.
