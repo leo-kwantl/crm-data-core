@@ -11,12 +11,12 @@ lens_width, bridge, temple, color, material) / image_url / is_active, plus
 the inventory table (one qty row per product x store). Product GETs embed
 stock_by_store (store_code order) + total_stock.
 
-The stock statements below are the brand-scoped variant of
-db/queries/products.sql (`list_inventory_for_product`): the shared file
-stays GLOBAL because data's pipeline reads every brand's stock, while a
-stock row lives in a STORE and a store belongs to a brand, so the app's
-serving reader carries the session's brand. The catalogue row itself is
-global master data and stays shared.
+The stock statement below is the app's own page-level variant (many
+products at once) of db/queries/products.sql (`list_inventory_for_product`,
+the per-product copy in repos/inventory.py): a stock row lives in a STORE
+and a store belongs to a brand, so the app's serving reader carries the
+session's brand. The catalogue row itself is global master data and stays
+shared.
 """
 
 from __future__ import annotations
@@ -28,10 +28,6 @@ from datetime import datetime
 
 import asyncpg
 
-PRODUCT_COLS = (
-    "id, sku, name, category, price_cents,"
-    " description, specs, image_url, is_active, created_at"
-)
 
 def normalize_product_filters(
     category: str | None, is_active: bool | None
@@ -42,6 +38,9 @@ def normalize_product_filters(
 
 
 LIST_PRODUCTS_SQL = """
+-- name: list_products
+-- params: q text|None, cursor_at timestamptz|None, cursor_id uuid|None, limit int, category text|None, is_active bool|None
+-- Keyset page on (created_at DESC, id DESC). Fetch limit+1 upstream.
 SELECT id, sku, name, category, price_cents,
        description, specs, image_url, is_active, created_at
 FROM products
@@ -50,14 +49,16 @@ WHERE ($1::text IS NULL OR name ILIKE '%' || $1 || '%' OR sku ILIKE '%' || $1 ||
   AND ($6::boolean IS NULL OR is_active = $6)
   AND ($2::timestamptz IS NULL OR (created_at, id) < ($2::timestamptz, $3::uuid))
 ORDER BY created_at DESC, id DESC
-LIMIT $4
+LIMIT $4;
 """
 
 GET_PRODUCT_SQL = """
+-- name: get_product
+-- params: product_id uuid
 SELECT id, sku, name, category, price_cents,
        description, specs, image_url, is_active, created_at
 FROM products
-WHERE id = $1
+WHERE id = $1;
 """
 
 CREATE_PRODUCT_SQL = """

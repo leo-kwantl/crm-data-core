@@ -18,7 +18,11 @@ from datetime import datetime
 
 import asyncpg
 
-CUSTOMER_EXISTS_SQL = "SELECT 1 FROM customers WHERE id = $1 AND deleted_at IS NULL"
+CUSTOMER_EXISTS_SQL = """
+-- name: customer_exists
+-- params: customer_id uuid
+SELECT 1 FROM customers WHERE id = $1 AND deleted_at IS NULL;
+"""
 
 CUSTOMER_HEADER_SQL = (
     "SELECT member_id, full_name FROM customers WHERE id = $1 AND deleted_at IS NULL"

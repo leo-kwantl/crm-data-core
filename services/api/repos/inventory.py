@@ -4,11 +4,9 @@ One row per (product_id, store_id); PUT upserts (insert or replace qty).
 Product delete cascades (FK); store delete is blocked by RESTRICT while
 stock rows reference it (store DELETE maps that to 409 downstream).
 
-The statements below are the brand-scoped variant of db/queries/products.sql
-(`list_inventory_for_product`): the shared file stays GLOBAL because data's
-pipeline reads every brand's stock, while a stock row lives in a STORE and a
-store belongs to a brand, so the app's serving reader carries the session's
-brand.
+The statements below are the app's serving copy of db/queries/products.sql
+(`list_inventory_for_product`): a stock row lives in a STORE and a store
+belongs to a brand, so the serving reader carries the session's brand.
 """
 
 from __future__ import annotations
@@ -18,21 +16,28 @@ import uuid
 import asyncpg
 
 LIST_INVENTORY_SQL = """
+-- name: list_inventory_for_product
+-- params: product_id uuid, brand_id uuid|None
+-- Stock rows for one product with store display fields, store-code order.
+-- SCOPE: brand_id is the session's own brand (deps.session_brand).
 SELECT i.id, i.product_id, i.store_id, s.code AS store_code, s.name AS store_name,
        i.qty, i.updated_at
 FROM inventory i
 JOIN stores s ON s.id = i.store_id
 WHERE i.product_id = $1
   AND ($2::uuid IS NULL OR s.brand_id = $2::uuid)
-ORDER BY s.code ASC
+ORDER BY s.code ASC;
 """
 
 UPSERT_INVENTORY_SQL = """
+-- name: upsert_inventory
+-- params: product_id uuid, store_id uuid, qty int
+-- Insert or replace the (product, store) stock row.
 INSERT INTO inventory (product_id, store_id, qty)
 VALUES ($1, $2, $3)
 ON CONFLICT (product_id, store_id)
 DO UPDATE SET qty = EXCLUDED.qty, updated_at = now()
-RETURNING id, product_id, store_id, qty, updated_at
+RETURNING id, product_id, store_id, qty, updated_at;
 """
 
 

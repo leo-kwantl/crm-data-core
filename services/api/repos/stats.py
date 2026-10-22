@@ -31,11 +31,17 @@ _CUST_SCOPE = """($2::uuid IS NULL OR c.group_id = $2::uuid)
 # Business-timezone pin for every bucket boundary in this module. Buckets
 # are HK calendar periods, NOT DB-session-zone periods: a 16:00Z+ instant
 # is the NEXT business day in Asia/Hong_Kong, and the snapshot tables
-# (cohort_snapshots, rfm_*) are written on that same business day. Must
-# stay in lockstep with ../crm-cdp-data `pipelines/snapshot.py` `0c224d8`
-# (that file's last change, where `BUSINESS_TZ_SQL` sits). pgembed
-# ships NO PG tzdata, so the NAMED zone cannot appear in SQL ("time zone
-# \"Asia/Hong_Kong\" not recognized"); Hong Kong has no DST, so the fixed
+# (cohort_snapshots, rfm_*) are written on that same business day.
+#
+# THE RULE (it does not rot): the offset here must EQUAL data's
+# `pipelines/snapshot.py` `BUSINESS_TZ_OFFSET_HOURS`; a mismatch is a
+# CONTRACT CHANGE, announced in `data-contracts`, never a silent edit.
+# `services/api/tests/test_shared_statement_guard.py` asserts it by token
+# against data's COMMITTED tree, so no sha is pinned here: a sha names one
+# commit, and the file it named has since moved on.
+#
+# pgembed ships NO PG tzdata, so the NAMED zone cannot appear in SQL ("time
+# zone \"Asia/Hong_Kong\" not recognized"); Hong Kong has no DST, so the fixed
 # offset is semantically identical and the name stays attached here.
 BUSINESS_TZ_NAME = "Asia/Hong_Kong"
 BUSINESS_TZ_OFFSET_HOURS = 8

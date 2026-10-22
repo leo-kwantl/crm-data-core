@@ -55,6 +55,96 @@ def _generate_member_id() -> str:
     return f"M-{random.randint(0, 999999):06d}"
 
 
+# The shared statements of db/queries/customers.sql, copied verbatim: each
+# runtime copy carries the file's `-- name:` marker and is token-equal to
+# it (tests/test_shared_statement_guard.py), so the two cannot drift.
+
+CUSTOMER_BY_ID_SQL = """
+-- name: customer_by_id
+-- params: customer_id uuid
+SELECT id, member_id, external_member_id, full_name, attributes,
+  created_at, updated_at, group_id, linked_customer_id,
+  gender, date_of_birth, district, address_line,
+  date_part('year', age(date_of_birth))::int AS age_years
+FROM customers
+WHERE id = $1 AND deleted_at IS NULL;
+"""
+
+CUSTOMER_CONTACTS_SQL = """
+-- name: customer_contacts
+-- params: customer_id uuid
+SELECT id, customer_id, kind, value_normalized, value_display, is_primary, created_at
+FROM customer_contacts
+WHERE customer_id = $1
+ORDER BY created_at;
+"""
+
+CUSTOMER_CONSENTS_SQL = """
+-- name: customer_consents
+-- params: customer_id uuid
+SELECT channel, status
+FROM consents
+WHERE customer_id = $1;
+"""
+
+CUSTOMER_PURCHASE_SUMMARY_SQL = """
+-- name: customer_purchase_summary
+-- params: customer_id uuid
+SELECT COUNT(*) AS order_count,
+       COALESCE(SUM(total_cents), 0) AS total_spent_cents,
+       MAX(ordered_at) AS last_order_at
+FROM orders
+WHERE customer_id = $1;
+"""
+
+CUSTOMER_INSERT_SQL = """
+-- name: customer_insert
+-- params: member_id text, external_member_id text|None, full_name text, attributes jsonb,
+--   group_id uuid|None, gender text|None, date_of_birth date|None, district text|None, address_line text|None
+INSERT INTO customers (member_id, external_member_id, full_name, attributes,
+  group_id, gender, date_of_birth, district, address_line)
+VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8, $9)
+RETURNING id, member_id, external_member_id, full_name, attributes,
+  created_at, updated_at;
+"""
+
+CUSTOMER_CONTACT_INSERT_SQL = """
+-- name: customer_contact_insert
+-- params: customer_id uuid, kind text, value_normalized text, value_display text, is_primary bool
+INSERT INTO customer_contacts (customer_id, kind, value_normalized, value_display, is_primary)
+VALUES ($1, $2, $3, $4, $5);
+"""
+
+CUSTOMER_UPDATE_NAME_SQL = """
+-- name: customer_update_name
+-- params: customer_id uuid, full_name text
+UPDATE customers SET full_name = $2, updated_at = now()
+WHERE id = $1 AND deleted_at IS NULL;
+"""
+
+CUSTOMER_MERGE_ATTRIBUTES_SQL = """
+-- name: customer_merge_attributes
+-- params: customer_id uuid, attributes jsonb
+UPDATE customers
+SET attributes = jsonb_strip_nulls(COALESCE(attributes, '{}'::jsonb) || $2::jsonb),
+    updated_at = now()
+WHERE id = $1 AND deleted_at IS NULL;
+"""
+
+CUSTOMER_REPLACE_CONTACTS_DELETE_SQL = """
+-- name: customer_replace_contacts_delete
+-- params: customer_id uuid
+DELETE FROM customer_contacts WHERE customer_id = $1;
+"""
+
+CUSTOMER_SOFT_DELETE_SQL = """
+-- name: customer_soft_delete
+-- params: customer_id uuid
+UPDATE customers SET deleted_at = now(), updated_at = now()
+WHERE id = $1 AND deleted_at IS NULL;
+"""
+
+
 async def group_of_customer(
     pool: asyncpg.Pool, customer_id: UUID
 ) -> str | None:
@@ -108,11 +198,7 @@ async def create_customer(
             try:
                 async with conn.transaction():
                     row = await conn.fetchrow(
-                        "INSERT INTO customers"
-                        " (member_id, external_member_id, full_name, attributes, group_id,"
-                        " gender, date_of_birth, district, address_line)"
-                        " VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8, $9)"
-                        " RETURNING id, member_id, external_member_id, full_name, attributes, created_at, updated_at",
+                        CUSTOMER_INSERT_SQL,
                         member_id,
                         ext_id,
                         full_name,
@@ -126,9 +212,7 @@ async def create_customer(
                     for c in normalized:
                         try:
                             await conn.execute(
-                                "INSERT INTO customer_contacts"
-                                " (customer_id, kind, value_normalized, value_display, is_primary)"
-                                " VALUES ($1, $2, $3, $4, $5)",
+                                CUSTOMER_CONTACT_INSERT_SQL,
                                 row["id"],
                                 c["kind"],
                                 c["value_normalized"],
@@ -150,25 +234,18 @@ async def create_customer(
 
 async def _build_profile(conn: asyncpg.Connection, customer_id: UUID) -> dict | None:
     row = await conn.fetchrow(
-        "SELECT id, member_id, external_member_id, full_name, attributes, created_at, updated_at,"
-        " group_id, linked_customer_id, gender, date_of_birth, district, address_line,"
-        " date_part('year', age(date_of_birth))::int AS age_years"
-        " FROM customers WHERE id = $1 AND deleted_at IS NULL",
+        CUSTOMER_BY_ID_SQL,
         customer_id,
     )
     if row is None:
         return None
     contact_rows = await conn.fetch(
-        "SELECT id, customer_id, kind, value_normalized, value_display, is_primary, created_at"
-        " FROM customer_contacts WHERE customer_id = $1 ORDER BY created_at",
+        CUSTOMER_CONTACTS_SQL,
         customer_id,
     )
-    consent_rows = await conn.fetch(
-        "SELECT channel, status FROM consents WHERE customer_id = $1", customer_id
-    )
+    consent_rows = await conn.fetch(CUSTOMER_CONSENTS_SQL, customer_id)
     rollup = await conn.fetchrow(
-        "SELECT COUNT(*) AS order_count, COALESCE(SUM(total_cents), 0) AS total_spent_cents,"
-        " MAX(ordered_at) AS last_order_at FROM orders WHERE customer_id = $1",
+        CUSTOMER_PURCHASE_SUMMARY_SQL,
         customer_id,
     )
     status_map: dict[str, str | None] = {ch: None for ch in CHANNELS}
@@ -236,15 +313,13 @@ async def update_customer(
                 return None
             if full_name is not None:
                 await conn.execute(
-                    "UPDATE customers SET full_name = $2, updated_at = now()"
-                    " WHERE id = $1 AND deleted_at IS NULL",
+                    CUSTOMER_UPDATE_NAME_SQL,
                     customer_id,
                     full_name,
                 )
             if attributes is not None:
                 await conn.execute(
-                    "UPDATE customers SET attributes = jsonb_strip_nulls(COALESCE(attributes, '{}'::jsonb) || $2::jsonb),"
-                    " updated_at = now() WHERE id = $1 AND deleted_at IS NULL",
+                    CUSTOMER_MERGE_ATTRIBUTES_SQL,
                     customer_id,
                     json.dumps(attributes),
                 )
@@ -290,14 +365,12 @@ async def update_customer(
             if contacts is not None:
                 normalized = _contacts_in(contacts)
                 await conn.execute(
-                    "DELETE FROM customer_contacts WHERE customer_id = $1", customer_id
+                    CUSTOMER_REPLACE_CONTACTS_DELETE_SQL, customer_id
                 )
                 for c in normalized:
                     try:
                         await conn.execute(
-                            "INSERT INTO customer_contacts"
-                            " (customer_id, kind, value_normalized, value_display, is_primary)"
-                            " VALUES ($1, $2, $3, $4, $5)",
+                            CUSTOMER_CONTACT_INSERT_SQL,
                             customer_id,
                             c["kind"],
                             c["value_normalized"],
@@ -313,8 +386,7 @@ async def soft_delete_customer(pool: asyncpg.Pool, customer_id: UUID) -> bool:
     """Set deleted_at; return True if a live row was hidden."""
     async with pool.acquire() as conn:
         res = await conn.execute(
-            "UPDATE customers SET deleted_at = now(), updated_at = now()"
-            " WHERE id = $1 AND deleted_at IS NULL",
+            CUSTOMER_SOFT_DELETE_SQL,
             customer_id,
         )
         return res.split()[-1] == "1"
@@ -346,6 +418,13 @@ async def soft_delete_customer(pool: asyncpg.Pool, customer_id: UUID) -> bool:
 # non-admin cannot reach the brand-less state to begin with.
 
 LIST_CUSTOMERS_SQL = """
+-- name: list_customers
+-- params: cursor_at timestamptz|None, cursor_id uuid|None, limit int, tier_code text|None, sms_consent text|None, group_id uuid|None, brand_id uuid|None
+-- Masked list, newest-first on (created_at DESC, id DESC).
+-- Keyset page: fetch limit+1 upstream. Contacts are masked at
+-- serialization (see repos/customers.list_customers_page); never LIKE on PII.
+-- SCOPE: brand_id is the session's own brand (deps.session_brand); a customer
+-- with no completed order is visible to every brand.
 SELECT id, member_id, external_member_id, full_name, tier_code, created_at,
   gender, date_part('year', age(date_of_birth))::int AS age_years
 FROM customers
@@ -363,30 +442,39 @@ WHERE deleted_at IS NULL
     OR NOT EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = customers.id
      AND o.status = 'completed'))
 ORDER BY created_at DESC, id DESC
-LIMIT $3
+LIMIT $3;
 """
 
 PAGE_CONTACTS_SQL = """
+-- name: page_contacts
+-- params: customer_ids uuid[]
 SELECT id, customer_id, kind, value_normalized, value_display, is_primary, created_at
 FROM customer_contacts
 WHERE customer_id = ANY($1::uuid[])
-ORDER BY created_at
+ORDER BY created_at;
 """
 
 PAGE_ORDER_COUNTS_SQL = """
+-- name: page_order_counts
+-- params: customer_ids uuid[]
 SELECT customer_id, COUNT(*) AS order_count
 FROM orders
 WHERE customer_id = ANY($1::uuid[])
-GROUP BY customer_id
+GROUP BY customer_id;
 """
 
 PAGE_CONSENTS_SQL = """
+-- name: page_consents
+-- params: customer_ids uuid[]
 SELECT customer_id, channel, status
 FROM consents
-WHERE customer_id = ANY($1::uuid[])
+WHERE customer_id = ANY($1::uuid[]);
 """
 
 COUNT_CUSTOMERS_SQL = """
+-- name: count_customers
+-- params: tier_code text|None, sms_consent text|None, group_id uuid|None, brand_id uuid|None
+-- The scoped twin of list_customers: the total for the same filters.
 SELECT COUNT(*) FROM customers
 WHERE deleted_at IS NULL
   AND ($1::text IS NULL OR tier_code = $1)
@@ -399,7 +487,7 @@ WHERE deleted_at IS NULL
      WHERE o.customer_id = customers.id AND o.status = 'completed'
      AND s.brand_id = $4::uuid)
     OR NOT EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = customers.id
-     AND o.status = 'completed'))
+     AND o.status = 'completed'));
 """
 
 OFFSET_CUSTOMERS_SQL = """

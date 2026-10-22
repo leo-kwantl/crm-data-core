@@ -54,22 +54,117 @@ def _staff_row(r) -> dict:  # type: ignore[no-untyped-def]
     return d
 
 
-# The users read: the account row plus the LAST SIGN-IN - the newest session
-# the account holds, expired or not, because recency is what a reader asks
-# ("is this account in use?"). A NULL value means the account holds no
-# session row at all; it is never read as "never signed in" (a password reset
-# DELETES the other sessions - see `auth_repo.revoke_other_sessions`), so the
-# portal says "no sign-in on record" rather than guessing.
-_USER_SELECT = (
-    "SELECT u.id, u.username, u.display_name, u.role, u.is_disabled,"
-    " u.staff_id, s.staff_code, u.created_at, u.updated_at,"
-    " ls.last_sign_in_at"
-    " FROM users u LEFT JOIN staff s ON s.id = u.staff_id"
-    " LEFT JOIN LATERAL ("
-    "   SELECT max(ss.created_at) AS last_sign_in_at FROM sessions ss"
-    "   WHERE ss.user_id = u.id"
-    " ) ls ON TRUE"
-)
+# The shared statements of db/queries/identity.sql, copied verbatim: each
+# runtime copy carries the file's `-- name:` marker and is token-equal to
+# it (tests/test_shared_statement_guard.py), so the two cannot drift.
+#
+# The users read carries the LAST SIGN-IN - the newest session the account
+# holds, expired or not, because recency is what a reader asks ("is this
+# account in use?"). A NULL value means the account holds no session row at
+# all; it is never read as "never signed in" (a password reset DELETEs the
+# other sessions - see `auth_repo.revoke_other_sessions`), so the portal says
+# "no sign-in on record" rather than guessing.
+
+STAFF_INSERT_SQL = """
+-- name: staff_insert
+-- params: staff_code text, full_name text, store_id uuid|None, role text, brand_id uuid|None
+INSERT INTO staff (staff_code, full_name, store_id, role, brand_id)
+VALUES ($1, $2, $3, $4, $5)
+RETURNING id, staff_code, full_name, store_id, role, brand_id,
+  joined_at, left_at, created_at, updated_at;
+"""
+
+STAFF_BY_ID_SQL = """
+-- name: staff_by_id
+-- params: id uuid, brand_id uuid|None
+-- SCOPE: brand_id is the session's own brand (deps.session_brand).
+SELECT s.id, s.staff_code, s.full_name, s.store_id, st.code AS store_code,
+       s.role, s.brand_id, b.code AS brand_code,
+       s.joined_at, s.left_at, s.created_at, s.updated_at
+FROM staff s LEFT JOIN stores st ON st.id = s.store_id
+LEFT JOIN brands b ON b.id = s.brand_id
+WHERE s.id = $1
+  AND ($2::uuid IS NULL OR s.brand_id = $2::uuid);
+"""
+
+STAFF_LIST_PAGE_SQL = """
+-- name: staff_list_page
+-- params: cursor_at timestamptz|None, cursor_id uuid|None, limit int, q text|None, brand_id uuid|None
+-- SCOPE: brand_id is the session's own brand (deps.session_brand).
+SELECT s.id, s.staff_code, s.full_name, s.store_id, st.code AS store_code, s.role, s.brand_id, b.code AS brand_code, s.joined_at, s.left_at, s.created_at, s.updated_at FROM staff s LEFT JOIN stores st ON st.id = s.store_id LEFT JOIN brands b ON b.id = s.brand_id WHERE ($1::timestamptz IS NULL OR (s.created_at, s.id) < ($1::timestamptz, $2::uuid))   AND ($4::text IS NULL OR (s.staff_code ILIKE '%' || $4 || '%'     OR s.full_name ILIKE '%' || $4 || '%'))   AND ($5::uuid IS NULL OR s.brand_id = $5::uuid) ORDER BY s.created_at DESC, s.id DESC LIMIT $3;
+"""
+
+STAFF_LINKED_USER_COUNT_SQL = """
+-- name: staff_linked_user_count
+-- params: staff_id uuid
+SELECT COUNT(*) FROM users WHERE staff_id = $1;
+"""
+
+STAFF_DELETE_SQL = """
+-- name: staff_delete
+-- params: id uuid
+DELETE FROM staff WHERE id = $1;
+"""
+
+USER_INSERT_SQL = """
+-- name: user_insert
+-- params: username text, display_name text, role text, staff_id uuid|None
+INSERT INTO users (username, display_name, role, staff_id)
+VALUES ($1, $2, $3, $4)
+RETURNING id, username, display_name, role, is_disabled, staff_id, created_at, updated_at;
+"""
+
+USER_BY_ID_SQL = """
+-- name: user_by_id
+-- params: id uuid, brand_id uuid|None
+-- SCOPE: brand_id is the session's own brand (deps.session_brand); an account
+-- belongs to the brand of the staff member it is linked to.
+SELECT u.id, u.username, u.display_name, u.role, u.is_disabled, u.staff_id,
+       s.staff_code, u.created_at, u.updated_at, ls.last_sign_in_at
+FROM users u LEFT JOIN staff s ON s.id = u.staff_id
+LEFT JOIN LATERAL (
+  SELECT max(ss.created_at) AS last_sign_in_at FROM sessions ss
+  WHERE ss.user_id = u.id
+) ls ON TRUE
+WHERE u.id = $1
+  AND ($2::uuid IS NULL OR s.brand_id = $2::uuid);
+"""
+
+USER_LIST_PAGE_SQL = """
+-- name: user_list_page
+-- params: cursor_at timestamptz|None, cursor_id uuid|None, limit int, q text|None, brand_id uuid|None
+-- SCOPE: brand_id is the session's own brand (deps.session_brand); an account
+-- belongs to the brand of the staff member it is linked to.
+SELECT u.id, u.username, u.display_name, u.role, u.is_disabled, u.staff_id, s.staff_code, u.created_at, u.updated_at, ls.last_sign_in_at FROM users u LEFT JOIN staff s ON s.id = u.staff_id LEFT JOIN LATERAL (   SELECT max(ss.created_at) AS last_sign_in_at FROM sessions ss   WHERE ss.user_id = u.id ) ls ON TRUE WHERE ($1::timestamptz IS NULL OR (u.created_at, u.id) < ($1::timestamptz, $2::uuid))   AND ($4::text IS NULL OR (u.username ILIKE '%' || $4 || '%'     OR u.display_name ILIKE '%' || $4 || '%'))   AND ($5::uuid IS NULL OR s.brand_id = $5::uuid) ORDER BY u.created_at DESC, u.id DESC LIMIT $3;
+"""
+
+UNLINKED_STAFF_SQL = """
+-- name: unlinked_staff
+-- params: brand_id uuid|None
+-- Staff rows no account links to (for the user-form staff-link picker).
+-- SCOPE: brand_id is the session's own brand (deps.session_brand).
+SELECT id, staff_code, full_name
+FROM staff
+WHERE id NOT IN (SELECT staff_id FROM users WHERE staff_id IS NOT NULL)
+  AND ($1::uuid IS NULL OR brand_id = $1::uuid)
+ORDER BY staff_code ASC;
+"""
+
+# App-only: the numbered (offset) twin of USER_LIST_PAGE_SQL (LIMIT/OFFSET,
+# q at $3). The shared file carries the keyset page only.
+USER_OFFSET_PAGE_SQL = """
+SELECT u.id, u.username, u.display_name, u.role, u.is_disabled, u.staff_id,
+       s.staff_code, u.created_at, u.updated_at, ls.last_sign_in_at
+FROM users u LEFT JOIN staff s ON s.id = u.staff_id
+LEFT JOIN LATERAL (
+  SELECT max(ss.created_at) AS last_sign_in_at FROM sessions ss
+  WHERE ss.user_id = u.id
+) ls ON TRUE
+WHERE ($3::text IS NULL OR (u.username ILIKE '%' || $3 || '%'
+   OR u.display_name ILIKE '%' || $3 || '%'))
+ AND ($4::uuid IS NULL OR s.brand_id = $4::uuid)
+ORDER BY u.created_at DESC, u.id DESC LIMIT $1 OFFSET $2
+"""
 
 
 def _user_row(r) -> dict:  # type: ignore[no-untyped-def]
@@ -118,10 +213,7 @@ async def create_staff(
             brand_id = store_brand
         try:
             row = await conn.fetchrow(
-                "INSERT INTO staff (staff_code, full_name, store_id, role, brand_id)"
-                " VALUES ($1, $2, $3, $4, $5)"
-                " RETURNING id, staff_code, full_name, store_id, role, brand_id,"
-                " joined_at, left_at, created_at, updated_at",
+                STAFF_INSERT_SQL,
                 staff_code.strip(),
                 full_name.strip(),
                 store_id,
@@ -133,12 +225,9 @@ async def create_staff(
                 raise DuplicateCodeError(str(exc))
             raise
         row = await conn.fetchrow(
-            "SELECT s.id, s.staff_code, s.full_name, s.store_id, st.code AS store_code,"
-            " s.role, s.brand_id, b.code AS brand_code,"
-            " s.joined_at, s.left_at, s.created_at, s.updated_at"
-            " FROM staff s LEFT JOIN stores st ON st.id = s.store_id"
-            " LEFT JOIN brands b ON b.id = s.brand_id WHERE s.id = $1",
+            STAFF_BY_ID_SQL,
             row["id"],
+            brand_id,
         )
         return _staff_row(row)
 
@@ -154,12 +243,7 @@ async def get_staff(
     """
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
-            "SELECT s.id, s.staff_code, s.full_name, s.store_id, st.code AS store_code,"
-            " s.role, s.brand_id, b.code AS brand_code,"
-            " s.joined_at, s.left_at, s.created_at, s.updated_at"
-            " FROM staff s LEFT JOIN stores st ON st.id = s.store_id"
-            " LEFT JOIN brands b ON b.id = s.brand_id WHERE s.id = $1"
-            " AND ($2::uuid IS NULL OR s.brand_id = $2::uuid)",
+            STAFF_BY_ID_SQL,
             staff_id,
             brand_id,
         )
@@ -182,16 +266,7 @@ async def list_staff_page(
     term = q.strip() if q and q.strip() else None
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            "SELECT s.id, s.staff_code, s.full_name, s.store_id, st.code AS store_code,"
-            " s.role, s.brand_id, b.code AS brand_code,"
-            " s.joined_at, s.left_at, s.created_at, s.updated_at"
-            " FROM staff s LEFT JOIN stores st ON st.id = s.store_id"
-            " LEFT JOIN brands b ON b.id = s.brand_id"
-            " WHERE ($1::timestamptz IS NULL OR (s.created_at, s.id) < ($1::timestamptz, $2::uuid))"
-            "   AND ($4::text IS NULL OR (s.staff_code ILIKE '%' || $4 || '%'"
-            "     OR s.full_name ILIKE '%' || $4 || '%'))"
-            "   AND ($5::uuid IS NULL OR s.brand_id = $5::uuid)"
-            " ORDER BY s.created_at DESC, s.id DESC LIMIT $3",
+            STAFF_LIST_PAGE_SQL,
             cursor_at,
             cursor_id,
             limit + 1,
@@ -270,12 +345,9 @@ async def update_staff(
                     left_at,
                 )
             row = await conn.fetchrow(
-                "SELECT s.id, s.staff_code, s.full_name, s.store_id, st.code AS store_code,"
-                " s.role, s.brand_id, b.code AS brand_code,"
-                " s.joined_at, s.left_at, s.created_at, s.updated_at"
-                " FROM staff s LEFT JOIN stores st ON st.id = s.store_id"
-                " LEFT JOIN brands b ON b.id = s.brand_id WHERE s.id = $1",
+                STAFF_BY_ID_SQL,
                 staff_id,
+                brand_id,
             )
             return _staff_row(row) if row else None
 
@@ -287,10 +359,10 @@ async def delete_staff(pool: asyncpg.Pool, staff_id: UUID) -> bool:
             exists = await conn.fetchval("SELECT 1 FROM staff WHERE id = $1", staff_id)
             if exists is None:
                 return False
-            n = await conn.fetchval("SELECT COUNT(*) FROM users WHERE staff_id = $1", staff_id)
+            n = await conn.fetchval(STAFF_LINKED_USER_COUNT_SQL, staff_id)
             if int(n or 0) > 0:
                 raise LinkedError(str(staff_id))
-            await conn.execute("DELETE FROM staff WHERE id = $1", staff_id)
+            await conn.execute(STAFF_DELETE_SQL, staff_id)
             return True
 
 
@@ -317,10 +389,7 @@ async def create_user(
                     raise LinkedError("staff_already_linked")
             try:
                 row = await conn.fetchrow(
-                    "INSERT INTO users (username, display_name, role, staff_id)"
-                    " VALUES ($1, $2, $3, $4)"
-                    " RETURNING id, username, display_name, role, is_disabled,"
-                    " staff_id, created_at, updated_at",
+                    USER_INSERT_SQL,
                     username.strip(),
                     display_name.strip(),
                     role.strip() or "sa",
@@ -331,8 +400,9 @@ async def create_user(
                     raise DuplicateCodeError(str(exc))
                 raise
             full = await conn.fetchrow(
-                _USER_SELECT + " WHERE u.id = $1",
+                USER_BY_ID_SQL,
                 row["id"],
+                None,
             )
             return _user_row(full)
 
@@ -347,8 +417,7 @@ async def get_user(
     """
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
-            _USER_SELECT + " WHERE u.id = $1"
-            " AND ($2::uuid IS NULL OR s.brand_id = $2::uuid)",
+            USER_BY_ID_SQL,
             user_id,
             brand_id,
         )
@@ -372,12 +441,7 @@ async def list_users_page(
     term = q.strip() if q and q.strip() else None
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            _USER_SELECT +
-            " WHERE ($1::timestamptz IS NULL OR (u.created_at, u.id) < ($1::timestamptz, $2::uuid))"
-            "   AND ($4::text IS NULL OR (u.username ILIKE '%' || $4 || '%'"
-            "     OR u.display_name ILIKE '%' || $4 || '%'))"
-            "   AND ($5::uuid IS NULL OR s.brand_id = $5::uuid)"
-            " ORDER BY u.created_at DESC, u.id DESC LIMIT $3",
+            USER_LIST_PAGE_SQL,
             cursor_at,
             cursor_id,
             limit + 1,
@@ -449,8 +513,9 @@ async def update_user(
                     staff_id,
                 )
             row = await conn.fetchrow(
-                _USER_SELECT + " WHERE u.id = $1",
+                USER_BY_ID_SQL,
                 user_id,
+                None,
             )
             return _user_row(row) if row else None
 
@@ -464,10 +529,7 @@ async def list_unlinked_staff(
     """
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            "SELECT id, staff_code, full_name FROM staff"
-            " WHERE id NOT IN (SELECT staff_id FROM users WHERE staff_id IS NOT NULL)"
-            " AND ($1::uuid IS NULL OR brand_id = $1::uuid)"
-            " ORDER BY staff_code ASC",
+            UNLINKED_STAFF_SQL,
             brand_id,
         )
         out = []
@@ -551,11 +613,7 @@ async def list_users_offset(
             brand_id,
         )
         rows = await conn.fetch(
-            _USER_SELECT +
-            " WHERE ($3::text IS NULL OR (u.username ILIKE '%' || $3 || '%'"
-            "   OR u.display_name ILIKE '%' || $3 || '%'))"
-            " AND ($4::uuid IS NULL OR s.brand_id = $4::uuid)"
-            " ORDER BY u.created_at DESC, u.id DESC LIMIT $1 OFFSET $2",
+            USER_OFFSET_PAGE_SQL,
             page_size,
             (page - 1) * page_size,
             term,

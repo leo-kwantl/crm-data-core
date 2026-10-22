@@ -78,6 +78,22 @@ def _normalise(sql: str) -> str:
     return re.sub(r"\s+", " ", body).strip().lower()
 
 
+def _sql_head(text: str) -> str:
+    """The first word of the SQL, ignoring the leading comment lines.
+
+    A runtime copy of a named statement carries the file's `-- name:`
+    marker and its params comments, so the first line is not the SQL any
+    more -- and a runtime that filters its statements by "does it start
+    with SELECT" would see none of them.
+    """
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("--"):
+            continue
+        return stripped.split(None, 1)[0].upper()
+    return ""
+
+
 def _file_statements(files: tuple[str, ...] | None = None) -> dict[str, str]:
     """The named statements of every shared file: name -> SQL body."""
     out: dict[str, str] = {}
@@ -172,7 +188,7 @@ def _runtime_constants() -> dict[str, list[str]]:
                 value = constants.get(target.id)
                 if not value:
                     continue
-                head = value.strip().split(None, 1)[0].upper()
+                head = _sql_head(value)
                 if head not in {"SELECT", "INSERT", "UPDATE", "DELETE", "WITH"}:
                     continue
                 out.setdefault(target.id, []).append(value)
@@ -220,7 +236,7 @@ def _runtime_sql_strings() -> set[str]:
                     continue
             else:
                 continue
-            head = text.strip().split(None, 1)[0].upper() if text.strip() else ""
+            head = _sql_head(text)
             if head in {"SELECT", "INSERT", "UPDATE", "DELETE", "WITH"}:
                 out.add(_normalise(text))
     return out

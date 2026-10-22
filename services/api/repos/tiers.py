@@ -12,6 +12,16 @@ from uuid import UUID
 import asyncpg
 
 
+# The shared statement of db/queries/orders.sql, copied verbatim: the runtime
+# copy carries the file's `-- name:` marker and is token-equal to it
+# (tests/test_shared_statement_guard.py), so the two cannot drift.
+CUSTOMER_EXISTS_SQL = """
+-- name: customer_exists
+-- params: customer_id uuid
+SELECT 1 FROM customers WHERE id = $1 AND deleted_at IS NULL;
+"""
+
+
 class DuplicateCodeError(Exception):
     pass
 
@@ -139,7 +149,7 @@ async def assign_tier(
     the customer is missing, or (None, error_code) for a bad tier code."""
     async with pool.acquire() as conn:
         exists = await conn.fetchval(
-            "SELECT 1 FROM customers WHERE id = $1 AND deleted_at IS NULL",
+            CUSTOMER_EXISTS_SQL,
             customer_id,
         )
         if exists is None:

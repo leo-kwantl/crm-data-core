@@ -31,6 +31,11 @@ def normalize_order_filters(
 
 
 LIST_ORDERS_SQL = """
+-- name: list_customer_orders
+-- params: customer_id uuid, cursor_at timestamptz|None, cursor_id uuid|None, limit int,
+--   store_code text|None, date_from date|None, date_to date|None, brand_id uuid|None
+-- Keyset page newest-first on (ordered_at DESC, id DESC). Fetch limit+1 upstream.
+-- SCOPE: brand_id is the session's own brand (deps.session_brand).
 SELECT o.id, o.customer_id, o.store_id, s.code AS store_code, s.name AS store_name,
        o.ordered_at, o.total_cents, o.status,
        (SELECT COUNT(*) FROM order_items i WHERE i.order_id = o.id) AS item_count
@@ -43,28 +48,37 @@ WHERE o.customer_id = $1
   AND ($2::timestamptz IS NULL OR (o.ordered_at, o.id) < ($2::timestamptz, $3::uuid))
   AND ($8::uuid IS NULL OR s.brand_id = $8::uuid)
 ORDER BY o.ordered_at DESC, o.id DESC
-LIMIT $4
+LIMIT $4;
 """
 
 ORDER_HEADER_SQL = """
+-- name: get_order_header
+-- params: order_id uuid, brand_id uuid|None
+-- SCOPE: brand_id is the session's own brand (deps.session_brand).
 SELECT o.id, o.customer_id, o.store_id, o.ordered_at, o.total_cents, o.status,
        s.code AS store_code, s.name AS store_name
 FROM orders o
 JOIN stores s ON s.id = o.store_id
 WHERE o.id = $1
-  AND ($2::uuid IS NULL OR s.brand_id = $2::uuid)
+  AND ($2::uuid IS NULL OR s.brand_id = $2::uuid);
 """
 
 ORDER_ITEMS_SQL = """
+-- name: list_order_items
+-- params: order_id uuid
 SELECT i.id, i.order_id, i.product_id, i.qty, i.unit_price_cents,
        p.name AS product_name, p.sku AS sku
 FROM order_items i
 JOIN products p ON p.id = i.product_id
 WHERE i.order_id = $1
-ORDER BY i.id
+ORDER BY i.id;
 """
 
-CUSTOMER_EXISTS_SQL = "SELECT 1 FROM customers WHERE id = $1 AND deleted_at IS NULL"
+CUSTOMER_EXISTS_SQL = """
+-- name: customer_exists
+-- params: customer_id uuid
+SELECT 1 FROM customers WHERE id = $1 AND deleted_at IS NULL;
+"""
 
 
 def encode_cursor(at: datetime, row_id: uuid.UUID) -> str:
@@ -143,12 +157,21 @@ async def get_order_with_items(
     return detail
 
 
-# --- Global order list (the brand-scoped variant of db/queries/orders.sql:
-# --- list_orders_global). The shared file stays GLOBAL because data's
-# --- pipeline reads every brand's orders; the app's serving reader carries
-# --- the session's brand, so the two are not the same statement. ---
+# --- Global order list (mirrors db/queries/orders.sql: list_orders_global).
+# --- The shared file carries the session's brand predicate, and the copy
+# --- below is token-equal to it (tests/test_shared_statement_guard.py). ---
 
 LIST_ORDERS_GLOBAL_SQL = """
+-- name: list_orders_global
+-- params: cursor_at timestamptz|None, cursor_id uuid|None, store_code text|None, date_from date|None, date_to date|None, limit int, status text|None, search text|None, brand_id uuid|None
+-- Global order list, newest-first on (ordered_at DESC, id DESC) with store
+-- + customer display fields and per-order item count. Keyset page: fetch
+-- limit+1 upstream. Line items stay on GET /orders/:id (detail endpoint).
+-- SCOPE: brand_id pins the list to one brand -- the session's own brand
+-- (see deps.session_brand). None (a group-wide or HQ session) reads every
+-- brand, which is the only way this list is global. The predicate is the
+-- joined source row's (an order belongs to a store, a store belongs to a
+-- brand), so it is the population form: `($4 IS NULL OR s.brand_id = $4)`.
 SELECT o.id, o.customer_id, c.member_id AS customer_member_id,
        c.full_name AS customer_name,
        o.store_id, s.code AS store_code, s.name AS store_name,
@@ -166,7 +189,7 @@ WHERE ($3::text IS NULL OR s.code = $3)
   AND ($1::timestamptz IS NULL OR (o.ordered_at, o.id) < ($1::timestamptz, $2::uuid))
   AND ($9::uuid IS NULL OR s.brand_id = $9::uuid)
 ORDER BY o.ordered_at DESC, o.id DESC
-LIMIT $6
+LIMIT $6;
 """
 
 
