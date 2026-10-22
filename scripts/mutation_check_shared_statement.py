@@ -13,17 +13,35 @@ pin must FAIL on every one of them. The files are restored BYTES (a text
 round-trip rewrites CRLF to LF, and the tree then stops matching the
 commit).
 
+Three ways this script used to leave a lie behind, all closed here:
+
+* **A dirty baseline.** The restore proved "the file matches MY snapshot",
+  so a residue from an earlier killed run survived every later run while
+  the receipt still said `restored: True`. The run now REFUSES a dirty
+  tree, and at the end it proves the touched files match the COMMIT.
+* **Two runs interleaved.** They mutate the same files and restore from
+  their own snapshots, so they overwrite each other and the tree ends up
+  mutated while both report a clean restore. A lock file makes the second
+  run refuse.
+* **An orphan.** A killed shell leaves the python running, and it keeps
+  mutating the tree after the task is reported done. The lock is stale
+  after 15 minutes so a dead run cannot block the next one forever.
+
     python scripts/mutation_check_shared_statement.py
 """
 from __future__ import annotations
 
+import os
 import pathlib
 import re
 import subprocess
 import sys
+import time
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 TEST = "services/api/tests/test_shared_statement_serving_form.py"
+LOCK = ROOT / ".pi" / "mutation_check_shared_statement.lock"
+LOCK_STALE_SECONDS = 15 * 60
 
 # (file, name, pattern, replacement) -- the pattern must match exactly once.
 MUTATIONS = [
@@ -121,6 +139,35 @@ MUTATIONS = [
 ]
 
 
+def dirty_lines() -> list[str]:
+    proc = subprocess.run(["git", "status", "--porcelain"], cwd=ROOT,
+                          capture_output=True, text=True)
+    return [line for line in proc.stdout.splitlines() if line.strip()]
+
+
+def differs_from_head(rel: str) -> bool:
+    proc = subprocess.run(["git", "diff", "--quiet", "HEAD", "--", rel], cwd=ROOT)
+    return proc.returncode != 0
+
+def take_lock() -> None:
+    LOCK.parent.mkdir(parents=True, exist_ok=True)
+    if LOCK.exists():
+        age = time.time() - LOCK.stat().st_mtime
+        if age < LOCK_STALE_SECONDS:
+            raise SystemExit(
+                f"[REFUSED] another run holds {LOCK.name} ({int(age)}s old) - "
+                "two runs would interleave their mutations")
+        print(f"[LOCK ] taking over a stale lock ({int(age)}s old)")
+        LOCK.unlink()
+    fd = os.open(LOCK, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    os.write(fd, str(os.getpid()).encode())
+    os.close(fd)
+
+
+def release_lock() -> None:
+    LOCK.unlink(missing_ok=True)
+
+
 def run() -> int:
     proc = subprocess.run(
         [sys.executable, "-m", "pytest", TEST, "-q", "-p", "no:cacheprovider"],
@@ -129,6 +176,17 @@ def run() -> int:
 
 
 def main() -> int:
+    touched = sorted({rel for rel, _, _, _ in MUTATIONS})
+    stale = [rel for rel in touched if differs_from_head(rel)]
+    if stale:
+        print("[REFUSED] these files the run mutates already differ from the "
+              "commit, so the baseline is unknown:")
+        for rel in stale:
+            print("        ", rel)
+        for line in dirty_lines():
+            print("         tree:", line)
+        return 2
+    take_lock()
     originals = {rel: (ROOT / rel).read_bytes() for rel, _, _, _ in MUTATIONS}
     bad = 0
     try:
@@ -151,8 +209,13 @@ def main() -> int:
     finally:
         for rel, original in originals.items():
             (ROOT / rel).write_bytes(original)
+        release_lock()
     print("restored:", all((ROOT / rel).read_bytes() == original
                            for rel, original in originals.items()))
+    drifted = [rel for rel in originals if differs_from_head(rel)]
+    if drifted:
+        print("[DRIFT] these files differ from the commit after the run:", drifted)
+        bad += 1
     print("mutations that did not fail their check:", bad)
     return 1 if bad else 0
 
