@@ -4,9 +4,9 @@
 -- name: customer_by_id
 -- params: customer_id uuid
 SELECT id, member_id, external_member_id, full_name, attributes,
+  created_at, updated_at, group_id, linked_customer_id,
   gender, date_of_birth, district, address_line,
-  date_part('year', age(date_of_birth))::int AS age_years,
-  created_at, updated_at
+  date_part('year', age(date_of_birth))::int AS age_years
 FROM customers
 WHERE id = $1 AND deleted_at IS NULL;
 
@@ -33,12 +33,12 @@ WHERE customer_id = $1;
 
 -- name: customer_insert
 -- params: member_id text, external_member_id text|None, full_name text, attributes jsonb,
---   gender text|None, date_of_birth date|None, district text|None, address_line text|None
+--   group_id uuid|None, gender text|None, date_of_birth date|None, district text|None, address_line text|None
 INSERT INTO customers (member_id, external_member_id, full_name, attributes,
-  gender, date_of_birth, district, address_line)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+  group_id, gender, date_of_birth, district, address_line)
+VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8, $9)
 RETURNING id, member_id, external_member_id, full_name, attributes,
-  gender, date_of_birth, district, address_line, created_at, updated_at;
+  created_at, updated_at;
 
 -- name: customer_contact_insert
 -- params: customer_id uuid, kind text, value_normalized text, value_display text, is_primary bool
@@ -53,7 +53,8 @@ WHERE id = $1 AND deleted_at IS NULL;
 -- name: customer_merge_attributes
 -- params: customer_id uuid, attributes jsonb
 UPDATE customers
-SET attributes = COALESCE(attributes, '{}'::jsonb) || $2, updated_at = now()
+SET attributes = jsonb_strip_nulls(COALESCE(attributes, '{}'::jsonb) || $2::jsonb),
+    updated_at = now()
 WHERE id = $1 AND deleted_at IS NULL;
 
 -- name: customer_replace_contacts_delete
@@ -66,16 +67,47 @@ UPDATE customers SET deleted_at = now(), updated_at = now()
 WHERE id = $1 AND deleted_at IS NULL;
 
 -- name: list_customers
--- params: cursor_at timestamptz|None, cursor_id uuid|None, limit int
--- Global masked list, newest-first on (created_at DESC, id DESC).
+-- params: cursor_at timestamptz|None, cursor_id uuid|None, limit int, tier_code text|None, sms_consent text|None, group_id uuid|None, brand_id uuid|None
+-- Masked list, newest-first on (created_at DESC, id DESC).
 -- Keyset page: fetch limit+1 upstream. Contacts are masked at
 -- serialization (see repos/customers.list_customers_page); never LIKE on PII.
-SELECT id, member_id, external_member_id, full_name, created_at
+-- SCOPE: brand_id is the session's own brand (deps.session_brand); a customer
+-- with no completed order is visible to every brand.
+SELECT id, member_id, external_member_id, full_name, tier_code, created_at,
+  gender, date_part('year', age(date_of_birth))::int AS age_years
 FROM customers
 WHERE deleted_at IS NULL
+  AND ($4::text IS NULL OR tier_code = $4)
+  AND ($5::text IS NULL OR EXISTS
+    (SELECT 1 FROM consents s WHERE s.customer_id = customers.id
+     AND s.channel = 'sms' AND s.status = $5))
   AND ($1::timestamptz IS NULL OR (created_at, id) < ($1::timestamptz, $2::uuid))
+  AND ($6::uuid IS NULL OR group_id = $6::uuid OR group_id IS NULL)
+  AND ($7::uuid IS NULL OR EXISTS
+    (SELECT 1 FROM orders o JOIN stores s ON s.id = o.store_id
+     WHERE o.customer_id = customers.id AND o.status = 'completed'
+     AND s.brand_id = $7::uuid)
+    OR NOT EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = customers.id
+     AND o.status = 'completed'))
 ORDER BY created_at DESC, id DESC
 LIMIT $3;
+
+-- name: count_customers
+-- params: tier_code text|None, sms_consent text|None, group_id uuid|None, brand_id uuid|None
+-- The scoped twin of list_customers: the total for the same filters.
+SELECT COUNT(*) FROM customers
+WHERE deleted_at IS NULL
+  AND ($1::text IS NULL OR tier_code = $1)
+  AND ($2::text IS NULL OR EXISTS
+    (SELECT 1 FROM consents s WHERE s.customer_id = customers.id
+     AND s.channel = 'sms' AND s.status = $2))
+  AND ($3::uuid IS NULL OR group_id = $3::uuid OR group_id IS NULL)
+  AND ($4::uuid IS NULL OR EXISTS
+    (SELECT 1 FROM orders o JOIN stores s ON s.id = o.store_id
+     WHERE o.customer_id = customers.id AND o.status = 'completed'
+     AND s.brand_id = $4::uuid)
+    OR NOT EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = customers.id
+     AND o.status = 'completed'));
 
 -- name: page_contacts
 -- params: customer_ids uuid[]

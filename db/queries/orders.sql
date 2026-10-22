@@ -3,28 +3,36 @@
 
 -- name: customer_exists
 -- params: customer_id uuid
-SELECT 1 AS one
-FROM customers
-WHERE id = $1 AND deleted_at IS NULL;
+SELECT 1 FROM customers WHERE id = $1 AND deleted_at IS NULL;
 
 -- name: list_customer_orders
--- params: customer_id uuid, cursor_at timestamptz|None, cursor_id uuid|None, limit int
+-- params: customer_id uuid, cursor_at timestamptz|None, cursor_id uuid|None, limit int,
+--   store_code text|None, date_from date|None, date_to date|None, brand_id uuid|None
 -- Keyset page newest-first on (ordered_at DESC, id DESC). Fetch limit+1 upstream.
-SELECT o.id, o.customer_id, o.store_id, o.ordered_at, o.total_cents, o.status,
+-- SCOPE: brand_id is the session's own brand (deps.session_brand).
+SELECT o.id, o.customer_id, o.store_id, s.code AS store_code, s.name AS store_name,
+       o.ordered_at, o.total_cents, o.status,
        (SELECT COUNT(*) FROM order_items i WHERE i.order_id = o.id) AS item_count
 FROM orders o
+JOIN stores s ON s.id = o.store_id
 WHERE o.customer_id = $1
+  AND ($5::text IS NULL OR s.code = $5)
+  AND ($6::date IS NULL OR o.ordered_at >= $6::date::timestamptz)
+  AND ($7::date IS NULL OR o.ordered_at < (($7::date + 1)::timestamptz))
   AND ($2::timestamptz IS NULL OR (o.ordered_at, o.id) < ($2::timestamptz, $3::uuid))
+  AND ($8::uuid IS NULL OR s.brand_id = $8::uuid)
 ORDER BY o.ordered_at DESC, o.id DESC
 LIMIT $4;
 
 -- name: get_order_header
--- params: order_id uuid
+-- params: order_id uuid, brand_id uuid|None
+-- SCOPE: brand_id is the session's own brand (deps.session_brand).
 SELECT o.id, o.customer_id, o.store_id, o.ordered_at, o.total_cents, o.status,
        s.code AS store_code, s.name AS store_name
 FROM orders o
 JOIN stores s ON s.id = o.store_id
-WHERE o.id = $1;
+WHERE o.id = $1
+  AND ($2::uuid IS NULL OR s.brand_id = $2::uuid);
 
 -- name: list_order_items
 -- params: order_id uuid
@@ -36,7 +44,7 @@ WHERE i.order_id = $1
 ORDER BY i.id;
 
 -- name: list_orders_global
--- params: cursor_at timestamptz|None, cursor_id uuid|None, limit int, brand_id uuid|None
+-- params: cursor_at timestamptz|None, cursor_id uuid|None, store_code text|None, date_from date|None, date_to date|None, limit int, status text|None, search text|None, brand_id uuid|None
 -- Global order list, newest-first on (ordered_at DESC, id DESC) with store
 -- + customer display fields and per-order item count. Keyset page: fetch
 -- limit+1 upstream. Line items stay on GET /orders/:id (detail endpoint).
@@ -53,7 +61,14 @@ SELECT o.id, o.customer_id, c.member_id AS customer_member_id,
 FROM orders o
 JOIN customers c ON c.id = o.customer_id AND c.deleted_at IS NULL
 JOIN stores s ON s.id = o.store_id
-WHERE ($1::timestamptz IS NULL OR (o.ordered_at, o.id) < ($1::timestamptz, $2::uuid))
-  AND ($4::uuid IS NULL OR s.brand_id = $4::uuid)
+WHERE ($3::text IS NULL OR s.code = $3)
+  AND ($4::date IS NULL OR o.ordered_at >= $4::date::timestamptz)
+  AND ($5::date IS NULL OR o.ordered_at < (($5::date + 1)::timestamptz))
+  AND ($7::text IS NULL OR o.status = $7)
+  AND ($8::text IS NULL OR (o.id::text ILIKE $8 || '%'
+    OR c.member_id ILIKE '%' || $8 || '%' OR c.full_name ILIKE '%' || $8 || '%'))
+  AND ($1::timestamptz IS NULL OR (o.ordered_at, o.id) < ($1::timestamptz, $2::uuid))
+  AND ($9::uuid IS NULL OR s.brand_id = $9::uuid)
 ORDER BY o.ordered_at DESC, o.id DESC
-LIMIT $3;
+LIMIT $6;
+
