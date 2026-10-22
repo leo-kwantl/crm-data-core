@@ -110,8 +110,9 @@ CTE_NAME_RE = re.compile(
 FAMILIES = {
     # --- data's writers (pipelines/**) -------------------------------
     # The KPI population: the customer's group AND the brand's group,
-    # both read with the same scope parameter ($3).
-    "pipelines/snapshot.py::KPI_DAILY_UPSERT_SQL": "conjunctive",
+    # both read with the same scope parameter ($3). The predicates live
+    # in the scope CTEs (KPI_DAILY_CTES), which the writer interpolates.
+    "pipelines/snapshot.py::KPI_DAILY_CTES": "conjunctive",
     # The cohort population: the customer's group AND the brand's group
     # ($4). The third conjunct is the cohort row's own scope column.
     "pipelines/snapshot.py::COHORT_SNAPSHOT_UPSERT_SQL": "conjunctive",

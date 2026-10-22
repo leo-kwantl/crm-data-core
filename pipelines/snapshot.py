@@ -79,7 +79,11 @@ BUSINESS_TZ_SQL = (
 
 # --- KPI daily-grain SQL (one row per day x scope, idempotent re-run) ---
 
-KPI_DAILY_UPSERT_SQL = f"""
+# The scope CTEs of a KPI row: the row's own day bounds and the rows in
+# the row's scope. Shared by the writer (KPI_DAILY_UPSERT_SQL) and the
+# reseed (scripts/reseed_kpi_cumulative.py), so the rule that bounds the
+# cumulative columns has ONE home.
+KPI_DAILY_CTES = f"""
 WITH day_bounds AS (
   SELECT (($1::date)::timestamp {BUSINESS_TZ_SQL}) AS d_from,
          ((($1::date + 1))::timestamp {BUSINESS_TZ_SQL}) AS d_to,
@@ -104,14 +108,26 @@ scoped_customers AS (
       WHERE o2.customer_id = c.id AND o2.status = 'completed'
         AND s2.brand_id = $2::uuid))
 )
+"""
+
+KPI_DAILY_UPSERT_SQL = f"""{KPI_DAILY_CTES}
 INSERT INTO kpi_daily_snapshots
   (snapshot_date, customers_total, orders_total, revenue_cents_total,
    orders_day, revenue_day_cents, new_customers_day, active_30d,
    brand_id, group_id)
 SELECT $1::date,
-  (SELECT COUNT(*) FROM scoped_customers),
-  (SELECT COUNT(*) FROM scoped_orders),
-  (SELECT COALESCE(SUM(total_cents), 0) FROM scoped_orders),
+  -- The cumulative columns are the state as of THIS row's own date: the
+  -- bound is the row's own d_to (the next business day's midnight), so an
+  -- order dated after it is not yet part of that day's world. Unbounded,
+  -- the row carried the present table's counts under a past date's label
+  -- (the manager measured it on the live cluster: the row labelled
+  -- 2026-10-04 carried orders_total=8689 while the present was 8686).
+  (SELECT COUNT(*) FROM scoped_customers, day_bounds
+    WHERE created_at < d_to),
+  (SELECT COUNT(*) FROM scoped_orders, day_bounds
+    WHERE ordered_at < d_to),
+  (SELECT COALESCE(SUM(total_cents), 0) FROM scoped_orders, day_bounds
+    WHERE ordered_at < d_to),
   (SELECT COUNT(*) FROM scoped_orders, day_bounds
     WHERE ordered_at >= d_from AND ordered_at < d_to),
   (SELECT COALESCE(SUM(total_cents), 0) FROM scoped_orders, day_bounds

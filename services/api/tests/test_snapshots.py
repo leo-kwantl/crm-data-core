@@ -298,3 +298,134 @@ async def test_ld11_report_versioning_latest_wins(database_url: str):
                 "ld11-probe")
     finally:
         await pool.close()
+
+
+@pytest.mark.asyncio
+async def test_kpi_cumulative_columns_are_as_of_the_row_date(database_url: str):
+    """The cumulative columns are the state as of THIS row's own date.
+
+    `orders_total`, `revenue_cents_total` and `customers_total` used to
+    count the WHOLE present table, so one row mixed two clocks: the day
+    columns were as of the row's date, the totals were as of the write.
+    The manager measured it on the live cluster (probe
+    `reports/_probe_kpi_business_day.py`): the row labelled 2026-10-04
+    carried `orders_total=8689` while the present was 8686 -- a past
+    label with present numbers, so a reader plotting the cumulative curve
+    gets a flat line that looks like history.
+
+    The bound is the row's own `d_to` (the next business day's midnight):
+    an order dated after it is not yet part of that day's world. A row
+    written on its own day is unchanged (its d_to is tomorrow's midnight,
+    so it already counted everything present), and a back-dated row
+    becomes true.
+
+    The fixtures are dated in 1999-2000, a range no seed touches, and
+    every row written here is removed again -- on failure too.
+    """
+    import asyncpg
+
+    pool = await asyncpg.create_pool(database_url)
+    assert pool is not None
+    demo_brand = "60100000-0000-0000-0000-000000000001"
+    sid = c1 = c2 = None
+    as_of = date(1999, 12, 31)
+    today = business_today()
+    written_today = False
+    try:
+        async with pool.acquire() as conn:
+            sid = await conn.fetchval(
+                "INSERT INTO stores (code, name, brand_id)"
+                " VALUES ('KPI-ASOF-S', 'KPI As-of Store', $1)"
+                " ON CONFLICT (code) DO UPDATE SET name = EXCLUDED.name"
+                " RETURNING id", demo_brand)
+            c1 = await conn.fetchval(
+                "INSERT INTO customers (member_id, full_name, created_at)"
+                " VALUES ('M-009903', 'KPI As-of C1',"
+                " TIMESTAMPTZ '1999-12-01 00:00:00+00')"
+                " ON CONFLICT (member_id) DO UPDATE"
+                " SET created_at = EXCLUDED.created_at RETURNING id")
+            c2 = await conn.fetchval(
+                "INSERT INTO customers (member_id, full_name, created_at)"
+                " VALUES ('M-009904', 'KPI As-of C2',"
+                " TIMESTAMPTZ '2000-02-01 00:00:00+00')"
+                " ON CONFLICT (member_id) DO UPDATE"
+                " SET created_at = EXCLUDED.created_at RETURNING id")
+            # order 1 is before the row's day, order 2 is after it
+            await conn.execute(
+                "INSERT INTO orders (customer_id, store_id, ordered_at,"
+                " total_cents, status) VALUES ($1, $2,"
+                " TIMESTAMPTZ '1999-12-30 12:00:00+00', 700, 'completed')",
+                c1, sid)
+            await conn.execute(
+                "INSERT INTO orders (customer_id, store_id, ordered_at,"
+                " total_cents, status) VALUES ($1, $2,"
+                " TIMESTAMPTZ '2000-01-05 12:00:00+00', 900, 'completed')",
+                c2, sid)
+            await conn.execute(
+                "DELETE FROM kpi_daily_snapshots WHERE snapshot_date = $1::date"
+                " AND brand_id IS NULL AND group_id IS NULL", as_of)
+            row = await conn.fetchrow(KPI_DAILY_UPSERT_SQL, as_of, None, None)
+            assert row is not None
+            bound = ("((($1::date + 1))::timestamp"
+                     " AT TIME ZONE interval '8 hours')")
+            expected_orders = await conn.fetchval(
+                "SELECT COUNT(*) FROM orders WHERE status = 'completed'"
+                f" AND ordered_at < {bound}", as_of)
+            expected_cents = await conn.fetchval(
+                "SELECT COALESCE(SUM(total_cents), 0) FROM orders"
+                f" WHERE status = 'completed' AND ordered_at < {bound}", as_of)
+            expected_customers = await conn.fetchval(
+                "SELECT COUNT(*) FROM customers WHERE deleted_at IS NULL"
+                f" AND created_at < {bound}", as_of)
+            assert int(row["orders_total"]) == int(expected_orders), (
+                "orders_total must be the count as of the row's own date,"
+                " not the present table")
+            assert int(row["revenue_cents_total"]) == int(expected_cents), (
+                "revenue_cents_total must be the sum as of the row's own date")
+            assert int(row["customers_total"]) == int(expected_customers), (
+                "customers_total must be the count as of the row's own date")
+
+            # A row written on its own day is unchanged: its d_to is
+            # tomorrow's midnight, so it already counted everything present.
+            # The claim is only asserted when this test wrote the row --
+            # a pre-existing row for today belongs to the tick, and the
+            # upsert leaves it alone (ON CONFLICT DO NOTHING), so the
+            # write returns nothing and the claim is not measured here.
+            today_row = await conn.fetchrow(
+                KPI_DAILY_UPSERT_SQL, today, None, None)
+            if today_row is not None:
+                written_today = True
+                present_orders = await conn.fetchval(
+                    "SELECT COUNT(*) FROM orders WHERE status = 'completed'")
+                present_cents = await conn.fetchval(
+                    "SELECT COALESCE(SUM(total_cents), 0) FROM orders"
+                    " WHERE status = 'completed'")
+                assert int(today_row["orders_total"]) == int(present_orders), (
+                    "a row written on its own day must count everything"
+                    " present -- the bound must not change it")
+                assert int(today_row["revenue_cents_total"]) == int(present_cents)
+    finally:
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "DELETE FROM kpi_daily_snapshots WHERE snapshot_date = $1::date"
+                " AND brand_id IS NULL AND group_id IS NULL", as_of)
+            if written_today:
+                await conn.execute(
+                    "DELETE FROM kpi_daily_snapshots"
+                    " WHERE snapshot_date = $1::date"
+                    " AND brand_id IS NULL AND group_id IS NULL", today)
+            if c1 is not None or c2 is not None:
+                await conn.execute(
+                    "DELETE FROM order_items WHERE order_id IN"
+                    " (SELECT id FROM orders WHERE customer_id = ANY($1::uuid[]))",
+                    [x for x in (c1, c2) if x is not None])
+                await conn.execute(
+                    "DELETE FROM orders WHERE customer_id = ANY($1::uuid[])",
+                    [x for x in (c1, c2) if x is not None])
+            for cid in (c1, c2):
+                if cid is not None:
+                    await conn.execute(
+                        "DELETE FROM customers WHERE id = $1", cid)
+            if sid is not None:
+                await conn.execute("DELETE FROM stores WHERE id = $1", sid)
+        await pool.close()

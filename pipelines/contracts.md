@@ -5,36 +5,36 @@ After editing this file, run `python scripts/audit_doc_cites.py`.
 
 ## Contents
 
-- § customers — `member_id` shape, external key upsert, soft-delete revive, contact matching.
-- § orders — store NOT NULL, idempotency key, demo seed, line-sum totals, `ordered_at` rules.
-- § events / consents — append-only, dedup key `(source, source_event_id)`, kind vocabulary.
-- § Failure handling — quarantine tuple, stable `code`, `future_dated`, resolve-only writes.
-- § Snapshot history (serves downstream trends + training) — snapshot grains, KPI job, business-tz day, `--as-of` defaults.
-- § Daily RFM writer: `ld8_snapshot` (v2) vs `rfm_snapshot` (v1) — v1 append-only vs v2 find-or-create, pairing rule, `created_by`, scope fan-out.
-- § Batch upload ETL (frontend files land here) — receive → stage → validate → apply → finish, per-file idempotency.
-- § 015: segments + scheduled pipelines (ml part 2, data-owned tables) — 015 tables, segments `k`, runner, tick, run provenance.
-- § 016: modeling-upgrade flag mapping (ml registry / algorithms / signals) — ml argv flags per engine.
-- § 019: source connector framework (D1, [BREAKING ingest]) — source types, validate/sanitize, secrets at rest, admin-gated API.
-- § 020: cohort retention snapshots (D2, [ADDITIVE] analytics) — cohort grain, retention math, `retained_cents`.
-- § 053: recommendation attribution (D3, [BREAKING ingest]) — `rec_ref` token, upsert, customer-scoped reads, lower bound.
-- § 021: SHAP cluster-explainer result tables (M2, [ADDITIVE] analytics) — `explain_batches` / `explain_rows` shape.
-- § 040: SHAP batch coverage (`clusters_explained`, `clusters_skipped`) — nullable coverage columns, NULL = not recorded.
-- § 022: demand-forecast snapshot tables (M3, [ADDITIVE] analytics) — forecast grain, method, skipped count.
-- § 026: report definitions registry (LD11, [ADDITIVE] analytics) — immutable versioned report definitions.
-- § 027: landing receipts (LD12, [ADDITIVE] ingest) — one receipt per landed batch, counts reconcile.
-- § 028: fitted BTYD params (LM1, [ADDITIVE] analytics, joint with ml) — fit row grain, underscore model strings.
-- § 029: cluster-vs-population matrix (LM2, [ADDITIVE] analytics, joint with ml) — wide-layout matrix rows.
-- § 032: long-layout matrix (LM2, [ADDITIVE] analytics, joint with ml) — long-layout stat rows, `matrix_batch` argv split.
-- § 030: surrogate-fit registry + explain method labels (LM1, [ADDITIVE] analytics, joint with ml) — fit row, method labels.
-- § 031: time-aware RFM storage (LD8, [ADDITIVE] analytics, joint with ml) — `window_key`, v2 rows, movement pairs, unscoped aggregates.
-- § 037: backtest outcomes (M2, [ADDITIVE] analytics, joint with ml) — one row per customer/model/window, append-only.
-- § The stamped set: which relations carry a scope stamp (app+data+ml, 2026-10-17) — carriers, inheritors, negatives, unscoped outputs.
-- § The group filters and their populations (2026-10-22) — the form follows the meaning: a population filter compares a group with `=`, a row's own scope column with `IS NOT DISTINCT FROM`.
-- § Tree ownership & the mirror boundary (manager ruling 2026-10-22) — a file in both trees is edited in its owner's tree; the other tree's copy is refreshed from the owner's HEAD.
-- § `pipeline_runs`: what a reader may rely on (2026-10-20) — three stored statuses, terminal rows, stale `running`.
-- § The expectation floor: what "no row" means per job (2026-10-20) — cadence comes from the manifest row.
-- § The customer list's value and risk: one snapshot, one row per customer (2026-10-21) — newest snapshot in scope, NULL = not scored.
-- § The churn `all` leg is a nightly job, not a tab (2026-10-21) — manifest row for `activity = all`.
+- § customers
+- § orders
+- § events / consents
+- § Failure handling
+- § Snapshot history (serves downstream trends + training)
+- § Daily RFM writer: `ld8_snapshot` (v2) vs `rfm_snapshot` (v1)
+- § Batch upload ETL (frontend files land here)
+- § 015: segments + scheduled pipelines (ml part 2, data-owned tables)
+- § 016: modeling-upgrade flag mapping (ml registry / algorithms / signals)
+- § 019: source connector framework (D1, [BREAKING ingest])
+- § 020: cohort retention snapshots (D2, [ADDITIVE analytics])
+- § 053: recommendation attribution (D3, [BREAKING ingest])
+- § 021: SHAP cluster-explainer result tables (M2, [ADDITIVE analytics])
+- § 040: SHAP batch coverage (`clusters_explained`, `clusters_skipped`)
+- § 022: demand-forecast snapshot tables (M3, [ADDITIVE analytics])
+- § 026: report definitions registry (LD11, [ADDITIVE analytics])
+- § 027: landing receipts (LD12, [ADDITIVE ingest])
+- § 028: fitted BTYD params (LM1, [ADDITIVE analytics], joint with ml)
+- § 029: cluster-vs-population matrix (LM2, [ADDITIVE analytics], joint with ml)
+- § 032: long-layout matrix (LM2, [ADDITIVE analytics], joint with ml)
+- § 030: surrogate-fit registry + explain method labels (LM1, [ADDITIVE analytics], joint with ml)
+- § 031: time-aware RFM storage (LD8, [ADDITIVE analytics], joint with ml)
+- § 037: backtest outcomes (M2, [ADDITIVE analytics], joint with ml)
+- § The stamped set: which relations carry a scope stamp (app+data+ml, 2026-10-17)
+- § The group filters and their populations (2026-10-22)
+- § Tree ownership & the mirror boundary (manager ruling 2026-10-22)
+- § `pipeline_runs`: what a reader may rely on (2026-10-20)
+- § The expectation floor: what "no row" means per job (2026-10-20)
+- § The customer list's value and risk: one snapshot, one row per customer (2026-10-21)
+- § The churn `all` leg is a nightly job, not a tab (2026-10-21)
 
 ## customers
 
@@ -115,7 +115,7 @@ Scope columns (`brand_id`, `group_id`, NULL = not group-scoped) match 012.
 - `as_of` / `window_from` / `window_to` are business-day dates: a bound named `2026-10-16` is `2026-10-16T00:00+08` = `2026-10-15T16:00Z`.
 - `rfm_snapshots.window_from` is a `date`, so no stored row reveals the offset; a reader assuming `SHOW TimeZone` (GMT on this stack) or the host clock is wrong by up to 8h.
 - ML pins the naive->aware conversion (`ml_engine/rfm.py:_day_start`, `ZoneInfo("Asia/Hong_Kong")`); zero stored values change on a +08 host, so no `RULES_VERSION` bump.
-- Fixed 2026-10-17 in `pipelines/snapshot.py` (no migration, no schema change): every bucket-deciding trunc carries the offset (`BUSINESS_TZ_SQL`, `pipelines/snapshot.py:144-146`, `AT TIME ZONE interval '{BUSINESS_TZ_OFFSET_HOURS} hours'`).
+- Fixed 2026-10-17 in `pipelines/snapshot.py` (no migration, no schema change): every bucket-deciding trunc carries the offset (`BUSINESS_TZ_SQL`, `AT TIME ZONE interval '{BUSINESS_TZ_OFFSET_HOURS} hours'`).
 - `business_today()` (`pipelines/snapshot.py:245`) = `datetime.now(timezone(timedelta(hours=8))).date()` is the default `--as-of` of `scripts/run_daily_snapshot.py:70` and `scripts/run_pipeline.py:144`.
 - `BUSINESS_TZ_NAME` keeps the zone name (app pins `TIME_ZONE` in `apps/web/lib/format.ts`, ML pins `ZoneInfo`).
 - The defects: `date_trunc($1::text, ordered_at)` ran in the **session** zone (GMT), so week/month cohorts were UTC — over 8,685 orders, 137 month / 628 week / 3,698 day shift; and the `current` cutoff was server `CURRENT_DATE - 1` while both scripts defaulted `--as-of` to host `date.today()` (they disagree 00:00-08:00 local).
@@ -125,6 +125,15 @@ Scope columns (`brand_id`, `group_id`, NULL = not group-scoped) match 012.
 - Server-zone exception, one CHECK: every stored date is passed as an explicit `$1::date` parameter, except `db/migrations/017_customers_demographics.sql:11 CHECK (date_of_birth IS NULL OR date_of_birth <= CURRENT_DATE)`, evaluated in the **server** zone (a today DOB is then a violation 00:00-08:00 HKT).
 - Deliberately not tightened — a false rejection of a newborn's DOB is worse than a one-day-future value.
 - Environment trap: this pgembed install ships **no tzdata**, so `AT TIME ZONE 'Asia/Hong_Kong'` raises `time zone "Asia/Hong_Kong" not recognized`; any SQL-side pin must use the explicit offset form (Hong Kong has no DST).
+
+**A KPI row's cumulative columns are the state as of that row's own day.**
+
+- `customers_total`, `orders_total` and `revenue_cents_total` are bounded by the row's own `d_to` (the next business day's midnight), so an order dated after it is not yet part of that day's world.
+- Unbounded, a row carried the present table's counts under a past date's label: the manager measured it on the live cluster — the row labelled `2026-10-04` carried `orders_total=8689` while the present was `8686`.
+- The rule has one home: `pipelines/snapshot.py` `KPI_DAILY_UPSERT_SQL` (its scope CTEs are `KPI_DAILY_CTES`, which the reseed reuses).
+- The reseed order: the fix ships first (a reseed against the old writer recomputes the old numbers), then `scripts/reseed_kpi_cumulative.py` walks the rows in ascending `snapshot_date` and rewrites each through the writer's own statement, then `ANALYZE kpi_daily_snapshots`.
+- The order decides only which rows are corrected if the run is interrupted: each row is bounded by its own day, so its value does not depend on the order.
+- The pin: `services/api/tests/test_snapshots.py::test_kpi_cumulative_columns_are_as_of_the_row_date`; its teeth are `scripts/mutation_check_kpi_cumulative.py` (three mutations, one per cumulative column).
 
 **Which `as_of` default do you get?** Read the call site, not the column.
 
@@ -778,7 +787,7 @@ The reader half stays (`../crm-cdp-app/services/api/routers/analytics_rfm_window
 ## Tree ownership & the mirror boundary (manager ruling 2026-10-22)
 
 
-- **The rule (canonical home: the manager's `../AGENTS.md` § Ownership and `../docs/conventions.md` § The shared statement):** a file in **both** trees is edited in its **owner's** tree and the other tree's copy is refreshed from the owner's HEAD; a file in **one** tree is that tree's own — never copied, never deleted. App owns `services/api/**` (data mirrors it); data owns the shared SQL — `db/migrations/**`, `db/queries/**`, `db/seeds/**`.
+- **The rule is the manager's** (`../AGENTS.md` § Ownership, `../docs/conventions.md` § The shared statement) and is not restated here; data's half is that it owns `db/migrations/**`, `db/queries/**`, `db/seeds/**`, and app owns `services/api/**` (data mirrors it).
 - **A shared file carries the SERVING form** (manager ruling, 2026-10-22): a `db/queries/<resource>.sql` statement is what the runtime serves, and a runtime that inlines a copy of a named statement is token-equal to it. The ETL's unscoped need lives in the repo that owns the pipeline.
 - **The fork class is the file whose runtime INLINES a copy** — `db/queries/orders.sql`, `customers.sql`, `products.sql`, `identity.sql`; the parsed class (`consents.sql`, `customers_search.sql`, `pipelines.sql`, `analytics_snapshots.sql`) is read by its `-- name:` marker, so it cannot fork.
 - **Every named statement of the four inlined files is served verbatim** (33 of 35): the customer, order, product, inventory, staff and user reads were folded to the runtime's own text on 2026-10-22; the exceptions are `page_clv_scores` and `page_churn_scores`, data's own read path, which have no runtime copy.
