@@ -15,6 +15,9 @@ Every check here fails if the writer's change is reverted:
 - (5) the row names the population it describes (056's `population_rule`);
 - (6) the cohorts are DISJOINT: the grid's per-cohort sizes add up to the
       scope's distinct customers, or the reader's headline overcounts.
+- (7) no cohort is dated after the business day: a first completed order
+      past the business day's end places its customer in NO cohort, and a
+      future order of a placed customer counts no retained cell.
 
 The writes go to a throwaway brand/group/store and to member ids outside
 the demo seed's space, and every row this file creates is purged in a
@@ -331,6 +334,75 @@ async def test_the_writer_writes_the_rule_on_every_row(database_url: str):
                     "SELECT DISTINCT population_rule FROM cohort_snapshots"
                     " WHERE brand_id = $1", bid)
                 assert [r["population_rule"] for r in rules] == [POPULATION_RULE]
+            finally:
+                await _purge(conn, [bid])
+                await conn.execute("DELETE FROM groups WHERE code = $1",
+                                   GROUP_CODE)
+    finally:
+        await pool.close()
+
+
+@pytest.mark.asyncio
+async def test_no_cohort_is_dated_after_the_business_day(
+        database_url: str):
+    """(7): a Mar-2027-style future order never publishes a future cohort.
+
+    c1's first completed order is 2027-03-01 -- a row that slipped the
+    ingest quarantine (which refuses future completed orders at upload).
+    c2 belongs to Sep 2026 but carries one extra future completed order.
+    The writer places c1 in NO cohort and counts c2's future order in NO
+    retained cell: the grid publishes no cohort period past the business
+    day, and the disjointness assert still balances on the placed
+    customers only.
+    """
+    import asyncpg
+
+    pool = await asyncpg.create_pool(database_url)
+    assert pool is not None
+    try:
+        async with pool.acquire() as conn:
+            gid, bid, _bid2, sid, _sid2, ids = await _make_scope(conn)
+            try:
+                await _order(conn, ids["M-009801"], sid, _ts(2027, 3, 1))
+                await _order(conn, ids["M-009802"], sid, _ts(2026, 9, 10))
+                await _order(conn, ids["M-009802"], sid, _ts(2027, 3, 5),
+                             total=9999)
+
+                row = await conn.fetchrow(COHORT_SNAPSHOT_UPSERT_SQL,
+                                          "month", 12, bid, None)
+                assert int(row["population"]) == 1, (
+                    "the future-first customer was placed in a cohort")
+
+                latest = await conn.fetchval(
+                    "SELECT MAX(cohort_period) FROM cohort_snapshots"
+                    " WHERE granularity = 'month' AND brand_id = $1", bid)
+                assert latest is not None, "the grid is empty"
+                assert str(latest) == "2026-09-01", \
+                    f"a future cohort published: {latest}"
+
+                future_cells = await conn.fetchval(
+                    "SELECT COUNT(*) FROM cohort_snapshots"
+                    " WHERE granularity = 'month' AND brand_id = $1"
+                    " AND cohort_period >= '2027-01-01'::date", bid)
+                assert int(future_cells) == 0, \
+                    "future cohort cells survived the cap"
+
+                # c2's Mar-2027 offset (k=6) reads 0: the future order
+                # counted nothing, while the Sep window still measures.
+                mar = await conn.fetchrow(
+                    "SELECT retained, retained_cents FROM cohort_snapshots"
+                    " WHERE granularity = 'month' AND brand_id = $1"
+                    " AND cohort_period = '2026-09-01'::date"
+                    " AND period_offset = 6", bid)
+                assert mar is not None, "c2's Mar-2027 offset cell missing"
+                assert mar["retained"] == 0, \
+                    "a future order counted as retained"
+                assert mar["retained_cents"] == 0
+
+                grid_size_sum = int(await conn.fetchval(
+                    COHORT_GRID_SIZE_SQL, "month", bid, None))
+                assert_cohorts_disjoint(grid_size_sum, 1, "month", bid,
+                                        None)
             finally:
                 await _purge(conn, [bid])
                 await conn.execute("DELETE FROM groups WHERE code = $1",

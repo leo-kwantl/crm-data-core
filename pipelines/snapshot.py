@@ -188,6 +188,10 @@ KPI_TREND_SQL = _shared_statement("kpi_daily.sql", "kpi_trend")
 # construction. Week periods start Monday (date_trunc('week')).
 # Params: $1 granularity ('week'|'month'|'year'), $2 max_offset (>= 0),
 # $3 brand_id scope (NULL = all), $4 group_id scope (NULL = all).
+# The future cap needs no param: the bound is the next business midnight,
+# exclusive -- the same instant form as the KPI writer's d_to -- computed
+# from the server clock in business time (the interval form needs no
+# tzdata and never reads the session zone, which is the F8 rule).
 # A re-run RE-MEASURES its cells (ON CONFLICT ... DO UPDATE on the grain
 # index's expressions) and DELETES the cells this run's population no
 # longer produces, so the grid carries one vintage and one population.
@@ -226,11 +230,22 @@ WITH scoped_orders AS (
     AND ($4::uuid IS NULL OR c.group_id = $4::uuid)
     AND ($4::uuid IS NULL OR b.group_id = $4::uuid)
 ),
+-- A cohort is a claim about days that already happened: no cohort period
+-- starts after the business day's end, and no retained order is dated
+-- after it. A first completed order past the cap (a Mar-2027-style row
+-- that slipped the ingest quarantine) places its customer in NO cohort,
+-- so the grid never publishes a future cohort and the disjointness
+-- assert still balances (the population is the placed customers only).
+cap AS (
+  SELECT ((((now() {BUSINESS_TZ_SQL})::date + 1)::timestamp
+            {BUSINESS_TZ_SQL})) AS future_cap
+),
 cohort_of AS (
   SELECT customer_id,
          date_trunc($1::text, MIN(ordered_at) {BUSINESS_TZ_SQL})::date AS cohort
-  FROM scoped_orders
+  FROM scoped_orders, cap
   GROUP BY customer_id
+  HAVING MIN(ordered_at) < (SELECT future_cap FROM cap)
 ),
 cohort_size AS (
   SELECT cohort, COUNT(*) AS n FROM cohort_of GROUP BY cohort
@@ -256,6 +271,7 @@ retained AS (
   JOIN cohort_of co ON co.cohort = p.cohort
   JOIN scoped_orders so ON so.customer_id = co.customer_id
     AND date_trunc($1::text, so.ordered_at {BUSINESS_TZ_SQL})::date = p.period_start
+    AND so.ordered_at < (SELECT future_cap FROM cap)
   GROUP BY p.cohort, p.k
 ),
 produced AS (

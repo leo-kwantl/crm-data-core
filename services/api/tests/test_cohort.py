@@ -54,7 +54,10 @@ def test_cohort_sql_shape():
     assert BUSINESS_TZ_NAME == "Asia/Hong_Kong"
     assert BUSINESS_TZ_OFFSET_HOURS == 8
     assert BUSINESS_TZ_SQL == "AT TIME ZONE interval '8 hours'"
-    assert COHORT_SNAPSHOT_UPSERT_SQL.count(BUSINESS_TZ_SQL) == 2
+    assert COHORT_SNAPSHOT_UPSERT_SQL.count(BUSINESS_TZ_SQL) == 4
+    # Four, not two: the two bucket truncs plus the future cap's two
+    # (business-today from the server clock, then next-midnight) -- a
+    # fifth offset-form use with no trunc is a fork of this rule.
     # Bare trunc = the defect this guards (buckets were UTC on a GMT server).
     assert "date_trunc($1::text, MIN(ordered_at))" \
         not in COHORT_SNAPSHOT_UPSERT_SQL
