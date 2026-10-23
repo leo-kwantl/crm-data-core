@@ -154,6 +154,10 @@ FAMILIES = {
     # stored per scope), so the global scope is selected too.
     "db/queries/customers.sql::page_clv_scores": "scope-exact",
     "db/queries/customers.sql::page_churn_scores": "scope-exact",
+    # The revenue-at-risk join: each side's snapshot carries its own scope
+    # stamp, exactly like the two pages it joins.
+    "db/queries/revenue_at_risk.sql::revenue_at_risk_page": "scope-exact",
+    "db/queries/revenue_at_risk.sql::revenue_at_risk_top": "scope-exact",
     "db/queries/kpi_daily.sql::kpi_trend": "scope-exact",
     "db/queries/kpi_daily.sql::kpi_pct_change": "scope-exact",
     "db/queries/kpi_daily.sql::clv_snapshots_list": "scope-exact",
