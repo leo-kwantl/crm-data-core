@@ -73,6 +73,27 @@ async def get_subscription_derived(conn, customer_id: UUID) -> dict:
     }
 
 
+async def contactability_map(conn, customer_ids: list) -> dict:
+    """A4 gate: customer_id -> contactable bool, one query (default-deny).
+
+    Contactable iff ANY channel row is opted_in; customers with no consent
+    rows are NOT contactable. Keys are str(customer_id); missing ids map
+    to False so a caller can never mistake "unknown" for "allowed"."""
+    if not customer_ids:
+        return {}
+    rows = await conn.fetch(
+        "SELECT customer_id,"
+        " bool_or(status = 'opted_in') AS contactable"
+        " FROM consents WHERE customer_id = ANY($1::uuid[])"
+        " GROUP BY customer_id",
+        list(customer_ids),
+    )
+    out = {str(cid): False for cid in customer_ids}
+    for r in rows:
+        out[str(r["customer_id"])] = bool(r["contactable"])
+    return out
+
+
 async def replace_consents(
     pool,
     customer_id: UUID,

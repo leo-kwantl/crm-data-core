@@ -22,6 +22,7 @@ from ..deps import (
     require_customer_in_scope,
 )
 from ..repos import campaigns as repo
+from ..repos import consents as consents_repo
 from ..repos import groups as groups_repo
 from ..repos.reference import UnknownCodeError
 from ..repos.paging import clamp_page_size
@@ -170,7 +171,17 @@ async def list_members(
         raise HTTPException(status_code=400, detail={"code": "invalid_cursor"})
     if items is None:
         raise HTTPException(status_code=404, detail={"code": "campaign_not_found"})
-    return {"data": items, "next_cursor": next_cursor}
+    # A4 gate (read side): audience reads subtract non-contactable members
+    # and say so. Type-only counts -- never raw consent rows (PII rule).
+    async with pool.acquire() as conn:
+        contactable = await consents_repo.contactability_map(
+            conn, [m["customer_id"] for m in items])
+    for m in items:
+        m["contactable"] = contactable.get(str(m["customer_id"]), False)
+    excluded = sum(1 for m in items if not m["contactable"])
+    return {"data": items, "next_cursor": next_cursor,
+            "contactable_count": len(items) - excluded,
+            "excluded_non_contactable": excluded}
 
 
 @router.post("/campaigns/{campaign_id}/members", status_code=status.HTTP_201_CREATED)
@@ -185,6 +196,23 @@ async def add_member(
         raise HTTPException(status_code=404, detail={"code": "campaign_not_found"})
     _guard_row(user, campaign.get("brand_id"), campaign.get("group_id"), "campaign_not_found")
     await require_customer_in_scope(pool, payload.customer_id, user)
+    # A4 gate (write side): opted-out customers cannot be added to an
+    # audience. Type-only refusal -- no consent values in the detail.
+    # Existence first: an unknown id stays customer_not_found, never leaks
+    # the gate's verdict for a customer that does not exist.
+    async with pool.acquire() as conn:
+        exists = await conn.fetchval(
+            "SELECT 1 FROM customers WHERE id = $1 AND deleted_at IS NULL",
+            payload.customer_id)
+        if exists is None:
+            raise HTTPException(status_code=422, detail={
+                "code": "customer_not_found"})
+        if not consents_repo.derive_contactability(
+                await consents_repo.get_consents(conn, payload.customer_id)):
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "not_contactable",
+                        "reason": "no_opted_in_channel"})
     result = await repo.add_member(
         pool, campaign_id, payload.customer_id, assigned_by=user.staff_code
     )
