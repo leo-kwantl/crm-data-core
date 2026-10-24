@@ -86,6 +86,7 @@ async def get_by_member_id(
     page_size: int = Query(default=20),
     tier_code: str | None = Query(default=None),
     sms_status: str | None = Query(default=None),
+    segment: str | None = Query(default=None),
     pool=Depends(get_pool),
     user: CurrentUser = Depends(get_current_user),
 ) -> dict:
@@ -97,19 +98,23 @@ async def get_by_member_id(
         # Global masked list (portal): newest-first, cursor-paginated.
         # Added additively; the member_id lookup below is unchanged.
         # Optional filters: ?tier_code= (exact, upper-cased) +
-        # ?sms_status=opted_in|opted_out (400 on any other value).
+        # ?sms_status=opted_in|opted_out (400 on any other value) +
+        # ?segment= (one of the RFM segment names, 400 on any other value;
+        # membership is read from the latest RFM snapshot).
         _limit(request, user.staff_code, "list")
         size = clamp_page_size(page_size)
         try:
             tier, sms = customers_repo.normalize_filters(tier_code, sms_status)
-        except ValueError:
-            raise HTTPException(status_code=400, detail={"code": "invalid_sms_status"})
+            seg = customers_repo.normalize_segment(segment)
+        except ValueError as exc:
+            code = "invalid_segment" if "segment" in str(exc) else "invalid_sms_status"
+            raise HTTPException(status_code=400, detail={"code": code})
         if page is not None:
             # Numbered page (offset mode); cursor params stay valid but unused.
             async with pool.acquire() as conn:
                 payload = await customers_repo.list_customers_offset(
                     conn, page=page, page_size=size,
-                    tier_code=tier, sms_status=sms,
+                    tier_code=tier, sms_status=sms, segment=seg,
                     group_id=user.group_id, brand_id=session_brand(user),
                 )
                 await repo.write_audit(
@@ -121,7 +126,7 @@ async def get_by_member_id(
             try:
                 items, next_cursor = await customers_repo.list_customers_page(
                     conn, limit=limit, cursor=cursor,
-                    tier_code=tier, sms_status=sms,
+                    tier_code=tier, sms_status=sms, segment=seg,
                     group_id=user.group_id, brand_id=session_brand(user),
                 )
             except ValueError:

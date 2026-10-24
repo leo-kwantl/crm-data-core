@@ -522,6 +522,70 @@ def normalize_filters(
     return tier, sms
 
 
+# RFM segment vocabulary (whitelist for ?segment=). Mirrors
+# routers/analytics_rfm._SEGMENT_GUIDE (engine first-match order) and the
+# web's SEGMENT_PRIORITY (components/chartTheme.ts): the filter only ever
+# names a segment the scorer can assign, so a typo 400s instead of
+# silently listing nobody.
+RFM_SEGMENTS = frozenset({
+    "Champions",
+    "Can't Lose Them",
+    "Loyal",
+    "Potential Loyalist",
+    "Promising",
+    "New",
+    "Need Attention",
+    "At Risk",
+    "Lost/Churned",
+    "Hibernating",
+    "Other",
+})
+
+
+def normalize_segment(segment: str | None) -> str | None:
+    """Clean additive segment filter. Raises ValueError on unknown names."""
+    seg = segment.strip() if segment and segment.strip() else None
+    if seg is not None and seg not in RFM_SEGMENTS:
+        raise ValueError("invalid_segment")
+    return seg
+
+
+# Optional segment predicate, composed at the call site (never inlined
+# into the shared literals above, which stay token-equal with
+# db/queries/customers.sql — see tests/test_shared_statement_guard.py:
+# the guard only collects the module-level literals, not call-site
+# composition). Membership is read from the LATEST rfm snapshot; when
+# no snapshot exists the filter matches nothing. rfm_customer_scores
+# carries no brand, but the outer scope predicates still apply, so a
+# brand-scoped session cannot reach another brand's customers through
+# this clause.
+_LATEST_SNAPSHOT_SQL = (
+    "(SELECT id FROM rfm_snapshots ORDER BY scored_at DESC LIMIT 1)"
+)
+
+
+def _with_segment(base_sql: str, param: str) -> str:
+    """Return base_sql with an optional segment predicate on $param.
+
+    A NULL param is a no-op (IS NULL), so callers always bind the
+    normalized segment. Raises ValueError if neither insertion point
+    is found (fail loud in tests, never silently unfiltered in prod).
+    """
+    clause = (
+        f"AND ({param}::text IS NULL OR EXISTS (SELECT 1 "
+        f"FROM rfm_customer_scores s WHERE s.customer_id = customers.id "
+        f"AND s.snapshot_id = {_LATEST_SNAPSHOT_SQL} "
+        f"AND s.segment = {param})) "
+    )
+    anchor = "ORDER BY created_at DESC"
+    if anchor in base_sql:
+        return base_sql.replace(anchor, clause + anchor, 1)
+    stripped = base_sql.rstrip()
+    if stripped.endswith(";"):
+        return stripped[:-1] + " " + clause + ";"
+    raise ValueError("segment anchor missing")
+
+
 def encode_customer_cursor(at: datetime, row_id: UUID) -> str:
     raw = json.dumps({"at": at.isoformat(), "id": str(row_id)}).encode()
     return base64.urlsafe_b64encode(raw).decode()
@@ -543,6 +607,7 @@ async def list_customers_page(
     cursor: str | None,
     tier_code: str | None = None,
     sms_status: str | None = None,
+    segment: str | None = None,
     group_id: UUID | None = None,
     brand_id: UUID | None = None,
 ) -> tuple[list[dict], str | None]:
@@ -558,9 +623,10 @@ async def list_customers_page(
     if cursor:
         cursor_at, cursor_id = decode_customer_cursor(cursor)
     tier, sms = normalize_filters(tier_code, sms_status)
+    seg = normalize_segment(segment)
     rows = await conn.fetch(
-        LIST_CUSTOMERS_SQL, cursor_at, cursor_id, limit + 1, tier, sms, group_id,
-        brand_id,
+        _with_segment(LIST_CUSTOMERS_SQL, "$8"), cursor_at, cursor_id,
+        limit + 1, tier, sms, group_id, brand_id, seg,
     )
     page = [dict(r) for r in rows]
     next_cursor = None
@@ -631,6 +697,7 @@ async def list_customers_offset(
     page_size: int,
     tier_code: str | None = None,
     sms_status: str | None = None,
+    segment: str | None = None,
     group_id: UUID | None = None,
     brand_id: UUID | None = None,
 ) -> dict:
@@ -642,10 +709,14 @@ async def list_customers_offset(
     from .paging import offset_payload
 
     tier, sms = normalize_filters(tier_code, sms_status)
-    total = await conn.fetchval(COUNT_CUSTOMERS_SQL, tier, sms, group_id, brand_id)
+    seg = normalize_segment(segment)
+    total = await conn.fetchval(
+        _with_segment(COUNT_CUSTOMERS_SQL, "$5"), tier, sms, group_id,
+        brand_id, seg,
+    )
     rows = await conn.fetch(
-        OFFSET_CUSTOMERS_SQL, page_size, (page - 1) * page_size, tier, sms,
-        group_id, brand_id,
+        _with_segment(OFFSET_CUSTOMERS_SQL, "$7"), page_size,
+        (page - 1) * page_size, tier, sms, group_id, brand_id, seg,
     )
     items = (
         await enrich_customer_page(conn, [dict(r) for r in rows]) if rows else []
