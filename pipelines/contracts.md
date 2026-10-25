@@ -242,9 +242,11 @@ The `window_key='current'` pin stays in both branches, yielding the empty state 
 
 **POST path.**
 
-`SNAPSHOT_INSERT_SQL` (`store_rfm.py:35-43`) omits `window_key` from its column list (`:37-38`, nine columns), so the DDL default stamps `'current'` on every app-POSTed row **regardless of mode or user dates**.
-The `RETURNING` names it too (`:40-42`), so a POSTed row comes back **self-identifying** (`mode='custom'` *and* `window_key='current'`) with no schema change and no extra request, and two POSTed `custom` snapshots for different ranges would both be `current`.
-`window_key`'s job here is in the **guard**, not the predicate: the movement guard checks `mode` + `rules_version` only (`analytics_rfm.py:265-270`), so a cross-key pair is accepted with 200 — proven live `from=880c0cbe` (`mom`) → `to=807d4f38` (`lifetime`) → `customers_both 252, entered 688, exited 0`, which is the window widening, not movement.
+`SNAPSHOT_INSERT_SQL` (`store_rfm.py:35-43`) omits `window_key` (`:37-38`), so without 059 the DDL default stamped `'current'` on every POSTed row regardless of mode or dates.
+`059_rfm_manual_window_key.sql` admits `manual:` keys and adds the `rfm_snapshots_stamp_manual_key` trigger, rewriting a v1 `'current'` row to `manual:<window_from>:<window_to>` from its bounds: same-range freezes share a key and pair; cross-range never do.
+The `RETURNING` carries the key so a POSTed row self-identifies its range; writers unchanged: ml's v1 INSERT still omits the column and the app's `get_movement` guard pairs same mode + rules_version + window_key, refusing the rest as 422 `snapshot_mode_mismatch`.
+Before 059: `from=880c0cbe` (`mom`) to `to=807d4f38` (`lifetime`) gave `customers_both 252, entered 688, exited 0`, the window widening, not movement.
+INSERT-only: pre-059 v1 rows keep `'current'` and their old pairing; v2 rows never match the predicate, so the four named keys stand.
 Scope that fix to this endpoint: LD8's own `segment_movement` pairs different keys **by design** (`mom`→`current`; `ml_engine/segment_movement.py:23-26` `PAIR_WINDOWS`).
 - `store_rfm.py:36` and `store_ld8.py:53` are the only production writes of `rules_version` (the app POST reuses the former; its only direct INSERTs are in `../crm-cdp-app/services/api/tests/test_rfm.py:451/513/537`), so a scope holding **only v1 rows** is exactly a scope **LD8 has never been ticked in** — check `SELECT DISTINCT rules_version` for that scope; the remedy is a scoped LD8 run, not an empty-state fix.
 
