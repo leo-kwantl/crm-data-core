@@ -42,11 +42,10 @@ After editing this file, run `python scripts/audit_doc_cites.py`.
 |---|---|---|
 | member code | `member_id` | must match `^M-[0-9]{6}$`, else reject row + quarantine |
 | source key | `external_member_id` | unique per source; second-see is update, not insert |
-| re-ingest of a soft-deleted member | `deleted_at` | **revive**: a re-ingested member clears the tombstone (the feed is authoritative for "this member exists again") |
-| re-ingest of a soft-deleted member | `deleted_at` | a revived customer is counted as `customers_revived` in the run summary and written as the staged row's reason |
-| re-ingest of a soft-deleted member | `deleted_at` | a resurrected customer reappears in every segment and dashboard |
+| re-ingest of a soft-deleted member | `deleted_at` | **revive**: the feed is authoritative — clears the tombstone, counted as `customers_revived`, reappears in every segment |
 | phone/email | `phone`, `email` | exact-first matching |
 | phone/email | `phone`, `email` | on an exact miss a bounded substring fallback (min 3 digits / 3 chars, LIMIT 20, POST body, criteria-type-only audit) |
+| acquisition channel | `acquisition_channel` | mapped onto `reference_values` domain `acquisition_channel`; unmapped reads `unknown` (060) |
 
 ## orders
 
@@ -129,8 +128,7 @@ Scope columns (`brand_id`, `group_id`, NULL = not group-scoped) match 012.
 **A KPI row's cumulative columns are the state as of that row's own day.**
 
 - `customers_total`, `orders_total` and `revenue_cents_total` are bounded by the row's own `d_to` (the next business day's midnight), so an order dated after it is not yet part of that day's world.
-- Unbounded, a row carried the present table's counts under a past date's label: the manager measured it on the live cluster — the row labelled `2026-10-04` carried `orders_total=8689` while the present was `8686`.
-- After the reseed on that cluster the three global rows read 8383 / 8458 / 8523 for 2026-09-30 / 2026-10-04 / 2026-10-08 — a curve that rises, each row the count of the orders before its own day.
+- After the reseed the three global rows rise across their days, each row the count of the orders before its own day.
 - The rule has one home: `pipelines/snapshot.py` `KPI_DAILY_UPSERT_SQL` (its scope CTEs are `KPI_DAILY_CTES`, which the reseed reuses).
 - The reseed order: the fix ships first (a reseed against the old writer recomputes the old numbers), then `scripts/reseed_kpi_cumulative.py` walks the rows in ascending `snapshot_date` and rewrites each through the writer's own statement, then `ANALYZE kpi_daily_snapshots`.
 - The order decides only which rows are corrected if the run is interrupted: each row is bounded by its own day, so its value does not depend on the order.
@@ -245,7 +243,6 @@ The `window_key='current'` pin stays in both branches, yielding the empty state 
 `SNAPSHOT_INSERT_SQL` (`store_rfm.py:35-43`) omits `window_key` (`:37-38`), so without 059 the DDL default stamped `'current'` on every POSTed row regardless of mode or dates.
 `059_rfm_manual_window_key.sql` admits `manual:` keys and adds the `rfm_snapshots_stamp_manual_key` trigger, rewriting a v1 `'current'` row to `manual:<window_from>:<window_to>` from its bounds: same-range freezes share a key and pair; cross-range never do.
 The `RETURNING` carries the key so a POSTed row self-identifies its range; writers unchanged: ml's v1 INSERT still omits the column and the app's `get_movement` guard pairs same mode + rules_version + window_key, refusing the rest as 422 `snapshot_mode_mismatch`.
-Before 059: `from=880c0cbe` (`mom`) to `to=807d4f38` (`lifetime`) gave `customers_both 252, entered 688, exited 0`, the window widening, not movement.
 INSERT-only: pre-059 v1 rows keep `'current'` and their old pairing; v2 rows never match the predicate, so the four named keys stand.
 Scope that fix to this endpoint: LD8's own `segment_movement` pairs different keys **by design** (`mom`→`current`; `ml_engine/segment_movement.py:23-26` `PAIR_WINDOWS`).
 - `store_rfm.py:36` and `store_ld8.py:53` are the only production writes of `rules_version` (the app POST reuses the former; its only direct INSERTs are in `../crm-cdp-app/services/api/tests/test_rfm.py:451/513/537`), so a scope holding **only v1 rows** is exactly a scope **LD8 has never been ticked in** — check `SELECT DISTINCT rules_version` for that scope; the remedy is a scoped LD8 run, not an empty-state fix.
@@ -378,7 +375,6 @@ Seeds: nightly + weekly content-verbatim from the agreed example YAML (split per
 - Extending to a ladder (e.g. {5,6}) is a manifest edit if a second k ever gets a consumer, not a code change.
 - Do NOT "serve the latest available k" instead -- that relabels k=6 clusters as the k the caller asked for.
 - Pairing runs across days: key a per-segment series on `(as_of, k)` and read `k > count(DISTINCT label)` as an EMPTY segment, never as a missing row.
-- Measured on the live cluster: every brand scope is `k=5` on every day the seed pins; the global scope still carries a `2026-10-16` `k=6` run beside its `k=5` days; `2026-10-20` `behavior` has `k=5` with 4 labels (`overall` on `2026-10-16`: `k=6`, 5 labels).
 - k is a CALLER PARAMETER with a configured value, never a model choice: no engine selects k (no elbow/silhouette anywhere in ml -- the fit computes `inertia` for whatever k it is handed, and `store_segments` records `k_requested`/`k_used`).
 - The page copy's "fitted by the model (elbow/silhouette)" states intent (staff do not choose k), not mechanism; do not "resolve" that wording by adding auto-k selection, which would fight the pin.
 - All four places name the same value: the 015 seed, the runner default, ml's CLI default (`66fe0c7`), and the live `pipeline_manifests` rows.
