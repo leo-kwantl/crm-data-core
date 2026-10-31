@@ -34,9 +34,13 @@ counts; TOTALS add the 8 bootstrap demo customers / ~15 orders, i.e.
 8,685 vs 9,372 -- so a run reporting `orders=9372` or a 2024-10 first
 order ran a STALE CHECKOUT of this script, not a different catalog (a
 catalog swap moves baskets/revenue, never the ladder). Reference binds
-on this revision (totals): customers 1,208 / orders 8,685 /
-top20_share 0.76 / max_recency_d ~400 (measured against CURRENT_DATE,
-so it grows by 1 per day) / full_optout 107.
+on this revision (totals): customers 1,280 / orders 10,755 /
+top20_share 0.74 / max_recency_d 409 (measured 2026-10-31 against
+CURRENT_DATE, so it grows by 1 per day) / full_optout 108. The
++12 customers / +228 orders over the 1,208 / 8,685 base are the
+2026-10-31 recent fill (12 M-031201.. signups, RS3-R-* orders
+2026-10-16..2026-10-30); the +60 / +1,842 over that are the
+restored M-02 dev-history block (seed_dev_history.py rerun).
 
 Distribution spec (owner-approved, bound 2026-10-15):
 - 1,200 customers, M-03 block (M-030001..M-031200; no collision with
@@ -84,6 +88,17 @@ Distribution spec (owner-approved, bound 2026-10-15):
   campaigns). Additive only: demo/bootstrap assignments are never
   touched, and a `--reset-seed-block` re-run reproduces the same
   membership exactly.
+- Acquisition-channel fill (2026-10-31, additive): every M-03% row
+  still 'unknown' gets one draw from its per-member stream over the
+  060 vocab (walk_in 35 / online 25 / referral 15 / social 12 /
+  phone 8 / event 5); demo and dev-history rows are never in the
+  predicate, and a rerun updates nothing.
+- Recent fill 2026-10-16..2026-10-30 (2026-10-31, additive): ~15% of
+  M-03 members get 1-2 extra completed orders dated in-window
+  (`RS3-R-*`, same source-tag family, skip-if-exists) with baskets
+  from the live catalog, plus 12 new M-031201.. signups created
+  in-window with one first order each. Per-member streams, so a
+  rerun inserts nothing.
 
 Run (after the bootstrap wipe and AFTER `seed_catalog.py` -- the
 campaign-member slice below needs the catalog campaigns to exist,
@@ -143,6 +158,26 @@ HOME_STORE_P = 0.85  # else a cross-brand visit
 CAT_W = {"care": 3.0, "accessories": 3.0, "lenses": 2.0,
          "sunglasses": 1.2, "frames": 1.0}
 CHANNELS = ("sms", "email", "whatsapp")
+# Acquisition-channel split over the 060 vocab (owner-approved
+# 2026-10-31): cumulative-draw shares, percentages of the M-03% block.
+CHANNEL_SPLIT = (
+    ("walk_in", 35.0),
+    ("online", 25.0),
+    ("referral", 15.0),
+    ("social", 12.0),
+    ("phone", 8.0),
+    ("event", 5.0),
+)
+# Recent fill window (additive, 2026-10-31): a deterministic subset of
+# M-03 members gets 1-2 extra completed orders dated in-window, plus a
+# handful of new M-03 signups created in-window.
+RECENT_START = date(2026, 10, 16)
+RECENT_END = date(2026, 10, 30)
+RECENT_P = 0.15  # share of M-03 members getting extra recent orders
+RECENT_SECOND_P = 0.30  # share of those getting a 2nd recent order
+RECENT_NEW_SIGNUPS = 12  # new members M-031201..M-031212, created in-window
+RECENT_SEQ_BASE = 31201
+RECENT_SOURCE_TAG = f"{SOURCE_TAG}-R"  # RS3-R-*: same family, reset-covered
 DISTRICTS = ["Central", "Causeway Bay", "Tsim Sha Tsui", "Mong Kok",
              "Sha Tin", "Tuen Mun", "Kwun Tong", "Wan Chai"]
 SURNAMES = ["Chan", "Wong", "Lee", "Cheung", "Lau", "Ng", "Chow", "Chu",
@@ -296,6 +331,249 @@ def _campaign_slice_key(code: str, member_id: str) -> bytes:
     overlap (mean ~1 campaign per member at 6x200 over 1,200)."""
     return hashlib.blake2b(f"{code}|{member_id}".encode(),
                            digest_size=8).digest()
+
+
+def _member_rng(seed: int, salt: int, member_id: str) -> random.Random:
+    """Per-member deterministic stream: `seed` + `salt` + member seq.
+
+    Independent of every other member, so a rerun (or a partial prior
+    run) draws the same values for a member however many rows already
+    exist -- the fixed-stream ethos without positional coupling. int
+    seeds only: str seeds hash per-process and are NOT stable."""
+    return random.Random(seed * 1_000_003 + salt + int(member_id[2:]))
+
+
+def _draw_channel(rng: random.Random) -> str:
+    """One channel code from CHANNEL_SPLIT (cumulative shares)."""
+    u = rng.random() * 100.0
+    cum = 0.0
+    for code, pct in CHANNEL_SPLIT:
+        cum += pct
+        if u < cum:
+            return code
+    return CHANNEL_SPLIT[-1][0]
+
+
+def _basket_lines(rng: random.Random, pmap: dict, skus: list,
+                  weights: list) -> tuple[list, int]:
+    """1-3 category-weighted lines from real products; total = sum."""
+    lines, total = [], 0
+    nlines = (1 + (1 if rng.random() < 0.45 else 0)
+              + (1 if rng.random() < 0.15 else 0))
+    for _ in range(nlines):
+        sku = rng.choices(skus, weights=weights)[0]
+        qty = (1 + (1 if rng.random() < 0.25 else 0)
+               + (1 if rng.random() < 0.05 else 0))
+        price = pmap[sku]["price_cents"]
+        total += price * qty
+        lines.append((pmap[sku]["id"], qty, price))
+    return lines, total
+
+
+async def _assign_channels(conn, seed: int) -> tuple[int, int]:
+    """Deterministic channel fill for the M-03% block (additive).
+
+    Every M-03% row still 'unknown' gets one draw from its per-member
+    stream (salt 101), so the block converges on CHANNEL_SPLIT and a
+    rerun draws the same code per member but updates nothing (the
+    UPDATE is predicated on 'unknown'). Demo (M-0001xx) and
+    dev-history (M-02%) rows are never in the predicate."""
+    rows = await conn.fetch(
+        "SELECT member_id FROM customers"
+        " WHERE member_id LIKE 'M-03%'"
+        " AND acquisition_channel = 'unknown' ORDER BY member_id")
+    updates = [(_draw_channel(_member_rng(seed, 101, r["member_id"])),
+                r["member_id"]) for r in rows]
+    if updates:
+        await conn.executemany(
+            "UPDATE customers SET acquisition_channel = $1"
+            " WHERE member_id = $2 AND acquisition_channel = 'unknown'",
+            updates)
+    n = await conn.fetchval(
+        "SELECT count(*) FROM customers WHERE member_id LIKE 'M-03%'")
+    return n, len(updates)
+
+
+async def _recent_fill(conn, seed: int, store_ids: list, store_w: list,
+                   pmap: dict, skus: list, weights: list,
+                   grp) -> dict:
+    """Recent fill 2026-10-16..2026-10-30 (additive, rerun = no-op).
+
+    (1) A deterministic subset (RECENT_P) of the PRE-EXISTING M-03
+    members gets 1-2 extra completed orders dated in-window
+    (external ids RS3-R-<seq>-<k>: the RS3- family, so
+    --reset-seed-block still owns them; skip-if-exists in Python).
+    Baskets draw from the live products table exactly like the main
+    phase (category weights, qty 1-3, total = lines sum); the store is
+    the member's most-frequent store at 85% repeat, else a weighted
+    cross-brand draw. (2) RECENT_NEW_SIGNUPS new M-03 members
+    (M-031201.., created in-window) with contacts + consents and one
+    first completed order each near signup. Every draw comes from the
+    member's own stream (salt 202/303), so reruns and partial runs
+    reproduce each member independently."""
+    idmap = {r["member_id"]: str(r["id"]) for r in await conn.fetch(
+        "SELECT id, member_id FROM customers"
+        " WHERE member_id LIKE 'M-03%'")}
+    new_ids = {f"M-{RECENT_SEQ_BASE + i:06d}"
+               for i in range(RECENT_NEW_SIGNUPS)}
+    have_ext = {r["external_order_id"] for r in await conn.fetch(
+        "SELECT external_order_id FROM orders"
+        " WHERE external_order_id LIKE $1", f"{RECENT_SOURCE_TAG}-%")}
+    home_of = {}
+    for r in await conn.fetch(
+            "SELECT c.member_id, (SELECT o.store_id FROM orders o"
+            " WHERE o.customer_id = c.id GROUP BY o.store_id"
+            " ORDER BY count(*) DESC LIMIT 1) AS store_id"
+            " FROM customers c WHERE c.member_id LIKE 'M-03%'"):
+        home_of[r["member_id"]] = r["store_id"]
+    payback, item_rows = [], []
+    members_hit = 0
+    for m in sorted(idmap):
+        if m in new_ids:
+            continue  # new signups get their own first order below
+        mrng = _member_rng(seed, 202, m)
+        if mrng.random() >= RECENT_P:
+            continue
+        members_hit += 1
+        n = 2 if mrng.random() < RECENT_SECOND_P else 1
+        home = home_of[m] or mrng.choices(store_ids,
+                                          weights=store_w)[0]
+        seqn = int(m[2:])
+        for k in range(n):
+            ext = f"{RECENT_SOURCE_TAG}-{seqn}-{k + 1:02d}"
+            if ext in have_ext:
+                continue
+            od = _draw_order_date(mrng, RECENT_START, RECENT_END)
+            ordered = datetime(od.year, od.month, od.day,
+                               mrng.randint(9, 20), mrng.randint(0, 59),
+                               tzinfo=timezone.utc)
+            store = (home if mrng.random() < HOME_STORE_P
+                     else mrng.choices(store_ids, weights=store_w)[0])
+            lines, total = _basket_lines(mrng, pmap, skus, weights)
+            payback.append((idmap[m], store, ordered, total, ext))
+            item_rows.extend([(ext, pid, qty, price)
+                              for (pid, qty, price) in lines])
+    # --- new in-window signups (skip-if-exists in Python) ---
+    used_phones = {r["value_normalized"] for r in await conn.fetch(
+        "SELECT value_normalized FROM customer_contacts"
+        " WHERE kind = 'phone'")}
+    cust_rows, contact_rows, consent_rows = [], [], []
+    signup_payback, signup_items = [], []
+    signups_added = 0
+    for m in sorted(new_ids):
+        if m in idmap:
+            continue
+        mrng = _member_rng(seed, 303, m)
+        seqn = int(m[2:])
+        signup = RECENT_START + timedelta(days=mrng.randint(0, 14))
+        age = min(max(int(mrng.gauss(38, 12)), 18), 80)
+        dob = signup - timedelta(days=int(age * 365.25))
+        if mrng.random() < 0.12:
+            name = mrng.choice(WESTERN)
+            locale = "en"
+        else:
+            name = f"{mrng.choice(SURNAMES)} {mrng.choice(GIVEN)}"
+            locale = "zh-HK"
+        created = datetime(signup.year, signup.month, signup.day,
+                           10, 0, tzinfo=timezone.utc)
+        cust_rows.append((m, name, created, dob,
+                         mrng.choice(["male", "female"]),
+                         mrng.choice(DISTRICTS), locale, grp))
+        nph = 90000000 + (seqn * 7919) % 9999999
+        phone = f"+852{nph:08d}"
+        while phone in used_phones:
+            nph += 1
+            phone = f"+852{nph:08d}"
+        used_phones.add(phone)
+        contact_rows.append((m, "phone", phone,
+                            f"+852 {phone[4:8]} {phone[8:]}", True))
+        local = name.lower().replace(" ", ".")
+        email = f"{local}.{seqn}@example.com"
+        contact_rows.append((m, "email", email, email, False))
+        optout = mrng.random() < 0.08
+        for ch in CHANNELS:
+            if optout:
+                st = "opted_out"
+            elif ch == "sms":
+                st = ("opted_in" if mrng.random() < 0.90
+                      else "opted_out")
+            elif ch == "email":
+                st = ("opted_in" if mrng.random() < 0.85
+                      else "opted_out")
+            else:
+                st = ("opted_in" if mrng.random() < 0.40
+                      else "opted_out")
+            consent_rows.append((m, ch, st))
+        signups_added += 1
+    if cust_rows:
+        await conn.executemany(
+            "INSERT INTO customers (member_id, full_name, created_at,"
+            " date_of_birth, gender, district, attributes, group_id)"
+            " VALUES ($1,$2,$3,$4,$5,$6,"
+            " jsonb_build_object('locale', $7::text), $8::uuid)",
+            cust_rows)
+        nidmap = {r["member_id"]: str(r["id"]) for r in await conn.fetch(
+            "SELECT id, member_id FROM customers"
+            " WHERE member_id = ANY($1)",
+            [c[0] for c in cust_rows])}
+        idmap.update(nidmap)
+        await conn.executemany(
+            "INSERT INTO customer_contacts (customer_id, kind,"
+            " value_normalized, value_display, is_primary)"
+            " SELECT c.id, $2, $3, $4, $5 FROM customers c"
+            " WHERE c.member_id = $1",
+            [(m, kind, norm, disp, prim)
+             for (m, kind, norm, disp, prim) in contact_rows])
+        await conn.executemany(
+            "INSERT INTO consents (customer_id, channel, status,"
+            " captured_by) SELECT c.id, $2, $3, 'reseed-recent'"
+            " FROM customers c WHERE c.member_id = $1"
+            " ON CONFLICT DO NOTHING",
+            consent_rows)
+        await conn.execute(
+            "INSERT INTO consent_events"
+            " (customer_id, channel, status, captured_by)"
+            " SELECT customer_id, channel, status, captured_by"
+            " FROM consents WHERE captured_by = 'reseed-recent'"
+            " ON CONFLICT DO NOTHING")
+        # One first order each, near signup (clamped to the window).
+        for c in cust_rows:
+            m = c[0]
+            mrng = _member_rng(seed, 303, m)
+            signup = c[2].date()
+            od = min(signup + timedelta(days=mrng.randint(0, 10)),
+                     RECENT_END)
+            ordered = datetime(od.year, od.month, od.day,
+                               mrng.randint(9, 20), mrng.randint(0, 59),
+                               tzinfo=timezone.utc)
+            seqn = int(m[2:])
+            ext = f"{RECENT_SOURCE_TAG}-{seqn}-01"
+            if ext in have_ext:
+                continue
+            store = mrng.choices(store_ids, weights=store_w)[0]
+            lines, total = _basket_lines(mrng, pmap, skus, weights)
+            signup_payback.append((idmap[m], store, ordered, total, ext))
+            signup_items.extend([(ext, pid, qty, price)
+                                 for (pid, qty, price) in lines])
+    payback.extend(signup_payback)
+    item_rows.extend(signup_items)
+    if payback:
+        await conn.executemany(
+            "INSERT INTO orders (customer_id, store_id, ordered_at,"
+            " total_cents, status, external_order_id)"
+            " VALUES ($1,$2,$3,$4,'completed',$5)", payback)
+        oid = {r["external_order_id"]: str(r["id"])
+               for r in await conn.fetch(
+                   "SELECT id, external_order_id FROM orders"
+                   " WHERE external_order_id = ANY($1)",
+                   [p[4] for p in payback])}
+        await conn.executemany(
+            "INSERT INTO order_items (order_id, product_id, qty,"
+            " unit_price_cents) VALUES ($1,$2,$3,$4)",
+            [(oid[ext], pid, qty, price)
+             for (ext, pid, qty, price) in item_rows])
+    return {"members_hit": members_hit, "signups_added": signups_added,
+            "orders": len(payback), "items": len(item_rows)}
 
 
 async def main() -> int:
@@ -536,6 +814,20 @@ async def main() -> int:
                         "UPDATE customers SET tier_code = $1"
                         " WHERE id = $2 AND tier_code IS NULL",
                         tier, cid)
+        # --- recent fill 2026-10-16..2026-10-30 (additive) ---
+        # Extra completed orders for a deterministic M-03 subset plus
+        # in-window signups; skip-if-exists in Python, so a rerun is a
+        # no-op. Runs BEFORE the channel fill so new signups get a
+        # channel too.
+        recent = await _recent_fill(conn, args.seed, store_ids, store_w,
+                                    pmap, skus, weights, grp)
+        print(f"recent: {recent['members_hit']} member(s) +"
+              f" {recent['signups_added']} new signup(s),"
+              f" {recent['orders']} order(s) {RECENT_START}..{RECENT_END}")
+        # --- acquisition-channel fill (additive, M-03% unknowns only) ---
+        n_m03, n_chan = await _assign_channels(conn, args.seed)
+        print(f"channels: {n_m03} M-03% member(s),"
+              f" {n_chan} newly assigned")
         # --- catalog campaign membership: deterministic hash slice ---
         # App decision: catalog campaigns holding a handful of members
         # read as broken on the campaigns page, so each one gets a
