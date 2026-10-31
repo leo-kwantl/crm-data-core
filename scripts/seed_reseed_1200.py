@@ -41,6 +41,10 @@ CURRENT_DATE, so it grows by 1 per day) / full_optout 108. The
 2026-10-31 recent fill (12 M-031201.. signups, RS3-R-* orders
 2026-10-16..2026-10-30); the +60 / +1,842 over that are the
 restored M-02 dev-history block (seed_dev_history.py rerun).
+M-02 acquisition_channel was filled 2026-10-31 by a live-DB UPDATE
+(md5(member_id) buckets over the same 35/25/15/12/8/5 split) because
+seed_dev_history predates the channel field: walk_in +24 / online +14 /
+referral +9 / social +7 / phone +5 / event +1 (unknown left: 8 demo).
 
 Distribution spec (owner-approved, bound 2026-10-15):
 - 1,200 customers, M-03 block (M-030001..M-031200; no collision with
