@@ -15,6 +15,11 @@ A conventions file carries norms only: no pointers, no interface listings, no re
 - Identity search: `external_member_id` + `member_id` substring fallback (escaped ILIKE, LIMIT 20).
 - The append-only grants (`consent_events`, `customer_access_logs`) and customer soft-delete are enforced in data-owned migrations; the policy they implement is `../../docs/conventions.md` § PII policy.
 
+## SCV review (data side)
+
+- A migration that creates a table or adds a column on a feature-bearing table must carry the SCV decision in the same file: the column plus its refresh logic in `customer_single_view`, or a `-- scv-review: <decision>` marker recording why no field was needed. "No new field" is a decision, written down, not assumed.
+- Enforced at commit time by `scripts/check_scv_review.py` (wired in `.githooks/pre-commit`): unknown new tables fail closed as features until proven machinery.
+
 ## Time bounds (data side)
 
 - A `date` anchor takes `column > $1::date`: a row dated after the business day is future.
